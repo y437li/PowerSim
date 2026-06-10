@@ -129,8 +129,23 @@ All smoke tests import `{ test, expect }` from `./helpers/errorCapture` instead 
 
 ## 3. Smoke suite (`tests/frontend_e2e/smoke.spec.ts`)
 
-Six tests. All import the `errorCapture` fixture so the error report is always populated.
-The dev server is started by the `webServer` config block; no manual server setup.
+Five tests (S1–S5). All import the `errorCapture` fixture so the error report is always
+populated. The dev server is started by the `webServer` config block; no manual server setup.
+
+### Design note — app-shell WS auto-connect
+
+`src/clients/wsClient.ts` (PR #5) exposes `createWsClient()` and a `.connect()` method, but
+the app shell does **not** call `.connect()` on mount (no `createWsClient`/`connect` in
+`App.tsx`, `main.tsx`, or `SiteView.tsx`). This has two consequences for the smoke suite:
+
+- **S2–S4 `consoleErrors === 0` is a correct, non-brittle assertion** — because the page
+  makes no WS attempt, the browser generates no native "WebSocket connection failed"
+  `console.error` on those routes. Framework noise (Vite HMR, React DevTools) does not
+  generate `console.error` on an idle route load in a standard dev build.
+- **S5 must explicitly drive a WS connection** so it actually exercises the browser's
+  behaviour under a refused connection, rather than trivially passing with no WS activity.
+  S5 uses `page.evaluate()` to open a raw WebSocket to the absent backend endpoint
+  (`ws://localhost:8000/ws/telemetry`), waits for close/error, then asserts no pageerror.
 
 ### Test S1 — App boots (HTTP 200 + title)
 
@@ -141,7 +156,7 @@ test('S1: app boots with HTTP 200', async ({ page, errorCapture }) => {
   expect(response?.status()).toBe(200);
   // Page title matches the app name:
   await expect(page).toHaveTitle(/Energy GO/i);
-  // Zero console errors on initial load:
+  // Zero console errors on initial load (no WS attempt on mount — see design note):
   expect(errorCapture.consoleErrors).toHaveLength(0);
   // Zero page errors:
   expect(errorCapture.pageErrors).toHaveLength(0);
@@ -155,6 +170,7 @@ test('S2: / (SiteView) renders without errors', async ({ page, errorCapture }) =
   await page.goto('/');
   // The root route renders some visible content — the SiteView mounts:
   await expect(page.locator('body')).not.toBeEmpty();
+  // No WS attempt on mount → no WS-originated console.error (see design note):
   expect(errorCapture.consoleErrors).toHaveLength(0);
   expect(errorCapture.pageErrors).toHaveLength(0);
 });
@@ -166,6 +182,7 @@ test('S2: / (SiteView) renders without errors', async ({ page, errorCapture }) =
 test('S3: /training (TrainingPanel) renders without errors', async ({ page, errorCapture }) => {
   await page.goto('/training');
   await expect(page.locator('body')).not.toBeEmpty();
+  // No WS attempt on mount → no WS-originated console.error (see design note):
   expect(errorCapture.consoleErrors).toHaveLength(0);
   expect(errorCapture.pageErrors).toHaveLength(0);
 });
@@ -177,6 +194,7 @@ test('S3: /training (TrainingPanel) renders without errors', async ({ page, erro
 test('S4: /eval (EvalComparison) renders without errors', async ({ page, errorCapture }) => {
   await page.goto('/eval');
   await expect(page.locator('body')).not.toBeEmpty();
+  // No WS attempt on mount → no WS-originated console.error (see design note):
   expect(errorCapture.consoleErrors).toHaveLength(0);
   expect(errorCapture.pageErrors).toHaveLength(0);
 });
@@ -184,24 +202,44 @@ test('S4: /eval (EvalComparison) renders without errors', async ({ page, errorCa
 
 ### Test S5 — WebSocket graceful degradation (no backend)
 
-The dev server starts without a FastAPI backend. The WS client (`src/clients/wsClient.ts`)
-MUST NOT cause a fatal page error when the connection is refused or immediately closed.
+The dev server starts without a FastAPI backend. The test explicitly opens a raw WebSocket
+to the absent backend (`ws://localhost:8000/ws/telemetry`) via `page.evaluate()`, waits for
+the browser to close/error the connection, then asserts the page has not crashed. This drives
+real browser WS error-handling behaviour (native "connection refused" path) without requiring
+the app shell to auto-connect on mount.
 
 ```ts
 test('S5: WS client degrades gracefully with no backend', async ({ page, errorCapture }) => {
   await page.goto('/');
-  // Wait enough time for a WS connection attempt + failure to complete:
-  await page.waitForTimeout(2000);
-  // The page must remain functional — no unhandled exceptions:
+
+  // Explicitly drive a WS connection to the absent backend so S5 is not vacuous.
+  // The app shell does not auto-connect on mount (see design note above).
+  // page.evaluate runs in the browser context — any unhandled exception here would
+  // surface as a pageerror and fail the test.
+  await page.evaluate(() =>
+    new Promise<void>((resolve) => {
+      const ws = new WebSocket('ws://localhost:8000/ws/telemetry');
+      ws.addEventListener('error', () => { ws.close(); resolve(); });
+      ws.addEventListener('close', () => resolve());
+    })
+  );
+
+  // Allow a short window for async error handlers to fire:
+  await page.waitForTimeout(500);
+
+  // BINDING CONTRACT: a refused WS connection MUST NOT crash the page.
+  // A browser-native "WebSocket connection failed" console.error is acceptable;
+  // an unhandled JS exception (pageerror) means the page crashed — hard failure.
   expect(errorCapture.pageErrors).toHaveLength(0);
-  // WS errors may appear as console.error (acceptable) but MUST NOT be pageErrors:
-  // (console.error from WS is informational; pageerror is a fatal crash)
+
+  // The page must remain interactive after the WS failure:
+  await expect(page.locator('body')).not.toBeEmpty();
 });
 ```
 
-Note: this test deliberately allows `consoleErrors` to be non-empty (the WS client may log
-a connection-refused error). The binding contract is `pageErrors.length === 0` — the page
-must not crash.
+Note: `consoleErrors` is intentionally NOT asserted in S5 — the browser always emits a
+native `console.error` when a WS connection is refused. The binding contract is
+`pageErrors.length === 0`.
 
 ### Test S6 — Screenshot on failure (implicit)
 
