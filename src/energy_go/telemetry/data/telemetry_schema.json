@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://energy-go/contracts/shared/telemetry_schema.json",
+  "title": "Energy GO telemetry v1.0.0",
+  "description": "Machine-readable schema for the LOCKED contracts/shared/telemetry_schema.md v1.0.0. Envelope + env_step/train_metrics/eval_compare payloads. additionalProperties is true everywhere to honor the contract's minor-forward-compat rule (consumers MUST ignore unknown fields); required lists enforce that no LOCKED field is missing or renamed. The D13 numeric cost identities, per-source conservation, and finiteness are checked by scripts/validate_telemetry.py, not by JSON Schema alone.",
+  "type": "object",
+  "required": ["schema_version", "kind", "ts_utc", "run_id", "seq", "payload"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$", "description": "semver of this contract" },
+    "kind": { "type": "string", "enum": ["env_step", "train_metrics", "eval_compare"] },
+    "ts_utc": { "type": "string", "description": "EMIT/wall-clock time; transport only — timelines key off payload.sim_time_utc/step" },
+    "run_id": { "type": "string" },
+    "seq": { "type": "integer", "minimum": 0, "description": "strictly monotonic per (run_id, kind) across the whole run; decoupled from payload.step" },
+    "payload": { "type": "object" }
+  },
+  "allOf": [
+    { "if": { "properties": { "kind": { "const": "env_step" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/env_step" } } } },
+    { "if": { "properties": { "kind": { "const": "train_metrics" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/train_metrics" } } } },
+    { "if": { "properties": { "kind": { "const": "eval_compare" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/eval_compare" } } } }
+  ],
+  "$defs": {
+    "env_step": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["step", "episode", "dt_hours", "sim_time_utc", "hour_of_day", "minute_of_hour",
+        "wind_speed_mps", "irradiance_wm2", "temperature_c", "load_mw",
+        "price_buy_yuan_per_mwh", "price_sell_yuan_per_mwh", "tariff_tier",
+        "battery", "generation", "flows", "pcc", "costs", "cost_cum", "month_peak_mw", "reward"],
+      "properties": {
+        "step": { "type": "integer", "minimum": 0, "description": "episode-local step index (NOT envelope seq)" },
+        "episode": { "type": "integer", "minimum": 0 },
+        "dt_hours": { "type": "number", "exclusiveMinimum": 0, "description": "D3: 1.0 h" },
+        "sim_time_utc": { "type": "string", "description": "SIM clock — all timelines key off this" },
+        "hour_of_day": { "type": "integer", "minimum": 0, "maximum": 23 },
+        "minute_of_hour": { "type": "integer", "minimum": 0, "maximum": 59 },
+        "wind_speed_mps": { "type": "number" },
+        "irradiance_wm2": { "type": "number" },
+        "temperature_c": { "type": "number" },
+        "load_mw": { "type": "number", "minimum": 0, "description": "MW" },
+        "price_buy_yuan_per_mwh": { "type": "number", "description": "¥/MWh" },
+        "price_sell_yuan_per_mwh": { "type": "number", "minimum": 0, "description": "¥/MWh; D11 spread clamp ≥0, ≤ price_buy" },
+        "tariff_tier": { "type": "string", "enum": ["critical_peak", "peak", "mid", "valley"], "description": "per-step PRICE LABEL only — not TOU band geometry (C1)" },
+        "battery": { "$ref": "#/$defs/battery" },
+        "generation": { "$ref": "#/$defs/generation" },
+        "flows": { "$ref": "#/$defs/flows" },
+        "pcc": { "$ref": "#/$defs/pcc" },
+        "costs": { "$ref": "#/$defs/costs" },
+        "cost_cum": { "$ref": "#/$defs/cost_cum" },
+        "month_peak_mw": { "type": "number", "minimum": 0, "description": "MW; calendar-month max import" },
+        "reward": { "type": "number", "description": "= -(cost_total_reward_basis_yuan + penalty_yuan)*1e-5 (§3.5)" },
+        "assets_ext": { "type": "object", "description": "OPTIONAL Δ§8; absent (not null) for Gansu parity" }
+      }
+    },
+    "battery": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["soc", "p_charge_mw", "p_discharge_mw", "p_max_charge_mw", "p_max_discharge_mw", "soc_violation_mwh", "capacity_mwh"],
+      "properties": {
+        "soc": { "type": "number", "minimum": 0.2, "maximum": 0.9, "description": "fraction [0.2,0.9] (D4)" },
+        "p_charge_mw": { "type": "number", "minimum": 0 },
+        "p_discharge_mw": { "type": "number", "minimum": 0 },
+        "p_max_charge_mw": { "type": "number", "minimum": 0 },
+        "p_max_discharge_mw": { "type": "number", "minimum": 0 },
+        "soc_violation_mwh": { "type": "number", "minimum": 0 },
+        "capacity_mwh": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "generation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["gross_solar_mw", "gross_wind_mw"],
+      "properties": {
+        "gross_solar_mw": { "type": "number", "minimum": 0, "description": "MW; §3.1 P_pv pre-curtailment" },
+        "gross_wind_mw": { "type": "number", "minimum": 0, "description": "MW; §3.1 P_wind pre-curtailment" }
+      }
+    },
+    "flows": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["solar_to_load_mw", "solar_to_bat_mw", "solar_to_grid_mw",
+        "wind_to_load_mw", "wind_to_bat_mw", "wind_to_grid_mw",
+        "bat_to_load_mw", "bat_to_grid_mw", "grid_to_load_mw", "grid_to_bat_mw",
+        "solar_curtailed_mw", "wind_curtailed_mw", "bat_curtailed_mw", "load_unserved_mw"],
+      "patternProperties": { "_mw$": { "type": "number", "minimum": 0 } }
+    },
+    "pcc": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["export_mw", "import_mw", "max_export_mw", "max_import_mw"],
+      "properties": {
+        "export_mw": { "type": "number", "minimum": 0 },
+        "import_mw": { "type": "number", "minimum": 0 },
+        "max_export_mw": { "type": "number", "minimum": 0, "description": "D5 per-site cap" },
+        "max_import_mw": { "type": "number", "minimum": 0, "description": "D12 per-site cap" }
+      }
+    },
+    "costs": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["c_energy_yuan", "c_import_yuan", "r_export_yuan", "c_demand_charge_yuan",
+        "c_demand_shape_yuan", "c_degradation_yuan", "c_curtail_yuan", "c_voll_yuan",
+        "penalty_yuan", "demand_rate_yuan_per_mw_month", "cost_total_real_yuan", "cost_total_reward_basis_yuan"],
+      "properties": {
+        "c_energy_yuan": { "type": "number", "description": "¥; = c_import - r_export (§3.4). Real+reward summand." },
+        "c_import_yuan": { "type": "number", "minimum": 0, "description": "¥; display-only decomposition of c_energy" },
+        "r_export_yuan": { "type": "number", "minimum": 0, "description": "¥; display-only decomposition of c_energy" },
+        "c_demand_charge_yuan": { "type": "number", "minimum": 0, "description": "¥; REAL monthly charge, 0 except month boundary (D10). Real summand." },
+        "c_demand_shape_yuan": { "type": "number", "minimum": 0, "description": "¥; RAW C_DC_shape; reward applies 2.0×. Reward-basis only." },
+        "c_degradation_yuan": { "type": "number", "minimum": 0 },
+        "c_curtail_yuan": { "type": "number", "minimum": 0 },
+        "c_voll_yuan": { "type": "number", "minimum": 0 },
+        "penalty_yuan": { "type": "number", "minimum": 0, "description": "¥; enters reward, NOT a cost summand" },
+        "demand_rate_yuan_per_mw_month": { "type": "number", "minimum": 0, "description": "§3.7 rate (32000)" },
+        "cost_total_real_yuan": { "type": "number" },
+        "cost_total_reward_basis_yuan": { "type": "number" }
+      }
+    },
+    "cost_cum": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["c_energy_yuan_cum", "c_demand_charge_yuan_cum", "c_demand_shape_yuan_cum",
+        "c_degradation_yuan_cum", "c_curtail_yuan_cum", "c_voll_yuan_cum",
+        "penalty_yuan_cum", "cost_total_real_yuan_cum", "cost_total_reward_basis_yuan_cum"],
+      "patternProperties": { "_cum$": { "type": "number" } }
+    },
+    "train_metrics": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["global_step", "wall_seconds", "env_steps_per_sec", "actor_loss", "critic_loss",
+        "ent_coef", "reward_scaled_mean", "reward_norm_mean", "cost_total_real_mean_yuan",
+        "is_eval_checkpoint", "checkpoint_id"],
+      "properties": {
+        "global_step": { "type": "integer", "minimum": 0 },
+        "wall_seconds": { "type": "number", "minimum": 0 },
+        "env_steps_per_sec": { "type": "number", "minimum": 0 },
+        "actor_loss": { "type": "number" },
+        "critic_loss": { "type": "number" },
+        "ent_coef": { "type": "number" },
+        "reward_scaled_mean": { "type": "number", "description": "×1e-5 scaled reward mean; matches env_step.reward basis" },
+        "reward_norm_mean": { "type": ["number", "null"], "description": "VecNormalize-normalized; null on eval checkpoints" },
+        "cost_total_real_mean_yuan": { "type": "number", "description": "mean per-episode REAL-money cost (a cost, not a reward)" },
+        "is_eval_checkpoint": { "type": "boolean" },
+        "checkpoint_id": { "type": ["string", "null"] }
+      }
+    },
+    "eval_compare": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["eval_horizon_steps", "checkpoint_id", "cost_basis", "policies"],
+      "properties": {
+        "eval_horizon_steps": { "type": "integer", "minimum": 1 },
+        "checkpoint_id": { "type": "string" },
+        "cost_basis": { "type": "string", "const": "real_money" },
+        "policies": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["rl", "no_battery", "rule_based_tou"],
+          "properties": {
+            "rl": { "$ref": "#/$defs/policy_costs" },
+            "no_battery": { "$ref": "#/$defs/policy_costs" },
+            "rule_based_tou": { "$ref": "#/$defs/policy_costs" }
+          }
+        }
+      }
+    },
+    "policy_costs": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["energy_cost_yuan", "demand_charge_yuan", "degradation_yuan", "curtailment_yuan",
+        "voll_yuan", "total_cost_yuan", "soc_violations_count", "soc_violation_mwh", "penalty_yuan"],
+      "properties": {
+        "energy_cost_yuan": { "type": "number" },
+        "demand_charge_yuan": { "type": "number" },
+        "degradation_yuan": { "type": "number" },
+        "curtailment_yuan": { "type": "number" },
+        "voll_yuan": { "type": "number" },
+        "total_cost_yuan": { "type": "number", "description": "= energy+demand_charge+degradation+curtailment+voll (real money)" },
+        "soc_violations_count": { "type": "integer", "minimum": 0, "description": "safety metric, NOT in total_cost_yuan" },
+        "soc_violation_mwh": { "type": "number", "minimum": 0, "description": "safety metric, NOT in total_cost_yuan" },
+        "penalty_yuan": { "type": "number", "minimum": 0, "description": "reward-basis, NOT in total_cost_yuan" }
+      }
+    }
+  }
+}
