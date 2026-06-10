@@ -690,6 +690,34 @@ describe("trainingStore — receiveTrainMetrics", () => {
     expect(useTrainingStore.getState().lastTrainSeq).toBeNull();
     expect(useTrainingStore.getState().trainSeqGap).toBe(false);
   });
+
+  // §6.2 amendment: latestTsUtc — ISO-8601 ts_utc from most recent envelope
+  it("§6.2 — latestTsUtc is null before first message", async () => {
+    const { useTrainingStore } = await import("../../src/stores/trainingStore");
+    expect(useTrainingStore.getState().latestTsUtc).toBeNull();
+  });
+
+  it("§6.2 — receiveTrainMetrics captures ts_utc into latestTsUtc", async () => {
+    const { useTrainingStore } = await import("../../src/stores/trainingStore");
+    // FIXTURE_TRAIN_METRICS.ts_utc = "2026-06-10T08:01:00Z"
+    act(() => {
+      useTrainingStore.getState().receiveTrainMetrics(FIXTURE_TRAIN_METRICS as any);
+    });
+    expect(useTrainingStore.getState().latestTsUtc).toBe("2026-06-10T08:01:00Z");
+  });
+
+  it("§6.2 — latestTsUtc updates on each message; clear() resets to null", async () => {
+    const { useTrainingStore } = await import("../../src/stores/trainingStore");
+    act(() => {
+      useTrainingStore.getState().receiveTrainMetrics(FIXTURE_TRAIN_METRICS as any);
+      useTrainingStore.getState().receiveTrainMetrics(
+        { ...FIXTURE_TRAIN_METRICS, seq: 2, ts_utc: "2026-06-10T09:00:00Z" } as any,
+      );
+    });
+    expect(useTrainingStore.getState().latestTsUtc).toBe("2026-06-10T09:00:00Z");
+    act(() => { useTrainingStore.getState().clear(); });
+    expect(useTrainingStore.getState().latestTsUtc).toBeNull();
+  });
 });
 
 // ─── §4: Eval store ────────────────────────────────────────────────────────────
