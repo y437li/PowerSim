@@ -87,6 +87,7 @@ function emptyTrainingState() {
     latest: null,
     lastTrainSeq: null,
     trainSeqGap: false,
+    latestTsUtc: null,  // required after PR #32 made field non-optional (string | null)
     receiveTrainMetrics: vi.fn(),
     clear: vi.fn(),
   };

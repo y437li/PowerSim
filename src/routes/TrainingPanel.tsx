@@ -43,7 +43,7 @@ export function TrainingPanel(): JSX.Element {
   const isDisconnected = wsStatus === "disconnected";
 
   // Timestamp for data-stale check in StreamStatusBanner.
-  // latestTsUtc is optional (undefined when mock doesn't supply it) → treat as null.
+  // latestTsUtc is string | null (required since PR #32); ?? null is a harmless guard.
   const lastMessageTsUtc: string | null = latestTsUtc ?? null;
 
   return (
