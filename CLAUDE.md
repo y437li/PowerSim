@@ -3,7 +3,7 @@
 These rules apply to every agent working in this repo. They are non-negotiable.
 
 ## Source of truth
-- `REBUILD_SPEC.md` defines the system: formulas (§3), generators (§4), training (§5), known bugs to fix (§6), JAX architecture (§7). When code and spec disagree, the spec wins; when the spec is ambiguous, escalate to rl-architect — never guess.
+- The system spec is split into per-section files under `docs/spec/section_NN_<name>.md`; **`REBUILD_SPEC.md` (root) is the index/TOC** — section list, links, and the **Owner** of each section. Section numbering is **stable and canonical**: contracts, LINEAGE decisions, and charters cite `§N.M` (formulas §3, generators §4, training §5, resolved-bug ledger §6, JAX architecture §7, composable assets §8, install/launch §9, env enhancements §10, benchmarks §11, weather pipeline §12). When code and spec disagree, the spec wins; when the spec is ambiguous, escalate to rl-architect (or the section Owner for its specifics) — never guess. The section Owner maintains the file; overall spec authority and the human merge gate for any spec-content change are unchanged.
 
 ## Before any work
 - **Check the three sources of record:** `git log --oneline -15` (what merged), `gh pr list --state open` (what's in flight and its gate status), and `LINEAGE.md` (binding decisions, locked contracts, open blockers — the things git can't tell you). PR state is the status record; LINEAGE.md gets entries only for DECISION / LOCKED / BLOCKED events, append-only.
