@@ -321,7 +321,11 @@ esac
 check_port_free() {
     local port="$1" label="$2"
     if command -v lsof &>/dev/null; then
-        if lsof -iTCP:"${port}" -sTCP:LISTEN &>/dev/null 2>&1; then
+        # Use lsof without -sTCP:LISTEN so we detect any TCP socket on this port
+        # (bound but not yet in LISTEN state, ESTABLISHED, etc.).  The LISTEN-only
+        # filter caused false-negatives when the occupying socket had been bound
+        # but not yet put into LISTEN state (e.g. during test fixture setup).
+        if lsof -iTCP:"${port}" &>/dev/null 2>&1; then
             die 5 "$label port $port is already in use. Remediation: Use --${label,,}-port <other-port> or stop the existing process."
         fi
     fi
@@ -340,8 +344,23 @@ fi
 # ── create / update virtualenv ────────────────────────────────────────────────
 if [[ ! -d ".venv" ]]; then
     info "Creating virtualenv (.venv)..."
-    uv venv --python 3.11 .venv \
-        || die 2 "Failed to create virtualenv. Remediation: Ensure Python 3.11 is available ('uv python install 3.11')."
+    # On ARM macOS: install a uv-managed (native ARM64) Python first to avoid Rosetta
+    # picking an x86 interpreter, which would install x86 jaxlib and fail with AVX errors.
+    # The `|| true` lets us continue if the install fails (e.g. no internet); the venv
+    # creation below falls back to any available Python.
+    if [[ "$OS" == "Darwin" ]] && [[ "$ARCH" == "arm64" || "$ARCH" == "aarch64" ]]; then
+        info "ARM macOS detected — ensuring native uv-managed Python 3.11..."
+        uv python install 3.11 2>/dev/null || true
+        # UV_PYTHON_PREFERENCE=only-managed forces the freshly installed native Python.
+        # Fall back to unmanaged if no managed Python is available (e.g. offline CI).
+        UV_PYTHON_PREFERENCE=only-managed uv venv --seed --python 3.11 .venv 2>/dev/null \
+            || uv venv --seed --python 3.11 .venv \
+            || die 2 "Failed to create virtualenv. Remediation: Ensure Python 3.11 is available ('uv python install 3.11')."
+    else
+        # --seed adds pip/setuptools/wheel so .venv/bin/pip is always present.
+        uv venv --seed --python 3.11 .venv \
+            || die 2 "Failed to create virtualenv. Remediation: Ensure Python 3.11 is available ('uv python install 3.11')."
+    fi
 fi
 
 # ── install dependencies ──────────────────────────────────────────────────────
@@ -351,9 +370,12 @@ INSTALL_OUT="$(uv pip install --python ".venv/bin/python" -e ".[${EXTRAS}]" 2>&1
     die 3 "Dependency install failed. Remediation: Check internet connection, uv installation, and pyproject extras. Run: uv pip install -e \".[${EXTRAS}]\" manually to see full output."
 }
 
-# Idempotency signal: uv emits an "Installed N packages" line only when it
-# actually installs something; if absent, the environment is already up to date.
-if printf "%s\n" "$INSTALL_OUT" | grep -qiE "Installed [0-9]+ package|Downloading"; then
+# Idempotency signal: uv emits an "Installed N packages" line only when REMOTE
+# packages change.  Editable rebuilds of the local package (lines containing
+# "from file://") are excluded — uv always reinstalls the local editable even
+# when nothing changed, so counting them would suppress the "up to date" message.
+REMOTE_INSTALL_OUT="$(printf "%s\n" "$INSTALL_OUT" | grep -v "from file://")"
+if printf "%s\n" "$REMOTE_INSTALL_OUT" | grep -qiE "Installed [0-9]+ package|Downloading"; then
     printf "%s\n" "$INSTALL_OUT"
 else
     info "Environment up to date. Nothing to do."

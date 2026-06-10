@@ -1360,6 +1360,7 @@ def test_purge_preserves_config_but_removes_checkpoints_sh(tmp_path):
     # reviewer: removes checkpoints/ and *.run artifacts, but config/ is NEVER
     # reviewer: removed. This pins that safety invariant on the destructive path.
     shutil.copy(REPO_ROOT / "pyproject.toml", tmp_path / "pyproject.toml")
+    shutil.copytree(REPO_ROOT / "src", tmp_path / "src")  # required for uv pip install -e .
     shutil.copy(INSTALL_SH, tmp_path / "install_app.sh")
     os.chmod(tmp_path / "install_app.sh", 0o755)
     (tmp_path / "config").mkdir()
