@@ -1394,3 +1394,45 @@ describe("reviewer: evalStore — self-contained dispatch + cost-sum integrity",
     }
   });
 });
+
+// ─── env_step cost identities + conservation (locked golden A integrity) ──────
+
+describe("reviewer: env_step golden fixture integrity (locked schema acceptance)", () => {
+  // reviewer: post-LOCK, the env_step fixture is golden step A from telemetry_schema
+  // v1.0.0. The eval cost-sum is guarded above, but nothing pinned the env_step's two
+  // cost-total identities, the reward formula, or per-source conservation — the exact
+  // identities the locked schema's acceptance criteria enumerate. These guard the
+  // shared fixture (and any consumer that recomputes a total) against silent drift.
+  const c = FIXTURE_ENV_STEP.payload.costs;
+  const f = FIXTURE_ENV_STEP.payload.flows;
+  const g = FIXTURE_ENV_STEP.payload.generation;
+
+  it("cost_total_real_yuan == c_energy + c_demand_charge + c_degradation + c_curtail + c_voll", () => {
+    // −53100 + 0 + 400 + 0 + 0 = −52700
+    const sum = c.c_energy_yuan + c.c_demand_charge_yuan + c.c_degradation_yuan
+      + c.c_curtail_yuan + c.c_voll_yuan;
+    expect(sum).toBeCloseTo(c.cost_total_real_yuan, 6);
+    // c_import/r_export are display-only decomposition of c_energy — NOT summands
+    expect(c.c_import_yuan - c.r_export_yuan).toBeCloseTo(c.c_energy_yuan, 6);
+  });
+
+  it("cost_total_reward_basis_yuan == c_energy + 2.0·c_demand_shape + c_degradation + c_curtail + c_voll", () => {
+    // −53100 + 2.0·0 + 400 + 0 + 0 = −52700 (the 2.0× weight is applied here, not stored)
+    const sum = c.c_energy_yuan + 2.0 * c.c_demand_shape_yuan + c.c_degradation_yuan
+      + c.c_curtail_yuan + c.c_voll_yuan;
+    expect(sum).toBeCloseTo(c.cost_total_reward_basis_yuan, 6);
+  });
+
+  it("reward == −(cost_total_reward_basis_yuan + penalty_yuan) × 1e-5", () => {
+    // −(−52700 + 0)·1e-5 = 0.527
+    const expected = -(c.cost_total_reward_basis_yuan + c.penalty_yuan) * 1e-5;
+    expect(FIXTURE_ENV_STEP.payload.reward).toBeCloseTo(expected, 6);
+  });
+
+  it("per-source conservation: solar/wind to_* + curtailed == gross (generation block)", () => {
+    const solar = f.solar_to_load_mw + f.solar_to_bat_mw + f.solar_to_grid_mw + f.solar_curtailed_mw;
+    const wind = f.wind_to_load_mw + f.wind_to_bat_mw + f.wind_to_grid_mw + f.wind_curtailed_mw;
+    expect(solar).toBeCloseTo(g.gross_solar_mw, 6); // 30 == 30
+    expect(wind).toBeCloseTo(g.gross_wind_mw, 6);   // 12.5 + 80 == 92.5
+  });
+});
