@@ -22,16 +22,21 @@ jobs:
         shell: bash
         run: |
           pip install "jsonschema>=4.21"
-          python scripts/validate_telemetry.py --examples
+          # energy_go.telemetry.validate lives under src/ in this repo;
+          # PYTHONPATH makes it importable without a heavy jax install.
+          PYTHONPATH=src python scripts/validate_telemetry.py --examples
 
       - name: Python tests
         shell: bash
         run: |
           if [ -d tests ] && find tests -name 'test_*.py' | grep -q .; then
             if [ -f pyproject.toml ]; then
-              pip install -e ".[dev]"
+              # --no-deps skips the heavy jax/jaxlib install; we add the lightweight
+              # runtime deps manually.  Tests that need jax skip via pytest.importorskip.
+              pip install --no-deps -e .
+              pip install "pytest>=8.0" "pytest-xdist>=3.5" "jsonschema>=4.21" "numpy>=1.26"
             else
-              pip install pytest jax
+              pip install pytest jax numpy
             fi
             pytest tests/ -q
           else
@@ -42,7 +47,12 @@ jobs:
         shell: bash
         run: |
           if [ -f package.json ] && find tests -name '*.test.ts*' 2>/dev/null | grep -q .; then
-            npm ci
+            # Delete the macOS-generated lock before install: avoids the known npm/rollup
+            # cross-platform optional-dep bug (github.com/npm/cli/issues/4828) where a
+            # macOS lock omits @rollup/rollup-linux-x64-gnu even under `npm install`.
+            # Rollup's own error message recommends removing both lock + node_modules.
+            rm -f package-lock.json
+            npm install
             npm test
           else
             echo "No frontend tests yet — skipping"

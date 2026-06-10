@@ -1,6 +1,6 @@
 # Contract: assets/3d/registry.json schema
 
-- **Status:** DRAFT — pending rl-architect LOCK (shared contract; advisory review by both frontend-reviewer + backend-reviewer)
+- **Status:** LOCKED (2026-06-10, PR #24 + lock PR) — rl-architect LOCK on `assets/3d/registry.json` v1.0.0. Additive entries (new GLB models) are minor bumps; field removal/rename/retype is breaking → superseding DECISION + re-LOCK + re-review by both reviewers.
 - **Owner:** 3d-assets-engineer (schema); rl-architect (LOCK authority)
 - **Reviewers:** frontend-reviewer (scene consumer), backend-reviewer (config YAML producer — asset IDs must match)
 - **Area:** assets (shared)
@@ -24,9 +24,10 @@
 
 ## 1. Schema — `AssetRegistryEntry`
 
+Each entry is the **value** in the `assets` map (see §2). The map key IS the asset ID — there is no redundant `id` field inside the entry.
+
 ```json
 {
-  "id": "<string>",
   "path": "<string — relative to assets/3d/>",
   "type": "<AssetType>",
   "dims_m": { "x": "<number>", "y": "<number>", "z": "<number>" },
@@ -43,7 +44,7 @@
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `id` | `string` | ✓ | Verbatim key used in site YAML / SiteSceneConfig. Case-sensitive. Unique within the registry. |
+| _(map key)_ | `string` | ✓ | The asset ID — verbatim key used in site YAML / SiteSceneConfig. Case-sensitive. Must match `^[a-z0-9][a-z0-9.-]*$`. Uniqueness is structural (JSON object keys). |
 | `path` | `string` | ✓ | Relative to `assets/3d/`. File must exist at `assets/3d/<path>`. Kebab-case GLB: e.g. `turbines/vestas-v150-4.2.glb`. |
 | `type` | `AssetType` | ✓ | See §1.1 below. |
 | `dims_m.x` | `number > 0` | ✓ | Width in metres (world X axis). |
@@ -73,16 +74,18 @@
 ```json
 {
   "schema_version": "1.0.0",
-  "entries": [
-    { /* AssetRegistryEntry */ },
-    ...
-  ]
+  "assets": {
+    "<asset-id>": { /* AssetRegistryEntry — no id field inside */ },
+    "<asset-id>": { /* ... */ }
+  }
 }
 ```
 
-- `schema_version`: semver. Breaking changes (rename/remove field, type change) → major bump + re-LOCK.
-- `entries`: array of `AssetRegistryEntry`; order has no semantic meaning.
-- Duplicate IDs are invalid; validator must reject.
+- `schema_version`: semver. Breaking changes (rename/remove field, type change, array→object) → major bump + re-LOCK.
+- `assets`: object keyed by asset ID. Key uniqueness is enforced structurally by JSON object semantics.
+- Key format: each key MUST match `^[a-z0-9][a-z0-9.-]*$` (lowercase alphanumeric, dots and hyphens allowed after the first character).
+- `resolveAsset(registry, id)` is O(1): `registry.assets[id] ?? null`.
+- **Binding invariant (CLAUDE.md):** `assets.<key>` == `entry.id` == config YAML asset ID — verbatim, case-sensitive.
 
 ---
 
@@ -112,12 +115,14 @@ When gas turbines, electrolyzers, and load archetypes from REBUILD_SPEC §8 are 
 
 Any tool that reads the registry MUST validate:
 1. `schema_version` is present and parses as semver.
-2. All `id` values are unique (no duplicates).
-3. Each `path` is non-empty and does not contain `..` (path traversal).
-4. `dims_m` values are all `> 0`.
-5. `type` is one of the `AssetType` enum values.
+2. `assets` is a non-null object (not an array).
+3. Each key in `assets` matches `^[a-z0-9][a-z0-9.-]*$` (key-format check).
+4. Key uniqueness is structural; parsers that silently drop duplicate JSON keys MUST be treated as invalid input at the loader level.
+5. Each `path` is non-empty and does not contain `..` (path traversal).
+6. `dims_m` values are all `> 0`.
+7. `type` is one of the `AssetType` enum values.
 
-A message / file that fails validation MUST be rejected with a descriptive error.
+A file that fails any check MUST be rejected with a descriptive error (no silent fallback).
 
 ---
 

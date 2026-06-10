@@ -3,7 +3,7 @@
 These rules apply to every agent working in this repo. They are non-negotiable.
 
 ## Source of truth
-- `REBUILD_SPEC.md` defines the system: formulas (§3), generators (§4), training (§5), known bugs to fix (§6), JAX architecture (§7). When code and spec disagree, the spec wins; when the spec is ambiguous, escalate to rl-architect — never guess.
+- The system spec is split into per-section files under `docs/spec/section_NN_<name>.md`; **`REBUILD_SPEC.md` (root) is the index/TOC** — section list, links, and the **Owner** of each section. Section numbering is **stable and canonical**: contracts, LINEAGE decisions, and charters cite `§N.M` (formulas §3, generators §4, training §5, resolved-bug ledger §6, JAX architecture §7, composable assets §8, install/launch §9, env enhancements §10, benchmarks §11, weather pipeline §12). When code and spec disagree, the spec wins; when the spec is ambiguous, escalate to rl-architect (or the section Owner for its specifics) — never guess. The section Owner maintains the file; overall spec authority and the human merge gate for any spec-content change are unchanged.
 
 ## Before any work
 - **Check the three sources of record:** `git log --oneline -15` (what merged), `gh pr list --state open` (what's in flight and its gate status), and `LINEAGE.md` (binding decisions, locked contracts, open blockers — the things git can't tell you). PR state is the status record; LINEAGE.md gets entries only for DECISION / LOCKED / BLOCKED events, append-only.
@@ -36,7 +36,8 @@ These rules apply to every agent working in this repo. They are non-negotiable.
 - Python tests: `tests/<area>/test_<area>_<feature>.py` (feature matches the contract filename)
 - Contracts: `contracts/<area>/<feature>.md` in `snake_case`; review records: `contracts/reviews/<feature>.md`
 - React components: `PascalCase.tsx` (one component per file, filename = component name); hooks: `useCamelCase.ts`; non-component TS (utils, stores, clients): `camelCase.ts`
-- Frontend tests: `tests/frontend*/<feature>.test.tsx` where `<feature>` matches the file under test
+- Frontend unit tests: `tests/frontend*/<feature>.test.tsx` (Vitest+RTL) where `<feature>` matches the file under test
+- Frontend E2E tests: `tests/frontend_e2e/<scenario>.spec.ts` (Playwright; D20) — `<scenario>` is the browser scenario (e.g. `smoke`), not a component name; harness contract `contracts/frontend/playwright_harness.md`
 - 3D assets: `kebab-case.glb` under `assets/3d/<function>/` (e.g. `assets/3d/turbines/vestas-v150-4.2.glb`); `registry.json` keys = the asset IDs used in config YAML, verbatim
 - Config: `config/<site|asset>_<name>.yaml` in `snake_case` (e.g. `site_gansu.yaml`)
 - Markdown docs: root-level project docs are `SCREAMING_CASE.md` (CLAUDE.md, LINEAGE.md, REBUILD_SPEC.md); all other docs `snake_case.md`

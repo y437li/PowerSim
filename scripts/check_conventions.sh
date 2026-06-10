@@ -15,7 +15,7 @@ fi
 
 # 2. No test files outside the tests/ tree (contracts/_example is the exempt worked example)
 stray=$(find . \( -path ./tests -o -path ./contracts/_example -o -path ./.git -o -path ./node_modules \) -prune \
-        -o \( -name 'test_*.py' -o -name '*.test.ts' -o -name '*.test.tsx' \) -print 2>/dev/null)
+        -o \( -name 'test_*.py' -o -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.spec.ts' \) -print 2>/dev/null)
 [ -n "$stray" ] && err "test files outside tests/: $stray"
 
 # 3. Python tests follow tests/<area>/test_<area>_<feature>.py and have a matching contract
@@ -32,9 +32,13 @@ if [ -d tests ]; then
     esac
   done < <(find tests -name 'test_*.py' -not -path 'tests/frontend*' 2>/dev/null)
 
-  # Frontend tests only under tests/frontend or tests/frontend3d
+  # Frontend unit tests only under tests/frontend* (Vitest+RTL)
   strayfe=$(find tests \( -name '*.test.ts' -o -name '*.test.tsx' \) -not -path 'tests/frontend*' 2>/dev/null)
-  [ -n "$strayfe" ] && err "frontend tests must live under tests/frontend*/: $strayfe"
+  [ -n "$strayfe" ] && err "frontend unit tests must live under tests/frontend*/: $strayfe"
+
+  # Playwright E2E tests (.spec.ts) only under tests/frontend_e2e/ (D20)
+  straye2e=$(find tests -name '*.spec.ts' -not -path 'tests/frontend_e2e/*' 2>/dev/null)
+  [ -n "$straye2e" ] && err "Playwright .spec.ts tests must live under tests/frontend_e2e/: $straye2e"
 fi
 
 # 4. Review record must exist for every non-example contract
