@@ -622,6 +622,59 @@ describe("trainingStore — receiveTrainMetrics", () => {
     });
     expect(useTrainingStore.getState().history).toHaveLength(2);
   });
+
+  // §6.2 amendment: seq gap tracking mirrors telemetryStore semantics
+  it("§6.2 — first message sets lastTrainSeq, trainSeqGap stays false", async () => {
+    const { useTrainingStore } = await import("../../src/stores/trainingStore");
+    useTrainingStore.getState().clear();
+    act(() => {
+      useTrainingStore.getState().receiveTrainMetrics({ ...FIXTURE_TRAIN_METRICS, seq: 5 } as any);
+    });
+    expect(useTrainingStore.getState().lastTrainSeq).toBe(5);
+    expect(useTrainingStore.getState().trainSeqGap).toBe(false);
+  });
+
+  it("§6.2 — consecutive seqs (no gap) keep trainSeqGap false", async () => {
+    const { useTrainingStore } = await import("../../src/stores/trainingStore");
+    useTrainingStore.getState().clear();
+    act(() => {
+      useTrainingStore.getState().receiveTrainMetrics({ ...FIXTURE_TRAIN_METRICS, seq: 10 } as any);
+      useTrainingStore.getState().receiveTrainMetrics({ ...FIXTURE_TRAIN_METRICS, seq: 11 } as any);
+    });
+    expect(useTrainingStore.getState().trainSeqGap).toBe(false);
+    expect(useTrainingStore.getState().lastTrainSeq).toBe(11);
+  });
+
+  it("§6.2 — forward seq gap (seq > lastTrainSeq + 1) sets trainSeqGap true", async () => {
+    const { useTrainingStore } = await import("../../src/stores/trainingStore");
+    useTrainingStore.getState().clear();
+    act(() => {
+      useTrainingStore.getState().receiveTrainMetrics({ ...FIXTURE_TRAIN_METRICS, seq: 10 } as any);
+      useTrainingStore.getState().receiveTrainMetrics({ ...FIXTURE_TRAIN_METRICS, seq: 15 } as any); // gap: 15 > 10+1
+    });
+    expect(useTrainingStore.getState().trainSeqGap).toBe(true);
+  });
+
+  it("§6.2 — out-of-order (seq < lastTrainSeq) does NOT flag trainSeqGap", async () => {
+    const { useTrainingStore } = await import("../../src/stores/trainingStore");
+    useTrainingStore.getState().clear();
+    act(() => {
+      useTrainingStore.getState().receiveTrainMetrics({ ...FIXTURE_TRAIN_METRICS, seq: 10 } as any);
+      useTrainingStore.getState().receiveTrainMetrics({ ...FIXTURE_TRAIN_METRICS, seq: 8 } as any); // out-of-order
+    });
+    expect(useTrainingStore.getState().trainSeqGap).toBe(false);
+  });
+
+  it("§6.2 — clear() resets lastTrainSeq and trainSeqGap", async () => {
+    const { useTrainingStore } = await import("../../src/stores/trainingStore");
+    act(() => {
+      useTrainingStore.getState().receiveTrainMetrics({ ...FIXTURE_TRAIN_METRICS, seq: 10 } as any);
+      useTrainingStore.getState().receiveTrainMetrics({ ...FIXTURE_TRAIN_METRICS, seq: 20 } as any); // gap
+    });
+    act(() => { useTrainingStore.getState().clear(); });
+    expect(useTrainingStore.getState().lastTrainSeq).toBeNull();
+    expect(useTrainingStore.getState().trainSeqGap).toBe(false);
+  });
 });
 
 // ─── §4: Eval store ────────────────────────────────────────────────────────────
