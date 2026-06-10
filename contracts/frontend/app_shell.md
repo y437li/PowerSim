@@ -406,16 +406,22 @@ interface TrainingState {
    * Reset on clear().  Mirrors telemetryStore.seqGap (non-sticky) semantics.
    */
   trainSeqGap: boolean;
+  /**
+   * ISO-8601 UTC ts_utc from the most recent train_metrics envelope.
+   * Used by TrainingPanel StreamStatusBanner for local data-stale check.
+   * Optional: test mocks that don't supply it receive null via ?? null.
+   */
+  latestTsUtc: string | null;
   receiveTrainMetrics(msg: TelemetryEnvelope & { payload: TrainMetricsPayload }): void;
   clear(): void;
 }
 ```
 
-`receiveTrainMetrics` extracts `msg.seq` internally to update `lastTrainSeq` and
-`trainSeqGap` — callers do not need to pass seq separately.
+`receiveTrainMetrics` extracts `msg.seq` and `msg.ts_utc` internally — callers do not
+pass these separately.
 Gap rule (non-sticky, mirrors telemetryStore): `trainSeqGap = seq > lastTrainSeq + 1`;
 resets to `false` on the next contiguous message; the first message never flags;
-`clear()` resets both to null/false.
+`clear()` resets `lastTrainSeq` → null, `trainSeqGap` → false, `latestTsUtc` → null.
 
 ### 6.3 Eval store (`src/stores/evalStore.ts`)
 
