@@ -486,26 +486,25 @@ class TestLoadCap:
 class TestExportLimit:
 
     def test_curtailment_when_export_exceeds_limit(self):
-        # Design: high wind + solar, no load, max_export=945 MW
-        # Run with very high generation pointing all to grid
-        # If gross export > 945, expect ren_curtailed_mw > 0 and p_export ≤ 945
-        action = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])  # all RE to grid
-        state = make_state(t=240)   # t=240 = noon
-        # High wind: v10 = 15 m/s → v_hub = 15×1.38985 = 20.85 m/s ∈ [12,25) → rated 615 MW
-        # High solar: G=1000, T=25 → 313.7 MW
-        # Total RE = 615 + 313.7 = 928.7 MW < 945 → NOT curtailed in this config
-        # Need more: reduce export limit in params for test clarity
+        # Design: high wind + solar, no load, max_export=600 MW (tight limit)
+        # gross RE > 600 MW → proportional curtailment
+        # Solar share: p_solar / (p_solar + p_wind) × curtailed; wind share: rest
         params_tight = GansuParams(grid_max_export_mw=600.0)
+        action = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])   # all RE to grid
+        state = make_state(t=240)    # t=240 = hour 0 of day 10, doesn't matter
         weather = (15.0, 1000.0, 25.0)
         result = env_step(state, action, weather, 0.0, params_tight)
         p_wind = wind_power(15.0, params_tight)
         p_solar = solar_power(1000.0, 25.0, params_tight)
-        gross_export = p_wind + p_solar   # no bat, no load
+        gross_export = p_wind + p_solar
         if gross_export > 600.0:
             assert result.p_export_mw == pytest.approx(600.0, rel=1e-5)
-            assert result.ren_curtailed_mw > 0.0
+            # solar_curtailed + wind_curtailed should equal total curtailment
+            total_curtailed = result.solar_curtailed_mw + result.wind_curtailed_mw
+            assert total_curtailed > 0.0
+            assert total_curtailed == pytest.approx(gross_export - 600.0, rel=1e-5)
             # Curtailment cost
-            expected_c_curtail = result.ren_curtailed_mw * 800.0 * 1.0
+            expected_c_curtail = total_curtailed * 800.0 * 1.0
             assert result.c_curtail_yuan == pytest.approx(expected_c_curtail, rel=1e-5)
 
     def test_no_curtailment_under_limit(self):
@@ -522,12 +521,23 @@ class TestExportLimit:
         # scale = 945/1000 = 0.945
         # wind_to_grid = 500×0.945 = 472.5; solar_to_grid = 300×0.945 = 283.5;
         # bat_to_grid = 200×0.945 = 189.0; total = 945.0 ✓
-        # curtailed = 1000 − 945 = 55 MW; C_curtail = 55 × 800 × 1 = 44000 ¥
+        # wind_curtailed = 500×(1−0.945) = 500×0.055 = 27.5 MW
+        # solar_curtailed = 300×0.055 = 16.5 MW
+        # bat_curtailed = 200×0.055 = 11.0 MW
+        # total_curtailed = 55 MW; C_curtail = 55 × 800 × 1 = 44000 ¥
         scale = 945.0 / 1000.0
         assert 500.0 * scale == pytest.approx(472.5, rel=1e-9)
         assert 300.0 * scale == pytest.approx(283.5, rel=1e-9)
         assert 200.0 * scale == pytest.approx(189.0, rel=1e-9)
-        assert (1000.0 - 945.0) * 800.0 * 1.0 == pytest.approx(44_000.0, rel=1e-9)
+        wind_curtailed = 500.0 * (1.0 - scale)
+        solar_curtailed = 300.0 * (1.0 - scale)
+        bat_curtailed = 200.0 * (1.0 - scale)
+        assert wind_curtailed == pytest.approx(27.5, rel=1e-9)
+        assert solar_curtailed == pytest.approx(16.5, rel=1e-9)
+        assert bat_curtailed == pytest.approx(11.0, rel=1e-9)
+        total_curtailed = wind_curtailed + solar_curtailed + bat_curtailed
+        assert total_curtailed == pytest.approx(55.0, rel=1e-9)
+        assert total_curtailed * 800.0 * 1.0 == pytest.approx(44_000.0, rel=1e-9)
 
 
 # ===========================================================================
@@ -595,17 +605,19 @@ class TestEnergyConservation:
 
     def test_energy_conservation_wind_only(self):
         # All wind to grid, no solar, no battery
+        # wind_to_load + wind_to_bat + wind_to_grid + wind_curtailed = p_wind_mw (producer assert)
         action = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
         state = make_state(t=0)
-        weather = (6.0, 0.0, 0.0)   # v=6 m/s → P_wind = 128.4 MW
+        weather = (6.0, 0.0, 0.0)   # v=6 m/s, no solar
         result = env_step(state, action, weather, 60.0, PARAMS)
-        p_wind = wind_power(6.0, PARAMS)
-        # Wind accounting: to_load + to_bat + to_grid + curtailed = P_wind
-        wind_total = (result.wind_to_load_mw + result.wind_to_bat_mw
-                      + result.wind_to_grid_mw + result.ren_curtailed_mw * (p_wind / (p_wind + 1e-9)))
-        # Looser check: conservation within 1 MW float tolerance
-        assert result.wind_to_load_mw + result.wind_to_bat_mw + result.wind_to_grid_mw <= (
-            p_wind + 1e-5)
+        # Per-source conservation: wind_to_load + wind_to_bat + wind_to_grid + wind_curtailed == p_wind
+        wind_accounted = (result.wind_to_load_mw + result.wind_to_bat_mw
+                          + result.wind_to_grid_mw + result.wind_curtailed_mw)
+        assert wind_accounted == pytest.approx(result.p_wind_mw, rel=1e-5)
+        # Solar is zero (G=0), confirm per-source conservation holds trivially
+        solar_accounted = (result.solar_to_load_mw + result.solar_to_bat_mw
+                           + result.solar_to_grid_mw + result.solar_curtailed_mw)
+        assert solar_accounted == pytest.approx(result.p_solar_mw, abs=1e-9)
 
     def test_total_load_served_plus_unserved_equals_demand(self):
         # Every step: load_served + load_unserved = original load

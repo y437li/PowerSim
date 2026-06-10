@@ -121,7 +121,8 @@ class StepResult:
     bat_to_grid_mw:         float
     grid_to_load_mw:        float
     grid_to_bat_mw:         float   # grid supplement for battery charging (§3.2)
-    ren_curtailed_mw:       float   # from export-limit curtailment (§3.3 step 3)
+    solar_curtailed_mw:     float   # solar share of export-limit curtailment (proportional)
+    wind_curtailed_mw:      float   # wind share of export-limit curtailment (proportional)
     bat_curtailed_mw:       float   # battery discharge curtailed at export limit
     load_unserved_mw:       float   # §3.3 step 4, VOLL penalty
 
@@ -144,8 +145,11 @@ class StepResult:
     c_voll_yuan:                    float
     penalty_yuan:                   float   # SOC overshoot penalty (D13: separate from cost totals)
 
+    # Month-boundary demand charge (D10): 0 mid-month; = month_peak·demand_rate at month-end/episode-end
+    c_demand_charge_yuan:           float   # real ¥ demand charge booked this step (≥ 0)
+
     # D13: two independently-reconstructable totals
-    cost_total_real_yuan:           float   # real-money: C_E + monthly_demand + C_deg + C_curtail + C_VOLL
+    cost_total_real_yuan:           float   # real-money: C_E + c_demand_charge + C_deg + C_curtail + C_VOLL
     cost_total_reward_basis_yuan:   float   # reward-basis: C_E + 2·C_DC_shape + C_deg + C_curtail + C_VOLL
 
     # Reward
@@ -539,10 +543,13 @@ Total: 11 + 96 = 107 dims ✓
 8. **Price at 10:29** → peak (620); **10:30** → critical peak (780). D8.
 9. **Spread noise = −40** → effective_spread = 0 → price_sell = price_buy (D7).
 10. **Price_buy = 20, spread = 30** → price_sell = 0 (clamped, D7).
-11. **Export exceeds limit** → proportional curtailment, C_curtail > 0.
+11. **Export exceeds limit** → proportional curtailment, `solar_curtailed_mw` + `wind_curtailed_mw` + `bat_curtailed_mw` > 0.
 12. **Import exceeds 400 MW** → load shed, C_VOLL > 0.
-13. **Energy conservation:** for each source x: flows_to_load + flows_to_bat + flows_to_grid + curtailed = P_x (within 1e-9 MW).
+13. **Per-source energy conservation (producer assert, §3.6 row 14):**
+    - `wind_to_load + wind_to_bat + wind_to_grid + wind_curtailed == p_wind_mw` (within 1e-9 MW)
+    - `solar_to_load + solar_to_bat + solar_to_grid + solar_curtailed == p_solar_mw` (within 1e-9 MW)
 14. **Determinism:** same seed → same year arrays; same state + action → same StepResult.
+15. **`c_demand_charge_yuan`** is 0 on every step except the month-end/episode-end flush (D10 — the real monthly demand charge `month_peak · demand_rate` is booked exactly once per calendar month; `c_demand_shape_yuan` is the incremental reward-shaping signal every step).
 
 ---
 

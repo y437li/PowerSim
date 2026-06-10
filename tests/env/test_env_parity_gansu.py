@@ -118,6 +118,20 @@ class TestReferenceConsistency:
             assert total == pytest.approx(load_mw, rel=1e-4), (
                 f"Step {i}: served+unserved={total:.4f} ≠ demand={load_mw:.4f}")
 
+    def test_per_source_energy_conservation(self, episode_rollout):
+        # Per-source conservation (§3.6 row 14, producer assert):
+        # wind: to_load + to_bat + to_grid + wind_curtailed == p_wind_mw
+        # solar: to_load + to_bat + to_grid + solar_curtailed == p_solar_mw
+        for i, r in enumerate(episode_rollout):
+            wind_sum = (r.wind_to_load_mw + r.wind_to_bat_mw
+                        + r.wind_to_grid_mw + r.wind_curtailed_mw)
+            assert wind_sum == pytest.approx(r.p_wind_mw, rel=1e-5, abs=1e-6), (
+                f"Step {i}: wind conservation violated: {wind_sum:.6f} ≠ {r.p_wind_mw:.6f}")
+            solar_sum = (r.solar_to_load_mw + r.solar_to_bat_mw
+                         + r.solar_to_grid_mw + r.solar_curtailed_mw)
+            assert solar_sum == pytest.approx(r.p_solar_mw, rel=1e-5, abs=1e-6), (
+                f"Step {i}: solar conservation violated: {solar_sum:.6f} ≠ {r.p_solar_mw:.6f}")
+
     def test_import_never_exceeds_limit(self, episode_rollout):
         for i, r in enumerate(episode_rollout):
             assert r.p_import_mw <= PARAMS.grid_max_import_mw + 1e-6, (
@@ -348,7 +362,8 @@ class TestJaxReferenceParity:
             ("bat_to_grid_mw",         ref_result.bat_to_grid_mw),
             ("grid_to_load_mw",        ref_result.grid_to_load_mw),
             ("grid_to_bat_mw",         ref_result.grid_to_bat_mw),
-            ("ren_curtailed_mw",       ref_result.ren_curtailed_mw),
+            ("solar_curtailed_mw",     ref_result.solar_curtailed_mw),
+            ("wind_curtailed_mw",      ref_result.wind_curtailed_mw),
             ("load_unserved_mw",       ref_result.load_unserved_mw),
             ("p_bat_charge_mw",        ref_result.p_bat_charge_mw),
             ("p_bat_discharge_mw",     ref_result.p_bat_discharge_mw),
