@@ -850,3 +850,39 @@ describe("schema version handling", () => {
     expect(screen.getByText("RL Agent")).toBeInTheDocument();
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// REVIEWER-ADDED CASES (frontend-reviewer, 2026-06-10) — marked // reviewer:
+// High-confidence edge cases with explicit expected values per the contract's
+// stated formatting rules. (Other gaps — E17/1e9, best-tie, sub-thousand
+// rounding — need a contract decision first and are listed in the review record.)
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("reviewer: EvalCompareTable zero-value ¥ rendering", () => {
+  // reviewer: a 0-¥ cost component must render as "¥0", never blank — a blank cell
+  // reads as "missing data" on a cost table. Golden no_battery.degradation_yuan = 0
+  // and every policy's voll_yuan = 0, so ¥0 cells must appear.
+  it("renders a zero-¥ cost component as '¥0', not an empty cell", () => {
+    render(<EvalCompareTable latest={GOLDEN_EVAL} />);
+    expect(screen.getAllByText("¥0").length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("reviewer: formatThroughput edge values", () => {
+  // reviewer: startup emits 0 steps/s before the first batch; must not render "NaN/s"
+  // or blank. Per §4 rule "<1,000 → integer /s".
+  it("0 → '0/s'", () => {
+    expect(formatThroughput(0)).toBe("0/s");
+  });
+  it("999 → '999/s' (just below the k threshold)", () => {
+    expect(formatThroughput(999)).toBe("999/s");
+  });
+});
+
+describe("reviewer: formatWallSeconds sub-second truncation in the <60 branch", () => {
+  // reviewer: 184.2 → "3m 4s" pins truncation in the minutes branch; pin the same
+  // floor behavior just under a minute so 59.9 isn't rounded up to "1m 0s".
+  it("59.9 → '59s' (floor, consistent with 184.2 → '3m 4s')", () => {
+    expect(formatWallSeconds(59.9)).toBe("59s");
+  });
+});
