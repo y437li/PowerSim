@@ -1,0 +1,5 @@
+# tests/frontend_e2e/ — Playwright E2E browser tests
+# Area created by rl-architect DECISION (requested task #29; decision pending).
+# File naming convention: <feature>.spec.ts
+# First feature: smoke (playwright_harness contract)
+# Do not add .test.tsx files here — this area uses .spec.ts (Playwright convention).
