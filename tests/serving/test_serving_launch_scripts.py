@@ -501,6 +501,7 @@ def installed_serving_cpu(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("serving_install")
     # Copy minimal project to tmp
     shutil.copy(REPO_ROOT / "pyproject.toml", tmp / "pyproject.toml")
+    shutil.copytree(REPO_ROOT / "src", tmp / "src")  # required for uv pip install -e .
     shutil.copy(REPO_ROOT / "scripts" / "install_app.sh", tmp / "install_app.sh")
     os.chmod(tmp / "install_app.sh", 0o755)
     # Provide a minimal site yaml
@@ -928,6 +929,7 @@ class TestNoSecretsInScripts:
 def test_acceptance_serving_cpu_creates_venv_sh(tmp_path):
     """§9.5: install serving + cpu --no-launch produces a .venv with serving deps."""
     shutil.copy(REPO_ROOT / "pyproject.toml", tmp_path / "pyproject.toml")
+    shutil.copytree(REPO_ROOT / "src", tmp_path / "src")  # required for uv pip install -e .
     shutil.copy(INSTALL_SH, tmp_path / "install_app.sh")
     os.chmod(tmp_path / "install_app.sh", 0o755)
     # Minimal site yaml + checkpoint
@@ -965,6 +967,7 @@ def test_acceptance_serving_cpu_creates_venv_sh(tmp_path):
 def test_acceptance_training_no_node_sh(tmp_path):
     """§9.5: --server-type training --no-launch installs training deps and no Node/frontend."""
     shutil.copy(REPO_ROOT / "pyproject.toml", tmp_path / "pyproject.toml")
+    shutil.copytree(REPO_ROOT / "src", tmp_path / "src")  # required for uv pip install -e .
     shutil.copy(INSTALL_SH, tmp_path / "install_app.sh")
     os.chmod(tmp_path / "install_app.sh", 0o755)
     (tmp_path / "config").mkdir()
@@ -994,6 +997,7 @@ def test_acceptance_training_no_node_sh(tmp_path):
 def test_acceptance_serving_idempotent_second_run_sh(tmp_path):
     """§9.5: re-running serving install is idempotent (second run exits 0, no changes)."""
     shutil.copy(REPO_ROOT / "pyproject.toml", tmp_path / "pyproject.toml")
+    shutil.copytree(REPO_ROOT / "src", tmp_path / "src")  # required for uv pip install -e .
     shutil.copy(INSTALL_SH, tmp_path / "install_app.sh")
     os.chmod(tmp_path / "install_app.sh", 0o755)
     (tmp_path / "config").mkdir()
@@ -1125,6 +1129,7 @@ def test_acceptance_serving_venv_excludes_training_deps_sh(tmp_path):
     The existing test checks fastapi present; this one checks the other side.
     """
     shutil.copy(REPO_ROOT / "pyproject.toml", tmp_path / "pyproject.toml")
+    shutil.copytree(REPO_ROOT / "src", tmp_path / "src")  # required for uv pip install -e .
     shutil.copy(INSTALL_SH, tmp_path / "install_app.sh")
     os.chmod(tmp_path / "install_app.sh", 0o755)
     (tmp_path / "config").mkdir()
@@ -1239,6 +1244,7 @@ def test_acceptance_launch_exit5_on_bound_port_sh(tmp_path):
         pytest.skip("Could not bind a test socket for port-conflict test")
 
     shutil.copy(REPO_ROOT / "pyproject.toml", tmp_path / "pyproject.toml")
+    shutil.copytree(REPO_ROOT / "src", tmp_path / "src")  # required for uv pip install -e .
     shutil.copy(INSTALL_SH, tmp_path / "install_app.sh")
     os.chmod(tmp_path / "install_app.sh", 0o755)
     (tmp_path / "config").mkdir()
@@ -1286,6 +1292,7 @@ def test_acceptance_jax_importable_in_serving_venv_sh(tmp_path):
     Verifies that jax[cpu] (not just jaxlib[cpu]) was installed.
     """
     shutil.copy(REPO_ROOT / "pyproject.toml", tmp_path / "pyproject.toml")
+    shutil.copytree(REPO_ROOT / "src", tmp_path / "src")  # required for uv pip install -e .
     shutil.copy(INSTALL_SH, tmp_path / "install_app.sh")
     os.chmod(tmp_path / "install_app.sh", 0o755)
     (tmp_path / "config").mkdir()

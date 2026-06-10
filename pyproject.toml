@@ -33,7 +33,7 @@ training = [
     "optax>=0.2",
     "flax>=0.8",
     "orbax-checkpoint>=0.5",
-    "sbx>=0.14",
+    "sbx>=0.1.1",
     "numpy>=1.26",
     "scipy>=1.12",
 ]
@@ -58,7 +58,7 @@ dev = [
     "optax>=0.2",
     "flax>=0.8",
     "orbax-checkpoint>=0.5",
-    "sbx>=0.14",
+    "sbx>=0.1.1",
     "numpy>=1.26",
     "scipy>=1.12",
     "fastapi>=0.110",

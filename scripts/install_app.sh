@@ -316,6 +316,27 @@ case "$SERVER_TYPE" in
     full)     EXTRAS="${JAX_EXTRAS},training,serving" ;;
 esac
 
+# ── port-in-use pre-flight (fail fast before the install step) ───────────────
+# Defined here so it can be called both before install and at launch time.
+check_port_free() {
+    local port="$1" label="$2"
+    if command -v lsof &>/dev/null; then
+        if lsof -iTCP:"${port}" -sTCP:LISTEN &>/dev/null 2>&1; then
+            die 5 "$label port $port is already in use. Remediation: Use --${label,,}-port <other-port> or stop the existing process."
+        fi
+    fi
+}
+
+# Check ports early (before expensive install) when a launch will be attempted.
+if [[ $NO_LAUNCH -eq 0 ]]; then
+    if [[ "$SERVER_TYPE" == "serving" || "$SERVER_TYPE" == "full" || "$SERVER_TYPE" == "dev" ]]; then
+        check_port_free "$BACKEND_PORT" "Backend"
+    fi
+    if [[ "$SERVER_TYPE" == "dev" ]]; then
+        check_port_free "$FRONTEND_PORT" "Frontend"
+    fi
+fi
+
 # ── create / update virtualenv ────────────────────────────────────────────────
 if [[ ! -d ".venv" ]]; then
     info "Creating virtualenv (.venv)..."
@@ -362,15 +383,6 @@ fi
 
 mkdir -p ".run"
 declare -A PIDS=()
-
-check_port_free() {
-    local port="$1" label="$2"
-    if command -v lsof &>/dev/null; then
-        if lsof -iTCP:"${port}" -sTCP:LISTEN &>/dev/null 2>&1; then
-            die 5 "$label port $port is already in use. Remediation: Use --${label,,}-port <other-port> or stop the existing process."
-        fi
-    fi
-}
 
 # FastAPI backend (serving / full / dev)
 if [[ "$SERVER_TYPE" == "serving" || "$SERVER_TYPE" == "full" || "$SERVER_TYPE" == "dev" ]]; then
