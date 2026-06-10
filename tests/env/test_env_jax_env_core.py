@@ -886,3 +886,75 @@ class TestJITAndVmap:
         new_s2, obs2, r2, d2, _ = step(state, act, GANSU, synthetic_year)
         assert jnp.allclose(obs1, obs2, atol=1e-7)
         assert float(r1) == pytest.approx(float(r2), abs=1e-8)
+
+
+# ===========================================================================
+# 15. Reviewer-added cases (backend-reviewer, PR #33 round-3 gate)
+# ===========================================================================
+class TestReviewerAddedJaxCore:
+    """Cases added by backend-reviewer at the contract+tests gate (round-2 commit).
+
+    Hand-computed expected values shown in comments. These verify jnp.where
+    purity independently of the reference (jit/vmap value comparison) and pin a
+    demand-charge reset invariant the existing suite left loose.
+    """
+
+    def test_jit_step_matches_eager(self, synthetic_year):
+        # reviewer: §14 only checks jit COMPILES + output shapes, and
+        # reviewer: test_fixed_seed_determinism calls step twice on the SAME state
+        # reviewer: (trivially equal for any function). Neither catches a stray
+        # reviewer: data-dependent Python branch, which traces away under jit and
+        # reviewer: would make jit(step) != eager step. This pins value equality on
+        # reviewer: reward, new_state, obs, and representative EnvInfo fields.
+        # reviewer: The eager result IS the oracle — no magic number (purity check).
+        state = _state(soc=0.5, t=200, rng=jax.random.PRNGKey(55))
+        action = _action(a_bat=0.3, f_sl=0.4, f_sb=0.3, f_wl=0.5, f_wb=0.4, f_bl=0.6)
+        e_ns, e_obs, e_r, e_done, e_info = step(state, action, GANSU, synthetic_year)
+        j_ns, j_obs, j_r, j_done, j_info = jax.jit(step)(state, action, GANSU, synthetic_year)
+        assert float(j_r) == pytest.approx(float(e_r), rel=1e-6)
+        assert float(j_ns.soc) == pytest.approx(float(e_ns.soc), rel=1e-7)
+        assert float(j_ns.month_peak) == pytest.approx(float(e_ns.month_peak), rel=1e-7)
+        assert int(j_ns.t) == int(e_ns.t)
+        assert bool(j_done) == bool(e_done)
+        assert float(j_info.c_energy_yuan) == pytest.approx(float(e_info.c_energy_yuan), rel=1e-6)
+        assert float(j_info.p_import_mw) == pytest.approx(float(e_info.p_import_mw), rel=1e-6)
+        assert jnp.allclose(j_obs, e_obs, rtol=1e-6, atol=1e-6)
+
+    def test_vmap_step_over_batch(self, synthetic_year):
+        # reviewer: vmap(step, in_axes=(0,0,None,None)) over a batch of IDENTICAL
+        # reviewer: envs must give identical outputs across all lanes AND equal the
+        # reviewer: serial single-env result. §14 test_step_vmap_compiles only checks
+        # reviewer: output shapes, not lane-identity, so a non-vmap-safe construct
+        # reviewer: (e.g. an implicit reduction over the batch axis) would pass it.
+        # reviewer: Equality is self-referential — serial result is the oracle.
+        N = 8
+        single = _state(soc=0.5, t=100, rng=jax.random.PRNGKey(7))
+        action = _action(a_bat=0.3, f_sl=0.4, f_sb=0.3, f_wl=0.5, f_wb=0.4, f_bl=0.6)
+        batch_state = jax.tree_util.tree_map(
+            lambda x: jnp.broadcast_to(x, (N,) + x.shape), single)
+        batch_action = jnp.broadcast_to(action, (N, 6))
+        b_ns, b_obs, b_r, b_done, b_info = jax.vmap(step, in_axes=(0, 0, None, None))(
+            batch_state, batch_action, GANSU, synthetic_year)
+        # all lanes identical (identical inputs)
+        assert b_r.shape == (N,)
+        assert jnp.allclose(b_r, b_r[0], rtol=1e-7)
+        assert jnp.allclose(b_ns.soc, b_ns.soc[0], rtol=1e-7)
+        assert jnp.allclose(b_obs, b_obs[0], rtol=1e-7)
+        # equal to serial single-env step
+        s_ns, s_obs, s_r, s_done, s_info = step(single, action, GANSU, synthetic_year)
+        assert float(b_r[0]) == pytest.approx(float(s_r), rel=1e-6)
+        assert float(b_ns.soc[0]) == pytest.approx(float(s_ns.soc), rel=1e-7)
+
+    def test_month_peak_resets_to_exactly_zero_after_booking(self):
+        # reviewer: tightens TestDemandCharge.test_month_peak_resets_after_booking,
+        # reviewer: which only asserts new_month_peak < 300 — a buggy "reset to
+        # reviewer: P_import" (round-2 B-A: P_import ~= 50 here) would ALSO pass < 300.
+        # reviewer: Contract §5.3.7 invariant (2): new_month_peak == 0.0 EXACTLY after
+        # reviewer: a month-boundary booking. Step t=743 -> t=744 (Jan->Feb), load=50,
+        # reviewer: zero action -> P_import ~= 50; the post-booking peak must be 0
+        # reviewer: regardless of P_import. Hand value: 0.0.
+        data = jnp.zeros((8760, 4)).at[:, 3].set(50.0)
+        state = _state(soc=0.5, month_peak=300.0, t=743)
+        params = EnvParams(episode_len=8760)
+        new_state, _, _, _, _ = step(state, _zero_action(), params, data)
+        assert float(new_state.month_peak) == pytest.approx(0.0, abs=1e-6)

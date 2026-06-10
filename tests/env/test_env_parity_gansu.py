@@ -645,3 +645,53 @@ class TestJaxReferenceParity:
         assert jax_cum == pytest.approx(ref_cum, rel=1e-3), (
             f"Cumulative reward mismatch over {EVAL_STEPS} steps: "
             f"ref={ref_cum:.4f}, jax={jax_cum:.4f}")
+
+    # ------------------------------------------------------------------
+    # Month-boundary demand-charge parity  (reviewer-added, PR #33 round-3)
+    # ------------------------------------------------------------------
+
+    def test_month_boundary_demand_charge_parity(
+        self, jax_data, noiseless_jax_params, noiseless_ref_params
+    ):
+        # reviewer: closes the gap that hid round-2 blocker B-A. The parity suite
+        # reviewer: never cross-checked c_demand_charge, so a wrong JAX booking
+        # reviewer: formula (it booked P_import*rate instead of peak*rate, and reset
+        # reviewer: month_peak to P_import instead of 0) would NOT surface here.
+        # reviewer: Step t=743 = last January hour (Jan = 31*24 = 744 h -> t=0..743;
+        # reviewer: MONTH_OF_STEP[744]=Feb), so both impls book the demand charge.
+        # reviewer:
+        # reviewer: month_peak = 500 MW is chosen > grid_max_import_mw (400) so it
+        # reviewer: dominates P_import (which is import-capped at <=400) -> the booked
+        # reviewer: charge is deterministically max(500, P_import)*rate = 500*32000 =
+        # reviewer: 16,000,000 yuan on BOTH impls, independent of the actual P_import.
+        # reviewer: Asserts (1) the hand value, (2) cross-impl agreement, (3) both
+        # reviewer: reset month_peak to 0 after booking.
+        import jax.numpy as jnp
+        t = 743
+        mp = 500.0
+        rate = 32_000.0   # demand_rate_yuan_per_mw_month (EnvParams / GansuParams default)
+        expected = mp * rate   # 500 * 32000 = 16,000,000 yuan
+        action_np = np.zeros(6)
+
+        # JAX: data_jax[t] carries the weather/load
+        jax_state = self._jax_state(soc=0.5, month_peak=mp, t=t)
+        new_jax_state, _, _, _, info = jax_env.step(
+            jax_state, jnp.array(action_np), noiseless_jax_params, jax_data)
+
+        # Reference: fed the same weather/load that jax_data[t] carries
+        ref_state = make_ref_state(soc=0.5, month_peak_mw=mp, t=t)
+        weather = (float(jax_data[t, 0]), float(jax_data[t, 1]), float(jax_data[t, 2]))
+        load = float(jax_data[t, 3])
+        ref_result = env_step(ref_state, action_np, weather, load, noiseless_ref_params)
+
+        # (1) hand-anchored deterministic value (month_peak dominates P_import<=400)
+        assert float(info.c_demand_charge_yuan) == pytest.approx(expected, rel=PARITY_TOL), (
+            f"JAX c_demand_charge={float(info.c_demand_charge_yuan)} != {expected}")
+        assert ref_result.c_demand_charge_yuan == pytest.approx(expected, rel=PARITY_TOL), (
+            f"ref c_demand_charge={ref_result.c_demand_charge_yuan} != {expected}")
+        # (2) cross-impl agreement
+        assert float(info.c_demand_charge_yuan) == pytest.approx(
+            ref_result.c_demand_charge_yuan, rel=PARITY_TOL)
+        # (3) both reset month_peak to 0 after booking
+        assert float(new_jax_state.month_peak) == pytest.approx(0.0, abs=1e-4)
+        assert ref_result.new_state.month_peak_mw == pytest.approx(0.0, abs=1e-4)
