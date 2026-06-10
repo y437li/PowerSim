@@ -1449,3 +1449,39 @@ class TestInvariantHelpersEpisode:
             n_runs=3,
             tol=1e-12,
         )
+
+
+# ---------------------------------------------------------------------------
+# reviewer (backend-reviewer): D13 boundary divergence — explicit value-pin
+# (complements the dev's assert_cost_identities-at-boundary in test_month_boundary_*)
+# ---------------------------------------------------------------------------
+
+
+def test_d13_boundary_divergence_real_vs_reward_basis():
+    # reviewer: explicit pin of the D13 real-vs-reward divergence at a month boundary:
+    # reviewer: cost_total_real INCLUDES the monthly demand charge, cost_total_reward_basis
+    # reviewer: EXCLUDES it. The dev's assert_cost_identities(result) at the M1 boundary
+    # reviewer: covers this via identities 2+3; this pins the absolute values for readability.
+    # reviewer:
+    # reviewer: t=743 (Jan→Feb boundary), month_peak=80 MW, load=0, no RE/battery → import=0:
+    # reviewer:   hour = 743 % 24 = 23 → valley 250; c_import = 250×0 = 0; r_export = 0
+    # reviewer:   c_energy            = 0
+    # reviewer:   c_demand_charge     = new_month_peak(80) × 32000 = 2,560,000   (booked at boundary)
+    # reviewer:   c_demand_shape      = 32000 × max(0, 0 − 80)     = 0           (import < peak)
+    # reviewer:   cost_total_real         = 0 + 2,560,000 + 0 + 0 + 0 = 2,560,000  (INCLUDES charge)
+    # reviewer:   cost_total_reward_basis = 0 + 2·0      + 0 + 0 + 0 = 0          (EXCLUDES charge)
+    # reviewer:   reward = −(0 + 0)·1e-5 = 0
+    state = make_state(t=743, month_peak_mw=80.0)
+    result = env_step(state, np.zeros(6), (0.0, 0.0, 0.0), 0.0, PARAMS)
+
+    assert result.c_demand_charge_yuan == pytest.approx(2_560_000.0, rel=1e-9), (
+        f"boundary demand charge {result.c_demand_charge_yuan:.2f} ≠ 80×32000")
+    assert result.cost_total_real_yuan == pytest.approx(2_560_000.0, rel=1e-9), (
+        f"cost_total_real {result.cost_total_real_yuan:.2f} must INCLUDE the monthly charge")
+    assert result.cost_total_reward_basis_yuan == pytest.approx(0.0, abs=1e-6), (
+        f"cost_total_reward_basis {result.cost_total_reward_basis_yuan:.2f} must EXCLUDE the "
+        "monthly charge (D13): reward basis uses 2·c_demand_shape, never c_demand_charge")
+    assert (result.cost_total_real_yuan - result.cost_total_reward_basis_yuan) == pytest.approx(
+        result.c_demand_charge_yuan, rel=1e-9), (
+        "real − reward_basis must equal c_demand_charge_yuan at a boundary step")
+    assert result.reward == pytest.approx(0.0, abs=1e-9)
