@@ -1,6 +1,6 @@
 ---
 name: physics-invariants
-description: Run the Energy GO physics invariant battery — energy conservation, D13 cost identities, physical bounds, fixed-seed determinism. Use when implementing, reviewing, or QA-verifying any env physics code (reference implementation, JAX core, §10 enhancement toggles).
+description: Run the Energy GO physics invariant battery — energy conservation, D13 cost identities, physical bounds, fixed-seed determinism. Use when implementing, reviewing, or QA-verifying any env physics code (reference implementation, JAX core).
 ---
 
 # Physics Invariant Battery
@@ -16,7 +16,6 @@ Every env-physics PR must pass this battery in addition to its contract tests. "
 3. **Physical bounds, never violated post-enforcement** (§3.6 order): SOC ∈ [0.2, 0.9] (D4; overshoot must appear in `soc_violation_mwh`, not in SOC), export ≤ 945 MW Gansu default (D5), import ≤ 400 MW (D12), all flows ≥ 0.
 4. **Constraint enforcement order** is §3.6's: parse/clip actions → battery/SOC → cap flows-to-load → PCC export → grid import → costs. Spot-check with a scenario that triggers ≥2 constraints simultaneously.
 5. **Fixed-seed determinism** — same seed ⇒ bit-identical trajectory (JAX: identical across jit/no-jit and under vmap).
-6. **§10 toggles (E2/E5 etc.)** — with all enhancement toggles OFF, output is byte-identical to the unenhanced baseline; the Gansu parity case always runs toggles-OFF.
 
 ## How
 
