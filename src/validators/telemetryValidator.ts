@@ -178,8 +178,11 @@ const EvalComparePayloadSchema = z
     policies: z
       .object({
         rl: PolicyMetricsSchema,
+        // known v1.0.0 baseline policies — explicitly validated, not just passthrough
+        no_battery: PolicyMetricsSchema.optional(),
+        rule_based_tou: PolicyMetricsSchema.optional(),
       })
-      .passthrough(),
+      .passthrough(), // future policy keys pass through
   })
   .passthrough();
 
