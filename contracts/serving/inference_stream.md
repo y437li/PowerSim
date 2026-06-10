@@ -72,13 +72,26 @@ All commands are JSON text frames.
 ```json
 {"cmd": "pause"}
 ```
-- Ignored if already paused.  Error if no session started.
+- Halts stepping; keeps env state for resume.
+- If no session is active: server sends an error frame with `code: "no_session"`.
+- Ignored (no error) if already paused.
 
 ### `resume`
 ```json
 {"cmd": "resume"}
 ```
-- Ignored if already running.  Error if no session started.
+- Resumes stepping from where it paused.
+- If no session is active: server sends an error frame with `code: "no_session"`.
+- Ignored (no error) if already running.
+
+### `step`
+```json
+{"cmd": "step"}
+```
+- Advances exactly **one** env step and emits one `env_step` frame, then returns to
+  `paused` state.  Only valid while paused.
+- If not paused (state = running, ready, or stopped): server sends `code: "bad_state"`.
+- If no session is active: server sends `code: "no_session"`.
 
 ### `stop`
 ```json
@@ -142,15 +155,22 @@ exactly to the LOCKED `contracts/shared/telemetry_schema.json` v1.0.0.
 {
   "kind": "status",
   "state": "ready" | "running" | "paused" | "stopped",
+  "session_id": "550e8400-e29b-41d4-a716-446655440000" | null,
   "step": 42,
   "episode": 1,
   "run_id": "run_001" | null,
+  "site_id": "gansu" | null,
   "message": "optional human-readable string"
 }
 ```
 
 - `step` and `episode` — last completed step and current episode.  Both 0 at `ready`/`stopped`.
 - `run_id` — null at `ready` and `stopped` (no session active).
+- `site_id` — the active site ID from the `start` command; null if no session is active.
+  Allows the client to verify it is looking at the expected site.
+- `session_id` — a fresh UUID v4 assigned at each `start` command.  Null before first
+  `start` and after `stop`.  Enables the client to distinguish a new session from a
+  resumed one when the same `run_id` is restarted (prevents history mixing).
 - Sent on: connection open (state=ready), after start (state=running), after pause
   (state=paused), after resume (state=running), after stop (state=stopped).
 
@@ -159,13 +179,28 @@ exactly to the LOCKED `contracts/shared/telemetry_schema.json` v1.0.0.
 ```json
 {
   "kind": "error",
-  "code": "run_not_found" | "site_not_found" | "policy_not_found" | "already_running" | "no_session" | "internal",
+  "code": "run_not_found" | "site_not_found" | "policy_not_found" | "already_running"
+        | "no_session" | "bad_state" | "bad_command" | "invalid_message" | "internal",
   "message": "<human-readable description>"
 }
 ```
 
+Error code semantics:
+
+| code | trigger | closes WS? |
+|---|---|---|
+| `run_not_found` | `start` with unknown `run_id` | no |
+| `site_not_found` | `start` with unknown `site_id` | no |
+| `policy_not_found` | `start` but no `policy.npz`/`.onnx` in run dir | no |
+| `already_running` | `start` while session is already running or paused | no |
+| `no_session` | `pause`/`resume`/`step` with no active session | no |
+| `bad_state` | `step` when not paused, or other state-inappropriate command | no |
+| `bad_command` | message is valid JSON but `cmd` is unrecognised | no |
+| `invalid_message` | message is not valid JSON or missing required fields | no |
+| `internal` | unexpected server error | **yes** (code 1011) |
+
 After `code` = `"internal"`, the server closes the WebSocket with code 1011 (internal
-error).  Other error codes do not close the connection; the client may retry.
+error).  All other error codes leave the connection open; the client may retry.
 
 ## Normalization
 

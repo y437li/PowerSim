@@ -171,10 +171,14 @@ Identical response to `GET /runs/{run_id}` (below) for the run with the most rec
 
 Evaluation results for the run.  This is the LOCKED `eval_compare` payload from
 `checkpoints/{run_id}/eval_results.json` (same schema as
-`contracts/shared/telemetry_schema.json` `eval_compare.payload`).
+`contracts/shared/telemetry_schema.json` `eval_compare.payload`), served verbatim
+with a serving-added `"units"` key appended.
 
 ```json
 {
+  "eval_horizon_steps": 8760,
+  "checkpoint_id": "run_001",
+  "cost_basis": "real_money",
   "policies": {
     "rl": {
       "total_cost_yuan": 42000.0,
@@ -182,24 +186,61 @@ Evaluation results for the run.  This is the LOCKED `eval_compare` payload from
       "demand_charge_yuan": 3000.0,
       "degradation_yuan": 500.0,
       "curtailment_yuan": 200.0,
-      "voll_yuan": 300.0
+      "voll_yuan": 300.0,
+      "soc_violations_count": 0,
+      "soc_violation_mwh": 0.0,
+      "penalty_yuan": 0.0
     },
-    "no_battery": {...},
-    "rule_based_tou": {...}
+    "no_battery": {
+      "total_cost_yuan": 60000.0,
+      "energy_cost_yuan": 55000.0,
+      "demand_charge_yuan": 4000.0,
+      "degradation_yuan": 0.0,
+      "curtailment_yuan": 500.0,
+      "voll_yuan": 500.0,
+      "soc_violations_count": 0,
+      "soc_violation_mwh": 0.0,
+      "penalty_yuan": 0.0
+    },
+    "rule_based_tou": {
+      "total_cost_yuan": 50000.0,
+      "energy_cost_yuan": 44000.0,
+      "demand_charge_yuan": 4000.0,
+      "degradation_yuan": 1000.0,
+      "curtailment_yuan": 700.0,
+      "voll_yuan": 300.0,
+      "soc_violations_count": 0,
+      "soc_violation_mwh": 0.0,
+      "penalty_yuan": 0.0
+    }
   },
-  "eval_horizon_days": 365,
   "units": {
     "*.total_cost_yuan": "¥",
     "*.energy_cost_yuan": "¥",
     "*.demand_charge_yuan": "¥",
     "*.degradation_yuan": "¥",
     "*.curtailment_yuan": "¥",
-    "*.voll_yuan": "¥"
+    "*.voll_yuan": "¥",
+    "*.soc_violation_mwh": "MWh",
+    "*.penalty_yuan": "¥",
+    "eval_horizon_steps": "steps (1 step = 1 h per D3)"
   }
 }
 ```
 
-- The `policies` dict is a pass-through of `eval_results.json`; no transformation.
+Field notes:
+- `eval_horizon_steps` — integer, 8760 for a 365-day eval (D3: Δt = 1 h). **NOT
+  `eval_horizon_days`** — the LOCKED schema uses steps.
+- `checkpoint_id` — identifies the policy checkpoint that was evaluated.
+- `cost_basis: "real_money"` — total_cost_yuan is real-money sum (D13: excludes
+  penalty_yuan and the reward-shaping demand-shape term).
+- `soc_violations_count` / `soc_violation_mwh` / `penalty_yuan` — safety and
+  reward-basis metrics; reported for transparency but **excluded** from
+  `total_cost_yuan` per D13.
+- The `policies` dict plus top-level fields are a pass-through of `eval_results.json`;
+  the server appends a `"units"` key (not in the raw file).
+- Tests must wrap the payload (minus the `"units"` key) in an `eval_compare` message
+  envelope and call `validate(msg) == []` (D18 producer obligation).
 - Returns 404 if the run or `eval_results.json` is absent.
 
 ### `GET /runs/{run_id}/train_curve`

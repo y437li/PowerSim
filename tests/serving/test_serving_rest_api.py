@@ -91,7 +91,15 @@ RUN_METADATA = {
     "created_at": "2026-06-10T08:00:00Z",
 }
 
+# Eval results — LOCKED eval_compare.payload (D18):
+#   eval_horizon_steps: 8760 (= 365 days × 24 h, D3)
+#   cost_basis: "real_money" (D13 — real-money total excludes penalty_yuan and SOC penalty)
+#   Each policy_costs requires soc_violations_count, soc_violation_mwh, penalty_yuan
+#   (these are safety/reward-basis metrics, NOT included in total_cost_yuan per D13)
 EVAL_RESULTS = {
+    "eval_horizon_steps": 8760,
+    "checkpoint_id": "run_001",
+    "cost_basis": "real_money",
     "policies": {
         "rl": {
             "total_cost_yuan": 42000.0,
@@ -100,6 +108,9 @@ EVAL_RESULTS = {
             "degradation_yuan": 500.0,
             "curtailment_yuan": 200.0,
             "voll_yuan": 300.0,
+            "soc_violations_count": 0,
+            "soc_violation_mwh": 0.0,
+            "penalty_yuan": 0.0,
         },
         "no_battery": {
             "total_cost_yuan": 60000.0,
@@ -108,6 +119,9 @@ EVAL_RESULTS = {
             "degradation_yuan": 0.0,
             "curtailment_yuan": 500.0,
             "voll_yuan": 500.0,
+            "soc_violations_count": 0,
+            "soc_violation_mwh": 0.0,
+            "penalty_yuan": 0.0,
         },
         "rule_based_tou": {
             "total_cost_yuan": 50000.0,
@@ -116,9 +130,11 @@ EVAL_RESULTS = {
             "degradation_yuan": 1000.0,
             "curtailment_yuan": 700.0,
             "voll_yuan": 300.0,
+            "soc_violations_count": 0,
+            "soc_violation_mwh": 0.0,
+            "penalty_yuan": 0.0,
         },
     },
-    "eval_horizon_days": 365,
 }
 
 TRAIN_CURVE_RECORDS = [
@@ -478,6 +494,82 @@ class TestEvalResultsEndpoint:
                 assert r.status_code == 404
         finally:
             os.chdir(old_cwd)
+
+    def test_eval_payload_passes_validate(self, client):
+        """GET /runs/{run_id}/eval → wrap in eval_compare envelope → validate(msg) == [].
+
+        D18 producer obligation: the passthrough eval payload must conform to the LOCKED
+        eval_compare schema (eval_horizon_steps, checkpoint_id, cost_basis: "real_money",
+        policies with per-policy soc_violations_count / soc_violation_mwh / penalty_yuan).
+
+        The serving layer strips any serving-added keys (e.g. "units") before we wrap it,
+        since the telemetry envelope only carries the raw eval_compare.payload.
+        """
+        try:
+            from energy_go.telemetry.validate import validate  # type: ignore
+        except ImportError:
+            pytest.skip("energy_go.telemetry.validate not installed (task #23 must land first)")
+        r = client.get("/runs/run_001/eval")
+        assert r.status_code == 200
+        # Strip serving-added keys (e.g. "units") — the LOCKED payload has no "units" key
+        payload = {k: v for k, v in r.json().items() if k != "units"}
+        # Wrap payload in the eval_compare message envelope for schema validation
+        msg = {
+            "schema_version": "1.0.0",
+            "kind": "eval_compare",
+            "ts_utc": "2026-06-10T08:00:00Z",
+            "run_id": "run_001",
+            "seq": 0,
+            "payload": payload,
+        }
+        errs = validate(msg)
+        assert errs == [], (
+            "eval_compare message fails telemetry validation (LOCKED schema):\n"
+            + "\n".join(f"  - {e}" for e in errs)
+        )
+
+    def test_eval_has_eval_horizon_steps(self, client):
+        """eval_horizon_steps = 8760 (= 365 × 24, D3). LOCKED schema field."""
+        # expected: 8760 steps = 365 days × 24 h/day (D3: Δt = 1 h, eval episode length)
+        r = client.get("/runs/run_001/eval")
+        assert "eval_horizon_steps" in r.json(), (
+            "eval must expose eval_horizon_steps (LOCKED schema); "
+            "eval_horizon_days is wrong"
+        )
+        assert r.json()["eval_horizon_steps"] == 8760
+
+    def test_eval_has_checkpoint_id(self, client):
+        """checkpoint_id must be present in the eval response (LOCKED schema)."""
+        r = client.get("/runs/run_001/eval")
+        assert "checkpoint_id" in r.json()
+        assert r.json()["checkpoint_id"] == "run_001"
+
+    def test_eval_has_cost_basis_real_money(self, client):
+        """cost_basis must equal 'real_money' (D13/LOCKED schema)."""
+        r = client.get("/runs/run_001/eval")
+        assert r.json().get("cost_basis") == "real_money"
+
+    def test_eval_rl_has_soc_violations_count(self, client):
+        """Each policy_costs must expose soc_violations_count (integer ≥ 0)."""
+        r = client.get("/runs/run_001/eval")
+        rl = r.json()["policies"]["rl"]
+        assert "soc_violations_count" in rl, "policy_costs must have soc_violations_count"
+        assert isinstance(rl["soc_violations_count"], int)
+        assert rl["soc_violations_count"] >= 0
+
+    def test_eval_rl_has_soc_violation_mwh(self, client):
+        """Each policy_costs must expose soc_violation_mwh (float ≥ 0)."""
+        r = client.get("/runs/run_001/eval")
+        rl = r.json()["policies"]["rl"]
+        assert "soc_violation_mwh" in rl
+        assert rl["soc_violation_mwh"] >= 0.0
+
+    def test_eval_rl_has_penalty_yuan(self, client):
+        """Each policy_costs must expose penalty_yuan (float ≥ 0, NOT in total_cost_yuan per D13)."""
+        r = client.get("/runs/run_001/eval")
+        rl = r.json()["policies"]["rl"]
+        assert "penalty_yuan" in rl
+        assert rl["penalty_yuan"] >= 0.0
 
 
 # ===========================================================================

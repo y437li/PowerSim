@@ -65,7 +65,12 @@ site:
   demand_rate_yuan_per_mw_month: 35.0
 """
 
-# Canonical train_metrics frames for the mock harness to emit
+# Canonical train_metrics frames for the mock harness to emit.
+# Field names MUST match the LOCKED telemetry schema v1.0.0 (D18):
+#   global_step (not "step"), ent_coef (not "entropy_coef"),
+#   reward_scaled_mean (not "mean_reward"), reward_norm_mean (not "eval_reward"),
+#   plus wall_seconds, env_steps_per_sec, cost_total_real_mean_yuan,
+#   is_eval_checkpoint, checkpoint_id.
 MOCK_TRAIN_FRAMES = [
     {
         "schema_version": "1.0.0",
@@ -74,14 +79,17 @@ MOCK_TRAIN_FRAMES = [
         "run_id": "run_001",
         "seq": 0,
         "payload": {
-            "step": 1000,
-            "episode": 10,
-            "mean_reward": -0.52,
-            "eval_reward": None,
+            "global_step": 1000,
+            "wall_seconds": 12.5,
+            "env_steps_per_sec": 80.0,
             "actor_loss": 0.31,
             "critic_loss": 0.55,
-            "entropy_coef": 0.12,
-            "mean_episode_length": 168.0,
+            "ent_coef": 0.12,
+            "reward_scaled_mean": -0.52,
+            "reward_norm_mean": None,          # null = no eval checkpoint yet
+            "cost_total_real_mean_yuan": 42500.0,
+            "is_eval_checkpoint": False,
+            "checkpoint_id": None,
         },
     },
     {
@@ -91,14 +99,17 @@ MOCK_TRAIN_FRAMES = [
         "run_id": "run_001",
         "seq": 1,
         "payload": {
-            "step": 2000,
-            "episode": 20,
-            "mean_reward": -0.48,
-            "eval_reward": -0.49,
+            "global_step": 2000,
+            "wall_seconds": 25.0,
+            "env_steps_per_sec": 80.0,
             "actor_loss": 0.28,
             "critic_loss": 0.49,
-            "entropy_coef": 0.11,
-            "mean_episode_length": 168.0,
+            "ent_coef": 0.11,
+            "reward_scaled_mean": -0.48,
+            "reward_norm_mean": -0.49,         # eval result available at step 2000
+            "cost_total_real_mean_yuan": 41000.0,
+            "is_eval_checkpoint": True,
+            "checkpoint_id": "run_001/epoch_20",
         },
     },
 ]
@@ -362,49 +373,58 @@ class TestTrainingWSStream:
                 + "\n".join(f"  - {e}" for e in errs)
             )
 
-    def test_train_metrics_has_step(self, client):
+    def test_train_metrics_has_global_step(self, client):
+        """LOCKED schema field: global_step (not 'step')."""
         client.post("/training/start", json={"run_id": "run_001", "site_id": "gansu"})
         with client.websocket_connect("/ws/training/stream") as ws:
             ws.receive_text(timeout=5)
             frame = _recv_until(ws, "train_metrics", max_frames=30)
-            assert "step" in frame["payload"]
-
-    def test_train_metrics_has_mean_reward(self, client):
-        client.post("/training/start", json={"run_id": "run_001", "site_id": "gansu"})
-        with client.websocket_connect("/ws/training/stream") as ws:
-            ws.receive_text(timeout=5)
-            frame = _recv_until(ws, "train_metrics", max_frames=30)
-            assert "mean_reward" in frame["payload"]
-
-    def test_train_metrics_first_step_value(self, client):
-        """First train_metrics frame must have step=1000 (from MOCK_TRAIN_FRAMES[0])."""
-        # expected: step=1000 (hand-written in MOCK_TRAIN_FRAMES[0])
-        client.post("/training/start", json={"run_id": "run_001", "site_id": "gansu"})
-        with client.websocket_connect("/ws/training/stream") as ws:
-            ws.receive_text(timeout=5)
-            frame = _recv_until(ws, "train_metrics", max_frames=30)
-            assert frame["payload"]["step"] == 1000, (
-                f"Expected step=1000, got {frame['payload']['step']}"
+            assert "global_step" in frame["payload"], (
+                "train_metrics payload must have 'global_step' (LOCKED schema; "
+                "the field is NOT named 'step')"
             )
 
-    def test_train_metrics_mean_reward_first_frame(self, client):
-        """mean_reward = -0.52 for step=1000 (from MOCK_TRAIN_FRAMES[0])."""
+    def test_train_metrics_has_reward_scaled_mean(self, client):
+        """LOCKED schema field: reward_scaled_mean (not 'mean_reward')."""
+        client.post("/training/start", json={"run_id": "run_001", "site_id": "gansu"})
+        with client.websocket_connect("/ws/training/stream") as ws:
+            ws.receive_text(timeout=5)
+            frame = _recv_until(ws, "train_metrics", max_frames=30)
+            assert "reward_scaled_mean" in frame["payload"], (
+                "train_metrics payload must have 'reward_scaled_mean' (LOCKED schema; "
+                "not 'mean_reward')"
+            )
+
+    def test_train_metrics_first_global_step_value(self, client):
+        """First train_metrics frame must have global_step=1000 (MOCK_TRAIN_FRAMES[0])."""
+        # expected: global_step=1000 (hand-written in MOCK_TRAIN_FRAMES[0])
+        client.post("/training/start", json={"run_id": "run_001", "site_id": "gansu"})
+        with client.websocket_connect("/ws/training/stream") as ws:
+            ws.receive_text(timeout=5)
+            frame = _recv_until(ws, "train_metrics", max_frames=30)
+            assert frame["payload"]["global_step"] == 1000, (
+                f"Expected global_step=1000, got {frame['payload'].get('global_step')}"
+            )
+
+    def test_train_metrics_reward_scaled_mean_first_frame(self, client):
+        """reward_scaled_mean = -0.52 for global_step=1000 (MOCK_TRAIN_FRAMES[0])."""
         # expected: -0.52 (hand-written in MOCK_TRAIN_FRAMES[0])
         client.post("/training/start", json={"run_id": "run_001", "site_id": "gansu"})
         with client.websocket_connect("/ws/training/stream") as ws:
             ws.receive_text(timeout=5)
             frame = _recv_until(ws, "train_metrics", max_frames=30)
-            reward = frame["payload"]["mean_reward"]
+            reward = frame["payload"]["reward_scaled_mean"]
             assert abs(reward - (-0.52)) < 1e-9, f"Expected -0.52, got {reward}"
 
-    def test_train_metrics_eval_reward_null_first_frame(self, client):
-        """eval_reward is null for step=1000 (no eval yet in MOCK_TRAIN_FRAMES[0])."""
+    def test_train_metrics_reward_norm_mean_null_first_frame(self, client):
+        """reward_norm_mean is null for global_step=1000 (no eval checkpoint yet; MOCK[0])."""
+        # expected: null (is_eval_checkpoint=False in MOCK_TRAIN_FRAMES[0])
         client.post("/training/start", json={"run_id": "run_001", "site_id": "gansu"})
         with client.websocket_connect("/ws/training/stream") as ws:
             ws.receive_text(timeout=5)
             frame = _recv_until(ws, "train_metrics", max_frames=30)
-            assert frame["payload"]["eval_reward"] is None, (
-                "eval_reward must be null for step=1000"
+            assert frame["payload"]["reward_norm_mean"] is None, (
+                "reward_norm_mean must be null for global_step=1000 (no eval checkpoint)"
             )
 
     def test_stop_stream_closes_ws(self, client):

@@ -392,6 +392,51 @@ class TestErrorHandling:
                 f"error frame must have 'code' and 'message': {err}"
             )
 
+    # reviewer: no_session untested — pause/resume with no active session must emit code:"no_session"
+    def test_pause_without_session_returns_no_session_error(self, ws_client):
+        """pause before start → error frame with code='no_session' (no crash, no close)."""
+        with ws_client.websocket_connect("/ws/inference") as ws:
+            ws.receive_text(timeout=5)  # ready
+            ws.send_text(json.dumps({"cmd": "pause"}))
+            err = _recv_until(ws, "error", max_frames=10)
+            assert err.get("code") == "no_session", (
+                f"pause with no active session must return code='no_session', got {err.get('code')!r}"
+            )
+            assert "message" in err
+
+    # reviewer: no_session untested — pause/resume with no active session must emit code:"no_session"
+    def test_resume_without_session_returns_no_session_error(self, ws_client):
+        """resume before start → error frame with code='no_session' (no crash, no close)."""
+        with ws_client.websocket_connect("/ws/inference") as ws:
+            ws.receive_text(timeout=5)  # ready
+            ws.send_text(json.dumps({"cmd": "resume"}))
+            err = _recv_until(ws, "error", max_frames=10)
+            assert err.get("code") == "no_session", (
+                f"resume with no active session must return code='no_session', got {err.get('code')!r}"
+            )
+            assert "message" in err
+
+    # reviewer: bad_command / invalid_message error codes (per contract update)
+    def test_unknown_command_returns_bad_command_error(self, ws_client):
+        """Sending an unrecognised cmd → error frame with code='bad_command'."""
+        with ws_client.websocket_connect("/ws/inference") as ws:
+            ws.receive_text(timeout=5)  # ready
+            ws.send_text(json.dumps({"cmd": "fly_to_moon"}))
+            err = _recv_until(ws, "error", max_frames=10)
+            assert err.get("code") == "bad_command", (
+                f"unknown command must return code='bad_command', got {err.get('code')!r}"
+            )
+
+    def test_invalid_json_returns_invalid_message_error(self, ws_client):
+        """Sending malformed JSON → error frame with code='invalid_message'."""
+        with ws_client.websocket_connect("/ws/inference") as ws:
+            ws.receive_text(timeout=5)  # ready
+            ws.send_text("{this is not json")
+            err = _recv_until(ws, "error", max_frames=10)
+            assert err.get("code") == "invalid_message", (
+                f"malformed JSON must return code='invalid_message', got {err.get('code')!r}"
+            )
+
     def test_missing_policy_returns_policy_not_found_error(self, tmp_path):
         """Run dir exists but policy.npz and policy.onnx absent → policy_not_found."""
         (tmp_path / "config").mkdir()
@@ -533,3 +578,229 @@ class TestPolicyCaching:
                 errs = validate(frame)
                 assert errs == [], f"session {_session}: frame fails validate: {errs}"
                 ws.send_text(json.dumps({"cmd": "stop"}))
+
+
+# ===========================================================================
+# TestEpisodeBoundary
+# reviewer: seq only checked within episode 0 — add a test crossing the
+#   168-step boundary: seq does NOT reset, episode increments.
+# ===========================================================================
+
+class TestEpisodeBoundary:
+    def test_seq_does_not_reset_at_episode_boundary(self, ws_client):
+        """seq is globally monotonic — does NOT reset when episode increments at step 168 (D3).
+
+        Episode 0: steps  0 … 167  (168 steps per D3)
+        Episode 1: steps 168 … 335
+
+        Collect 170 env_step frames; verify:
+          - seq at index 168 == 168  (seq must NOT reset to 0 at the episode boundary)
+          - seq at index 169 == 169
+          - payload.episode at frame 168 == 1  (second episode started)
+        """
+        N = 170
+        frames = []
+        with ws_client.websocket_connect("/ws/inference") as ws:
+            ws.receive_text(timeout=5)  # ready
+            ws.send_text(_start_cmd(speed=0.0))
+            while len(frames) < N:
+                raw = ws.receive_text(timeout=30)
+                msg = json.loads(raw)
+                if msg.get("kind") == "env_step":
+                    frames.append(msg)
+
+        # seq must be strictly monotonic across the episode boundary
+        # expected: seq[168] == 168 (NOT 0 — episode boundary must not reset seq)
+        assert frames[168]["seq"] == 168, (
+            f"seq must be 168 at the first step of episode 1, "
+            f"got {frames[168]['seq']} — seq MUST NOT reset at episode boundary"
+        )
+        assert frames[169]["seq"] == 169, (
+            f"seq at frame 170 must be 169, got {frames[169]['seq']}"
+        )
+        # payload.episode increments at step 168 (= 7 * 24 steps, D3)
+        # expected: episode=1 at frames[168] (the 169th frame, index 168)
+        assert frames[168]["payload"]["episode"] == 1, (
+            f"payload.episode must be 1 at frame index 168 (episode 0 = steps 0-167 per D3), "
+            f"got {frames[168]['payload']['episode']}"
+        )
+
+    def test_seq_monotonic_across_full_boundary_window(self, ws_client):
+        """Verify strict monotonicity for all 170 frames spanning the episode boundary."""
+        N = 170
+        frames = []
+        with ws_client.websocket_connect("/ws/inference") as ws:
+            ws.receive_text(timeout=5)
+            ws.send_text(_start_cmd(speed=0.0))
+            while len(frames) < N:
+                raw = ws.receive_text(timeout=30)
+                msg = json.loads(raw)
+                if msg.get("kind") == "env_step":
+                    frames.append(msg)
+
+        seqs = [f["seq"] for f in frames]
+        for i in range(1, len(seqs)):
+            assert seqs[i] == seqs[i - 1] + 1, (
+                f"seq not strictly monotonic at frame {i}: {seqs[max(0,i-3):i+2]}"
+            )
+
+
+# ===========================================================================
+# TestPolicyForwardPass
+# reviewer: policy forward-pass never verified — add: known policy.npz +
+#   known obs → served action == reference forward (tanh hidden, identity
+#   output, clip[-1,1]) within 1e-5.
+# ===========================================================================
+
+class TestPolicyForwardPass:
+    """Verify the serving layer's MLP forward pass matches the reference.
+
+    Reference (tanh hidden layers, identity output layer, clip to [-1, 1]):
+        h_0    = tanh(obs  @ w_0 + b_0)
+        h_1    = tanh(h_0  @ w_1 + b_1)
+        out    = h_1  @ w_2 + b_2          (identity — no tanh on the last layer)
+        action = clip(out, -1.0, 1.0)
+
+    The serving module must expose `policy_forward(weights: dict, obs: np.ndarray)` as
+    a public utility so tests can verify it independently of the WebSocket session.
+    """
+
+    @staticmethod
+    def _reference_forward(weights: dict, obs: "np.ndarray") -> "np.ndarray":
+        """Pure-NumPy reference: tanh hidden, identity output, clip[-1,1]."""
+        n_layers = max(int(k[2:]) for k in weights if k.startswith("w_")) + 1
+        h = obs.astype(np.float32)
+        for i in range(n_layers):
+            h = h @ weights[f"w_{i}"] + weights[f"b_{i}"]
+            if i < n_layers - 1:
+                h = np.tanh(h)          # tanh for every hidden layer
+            # final layer: identity (no activation applied)
+        return np.clip(h, -1.0, 1.0)
+
+    def test_known_weights_match_reference_forward(self, tmp_path):
+        """
+        Known policy.npz + known obs → serving layer action == reference within 1e-5.
+
+        Architecture: obs_dim=3, hidden=4, action_dim=2 (2-hidden-layer MLP)
+            Layer 0 (hidden): h0 = tanh(obs @ w_0 + b_0)
+            Layer 1 (hidden): h1 = tanh(h0  @ w_1 + b_1)
+            Layer 2 (output): out = h1 @ w_2 + b_2  (identity activation)
+            action = clip(out, -1.0, 1.0)
+
+        Weights chosen so all intermediate values are well within float32 range
+        and the reference result is easy to sanity-check at this small scale.
+        """
+        from energy_go.serving.inference_stream import policy_forward  # type: ignore
+
+        # Small fixed weights — deterministic and hand-verifiable
+        w_0 = np.array(
+            [[ 0.5, -0.3,  0.1,  0.2],
+             [ 0.4,  0.1, -0.2,  0.3],
+             [-0.1,  0.2,  0.3, -0.4]], dtype=np.float32)   # shape (3, 4)
+        b_0 = np.array([ 0.1, -0.2,  0.3, -0.1], dtype=np.float32)   # shape (4,)
+
+        w_1 = np.array(
+            [[ 0.2, -0.1,  0.3,  0.1],
+             [-0.3,  0.2,  0.1, -0.2],
+             [ 0.1,  0.4, -0.2,  0.3],
+             [ 0.4, -0.3,  0.2,  0.1]], dtype=np.float32)  # shape (4, 4)
+        b_1 = np.array([ 0.1, -0.1,  0.2, -0.2], dtype=np.float32)   # shape (4,)
+
+        w_2 = np.array(
+            [[ 0.5,  0.3],
+             [-0.2,  0.4],
+             [ 0.1, -0.3],
+             [ 0.4,  0.2]], dtype=np.float32)               # shape (4, 2)
+        b_2 = np.zeros(2, dtype=np.float32)                 # shape (2,)
+
+        obs = np.array([0.5, -0.3, 0.8], dtype=np.float32)
+
+        # Reference forward — must match exactly what the serving layer does:
+        #   h0   = tanh(obs @ w_0 + b_0)
+        #   h1   = tanh(h0  @ w_1 + b_1)
+        #   out  =  h1  @ w_2 + b_2     (identity output — no tanh here)
+        #   action = clip(out, -1.0, 1.0)
+        weights = {"w_0": w_0, "b_0": b_0,
+                   "w_1": w_1, "b_1": b_1,
+                   "w_2": w_2, "b_2": b_2}
+        expected = self._reference_forward(weights, obs)
+        served   = policy_forward(weights, obs)
+
+        np.testing.assert_allclose(
+            served, expected, atol=1e-5,
+            err_msg=(
+                f"Serving layer action differs from reference.\n"
+                f"Expected: {expected}\n"
+                f"Got:      {served}\n"
+                "Likely causes: wrong activation (should be tanh hidden, identity output), "
+                "missing clip, or wrong layer order."
+            ),
+        )
+
+    def test_output_is_clipped_to_unit_interval(self, tmp_path):
+        """Large weights → pre-clip output >> 1; after clip must be exactly ±1.0.
+
+        1-layer MLP (input→output directly, no hidden):
+            out = obs @ w_0 + b_0      (identity activation on single layer)
+            action = clip(out, -1.0, 1.0)
+
+        obs=[1.0, 1.0], w_0=[[100, -200],[50, 75]], b_0=[0,0]:
+            pre-clip = [1*100 + 1*50, 1*(-200) + 1*75] = [150, -125]
+            clipped  = [1.0, -1.0]
+        """
+        from energy_go.serving.inference_stream import policy_forward  # type: ignore
+
+        # 1-layer MLP: obs_dim=2, action_dim=2 (no hidden layer — w_0 is output layer)
+        # pre-clip: obs @ w_0 + b_0 = [1*100+1*50, 1*(-200)+1*75] = [150, -125]
+        # clipped:  [1.0, -1.0]
+        w_0 = np.array([[100.0, -200.0],
+                         [ 50.0,   75.0]], dtype=np.float32)  # shape (2, 2)
+        b_0 = np.zeros(2, dtype=np.float32)
+        obs = np.array([1.0, 1.0], dtype=np.float32)
+
+        weights = {"w_0": w_0, "b_0": b_0}
+        served = policy_forward(weights, obs)
+
+        assert served[0] == pytest.approx(1.0,  abs=1e-6), (
+            f"positive saturation must clip to 1.0, got {served[0]}"
+        )
+        assert served[1] == pytest.approx(-1.0, abs=1e-6), (
+            f"negative saturation must clip to -1.0, got {served[1]}"
+        )
+
+    def test_single_hidden_layer_uses_tanh_not_relu(self, tmp_path):
+        """Verify hidden activation is tanh (not ReLU or identity).
+
+        Construct an obs + weights where tanh(x) ≠ relu(x) for x in the hidden layer.
+        With x=-0.5: tanh(-0.5)≈-0.462, relu(-0.5)=0.0.
+        If the serving layer uses relu, the output will differ from the tanh reference.
+        """
+        from energy_go.serving.inference_stream import policy_forward  # type: ignore
+
+        # 2-layer MLP: obs_dim=1, hidden=1, action_dim=1
+        # Layer 0 (hidden): h0 = tanh(obs @ w_0 + b_0) = tanh(1.0 * (-0.5) + 0) = tanh(-0.5)
+        # Layer 1 (output): out = h0 @ w_1 + b_1 = tanh(-0.5) * 1.0 + 0 (identity output)
+        # tanh(-0.5) ≈ -0.46211716  →  clipped to -0.46211716  (within [-1,1])
+        w_0 = np.array([[-0.5]], dtype=np.float32)    # (1, 1)
+        b_0 = np.array([0.0],  dtype=np.float32)      # (1,)
+        w_1 = np.array([[ 1.0]], dtype=np.float32)    # (1, 1)
+        b_1 = np.array([0.0],  dtype=np.float32)      # (1,)
+        obs = np.array([1.0],  dtype=np.float32)
+
+        # Reference: tanh(-0.5) ≈ -0.46211716
+        # If relu were used: relu(-0.5) = 0.0, so output = 0.0 (wrong)
+        weights  = {"w_0": w_0, "b_0": b_0, "w_1": w_1, "b_1": b_1}
+        expected = self._reference_forward(weights, obs)   # ≈ -0.46211716
+        served   = policy_forward(weights, obs)
+
+        np.testing.assert_allclose(served, expected, atol=1e-5,
+            err_msg=(
+                f"Hidden activation is wrong (expected tanh≈{expected[0]:.6f}, "
+                f"got {served[0]:.6f}). "
+                "Possible cause: ReLU or identity activation used for hidden layer."
+            ))
+        # Sanity: result is negative (tanh(-0.5) < 0); relu(-0.5)=0 would fail this
+        assert served[0] < 0, (
+            f"tanh(-0.5) must be negative (≈-0.462); got {served[0]:.6f} — "
+            "likely relu used instead of tanh"
+        )
