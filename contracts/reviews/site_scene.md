@@ -110,3 +110,38 @@ conditional on the telemetry LOCK re-check.
 (a) the 4 must-fix items addressed (esp. the store-mock harness so component tests inject real
 telemetry), and (b) the telemetry LOCK (migrate `ren_curtailed_mw`→split, re-verify all
 PENDING_LOCK fixtures). Stage-2 implementation audit on PR-ready.
+
+---
+
+## Re-review (stage 1b) — 2026-06-10 — VERDICT: REQUEST_CHANGES (2 of 4 must-fix remain)
+
+Re-reviewed commit 7bbc584 ("sync to locked telemetry schema v1.0.0"). Verified against code.
+
+**Resolved (threads replied + resolved):**
+- **Must-fix 3 (curtailment split):** DONE — §4.3 splits into `solar_curtailed_mw` (PV centroid)
+  + `wind_curtailed_mw` (turbine-field centroid), each independently sized; §3.1 table, fixtures,
+  and 3 curtailment tests updated.
+- **Cubic→linear note:** DONE — §6 states the rotor omega uses the linear formula.
+- **Bonus, credited:** full telemetry-lock sync (`generation` block, `battery.p_max_*`,
+  `pcc.max_import_mw` per-site D12, sim-clock from `sim_time_utc`), a finiteness guard (§3.3) with
+  6 tests, and gross-generation label tests. My 6 reviewer tests are substantively intact (only the
+  conservation comment header updated to "LOCKED v1.0.0").
+
+**STILL OPEN (blocking):**
+- **Must-fix 1 (component tests don't inject telemetry):** UNRESOLVED. The flow/stale/direction
+  tests still render `<SiteScene>` with the envStep only in comments (line ~474 "injects an envStep
+  via the mock telemetryStore", ~585 "Mock telemetryStore.wsStatus") — no `vi.mock`, no dispatch.
+  The store API is now LOCKED (app_shell §6.1 approved), so the mock shape is known; a concrete
+  `vi.mock(telemetryStore)` + `__set(envStep)` harness sketch is in the inline reply. Until each
+  test sets the exact envStep it references, the data binding is unverified.
+- **Must-fix 2 (§4.2 upper clamp):** UNRESOLVED. §4.2 still reads `normalized = flow_mw/site_max_mw`
+  with no clamp; only the `flow<0→0` lower guard is listed. Tests (mine + dev lines 354/382/766)
+  assert the 6.0/3.0 cap and the `site_max==0` finite guard. Add `normalized = clamp(.., 0, 1)` +
+  the `site_max==0→0` bullet.
+- **Must-fix 4 (import-denominator binding):** PARTIAL — my pure-function tests pin
+  `calcFlowWidth(200,400)=3.25`; the binding assertion (import line passes 400, not site_max) still
+  depends on the must-fix-1 harness.
+
+**Verdict: REQUEST_CHANGES.** Re-request when must-fix 1 + 2 land (4's binding rides on 1).
+This is round 2 — incompleteness, not disagreement; if must-fix 1/2 are contested rather than
+done next round, it escalates to rl-architect per the deadlock rule.
