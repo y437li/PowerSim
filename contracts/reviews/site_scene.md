@@ -113,35 +113,38 @@ PENDING_LOCK fixtures). Stage-2 implementation audit on PR-ready.
 
 ---
 
-## Re-review (stage 1b) — 2026-06-10 — VERDICT: REQUEST_CHANGES (2 of 4 must-fix remain)
+## Re-review (stage 1b) — 2026-06-10 — VERDICT: APPROVE
 
-Re-reviewed commit 7bbc584 ("sync to locked telemetry schema v1.0.0"). Verified against code.
+**Correction note:** an earlier draft of this section recorded REQUEST_CHANGES after reviewing the
+stale commit `7bbc584` (the lock-sync) and missing `5047497` ("address all 4 REQUEST_CHANGES
+must-fixes") on top of it. That assessment was wrong; corrected below against the actual tip
+`5047497`. The erroneous inline replies were also corrected on-thread.
 
-**Resolved (threads replied + resolved):**
-- **Must-fix 3 (curtailment split):** DONE — §4.3 splits into `solar_curtailed_mw` (PV centroid)
-  + `wind_curtailed_mw` (turbine-field centroid), each independently sized; §3.1 table, fixtures,
-  and 3 curtailment tests updated.
-- **Cubic→linear note:** DONE — §6 states the rotor omega uses the linear formula.
-- **Bonus, credited:** full telemetry-lock sync (`generation` block, `battery.p_max_*`,
-  `pcc.max_import_mw` per-site D12, sim-clock from `sim_time_utc`), a finiteness guard (§3.3) with
-  6 tests, and gross-generation label tests. My 6 reviewer tests are substantively intact (only the
-  conservation comment header updated to "LOCKED v1.0.0").
+Re-reviewed the branch tip `5047497`. Verified every must-fix against the code:
 
-**STILL OPEN (blocking):**
-- **Must-fix 1 (component tests don't inject telemetry):** UNRESOLVED. The flow/stale/direction
-  tests still render `<SiteScene>` with the envStep only in comments (line ~474 "injects an envStep
-  via the mock telemetryStore", ~585 "Mock telemetryStore.wsStatus") — no `vi.mock`, no dispatch.
-  The store API is now LOCKED (app_shell §6.1 approved), so the mock shape is known; a concrete
-  `vi.mock(telemetryStore)` + `__set(envStep)` harness sketch is in the inline reply. Until each
-  test sets the exact envStep it references, the data binding is unverified.
-- **Must-fix 2 (§4.2 upper clamp):** UNRESOLVED. §4.2 still reads `normalized = flow_mw/site_max_mw`
-  with no clamp; only the `flow<0→0` lower guard is listed. Tests (mine + dev lines 354/382/766)
-  assert the 6.0/3.0 cap and the `site_max==0` finite guard. Add `normalized = clamp(.., 0, 1)` +
-  the `site_max==0→0` bullet.
-- **Must-fix 4 (import-denominator binding):** PARTIAL — my pure-function tests pin
-  `calcFlowWidth(200,400)=3.25`; the binding assertion (import line passes 400, not site_max) still
-  depends on the must-fix-1 harness.
+- **Must-fix 1 (component tests inject telemetry):** RESOLVED. A real
+  `vi.mock("../../src/stores/telemetryStore")` harness (`setEnvStep`/`setWsStatus`/`resetStore`,
+  auto-reset in `beforeEach`) is defined AND used: flow tests inject the exact envStep
+  (`wind_to_grid_mw=80` → asserts width `0.5+(80/945)·5.5 ≈ 0.9656`), curtailment split, VOLL,
+  null/stale/disconnected overlays, and battery direction all drive state through the harness.
+- **Must-fix 2 (§4.2 clamp):** RESOLVED. §4.2 now reads
+  `normalized = site_max_mw > 0 ? clamp(flow_mw/site_max_mw, 0, 1) : 0` with explicit
+  flow<0→0 / flow>site_max→1 bullets and the grid different-denominator note.
+- **Must-fix 3 (curtailment split):** RESOLVED. Separate `solar_curtailed_mw` (PV) and
+  `wind_curtailed_mw` (turbine-field) lines, independently sized; 3 tests incl. relative-width.
+- **Must-fix 4 (import-denominator binding):** RESOLVED. Binding test (line ~978) injects
+  `pcc.import_mw=200, max_import_mw=400` and asserts the import line `data-width ≈ 3.25`
+  (`0.5+(200/400)·5.5`), explicitly NOT the 1.664 site_max value.
+- **Should-fix bonus, credited:** battery charging/discharging/idle indicator tests added;
+  finiteness guard (§3.3) with tests; sim-clock keys off `sim_time_utc`; gross-generation labels;
+  full telemetry-lock field sync; rotor §6 stated linear. My 6 reviewer tests substantively intact.
 
-**Verdict: REQUEST_CHANGES.** Re-request when must-fix 1 + 2 land (4's binding rides on 1).
-This is round 2 — incompleteness, not disagreement; if must-fix 1/2 are contested rather than
-done next round, it escalates to rl-architect per the deadlock rule.
+**Non-blocking note:** the stale-freeze test (soc kept on `wsStatus→"stale"`) passes because the
+plain `vi.mock` hook isn't a reactive Zustand subscription, so post-render `setWsStatus` doesn't
+re-render — it can't distinguish "froze correctly" from "never updated." Acceptable for the gate;
+worth strengthening at implementation (force a re-render, assert no-change). Also still standing:
+`registry.json` is a SHARED contract needing rl-architect LOCK + backend-reviewer comment (no
+instance on the branch yet) — route separately; not a gate-1 blocker.
+
+**Verdict: APPROVE** (stage-1 contract+tests gate). Approved suite = developer cases + my 6
+reviewer cases. Implementation may proceed; stage-2 implementation audit on PR-ready.
