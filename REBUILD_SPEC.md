@@ -465,7 +465,7 @@ The role selects which dependency groups install and which processes launch. Map
 
 ## 10. Env-logic enhancements (proposal — opt-in, parity-preserving)
 
-**Status: PROPOSAL for user approval.** This section enumerates candidate enhancements to the simulation env logic beyond the current §3 plant and §8 asset library, each with mechanism, cost/benefit, and build-order impact, so the user can approve, trim, or reorder. Nothing here is binding until the user approves the specific items; approved items each become a numbered DECISION + their own contract + tests.
+**Status: user-approved with Tier-1 trim (2026-06-10, PR #9 / D17).** This section enumerated candidate enhancements to the simulation env logic beyond the current §3 plant and §8 asset library. The user **greenlit Tier 1 only — E2 (SOC/temperature efficiency) + E5 (forecast regime noise)** — for build; **E1/E4 are deferred candidates** (revisit after Tier 1) and **E3/E6 are parked** with the reasons stated below. Each approved enhancement still ships as its own numbered DECISION + contract + tests + parity regression, **sequenced AFTER the §3 reference-implementation baseline (D11) lands** — they are toggles (default OFF), so building them after parity never destabilizes the parity target.
 
 ### 10.0 Governing rules (apply to every enhancement below)
 
@@ -486,11 +486,11 @@ The role selects which dependency groups install and which processes launch. Map
 | **E5** | Forecast-error regime switching | Extend D6's linear `σ_h = σ_max·(h/H)` with a Markov **regime** (calm/stormy) modulating `σ_max`, and/or fat-tailed errors. Lives in `_get_obs` (D6), adds a regime state + key threading. | (extends D6 forecast-noise model) | Robustness to forecast blow-ups; the single biggest sim-to-real gap after "noise never applied" (already fixed by D6) | Low–medium. **Affects observations only, not physics/cost** — so per-step physics parity is unaffected; only the trajectory differs. |
 | **E6** | Richer curtailment / grid-interaction | Time-varying PCC acceptance (exogenous grid-availability signal) and/or curtailment hysteresis, replacing the static `max_export_mw` (D5). | "no min-import contracts" (partial) | Realistic congestion/curtailment economics | **Higher + boundary risk.** Needs a new exogenous generator, and the realistic version drifts toward voltage/congestion modeling that §3.6 explicitly excludes. Keep strictly to a scalar time-varying export cap if taken at all. |
 
-### 10.2 Recommended tiering (rl-architect's call — user may override)
+### 10.2 Decision (user-approved 2026-06-10, D17)
 
-- **Tier 1 — recommended first** (cheap, localized to §3, parity-safe, high value): **E2** (SOC/T efficiency) and **E5** (forecast regime noise). Neither changes the parity-year data; both are small jittable additions.
-- **Tier 2 — high value, moderate cost:** **E1** (battery aging as per-episode capacity DR) and **E4** (weather/load coupling — with the separate-seed guard so D11 parity is untouched).
-- **Tier 3 — defer:** **E3** (ramp limits — weak at Δt=1 h) and **E6** (dynamic grid — highest cost and the only candidate that risks the voltage/reactive boundary; if taken, restrict to a scalar export-cap signal).
+- **APPROVED for build — Tier 1:** **E2** (SOC/temperature efficiency) and **E5** (forecast regime noise). Cheap, localized to §3, parity-safe (neither changes the parity-year data); both small jittable additions. Build **after** the §3 reference baseline (D11); each as its own DECISION + contract + tests + parity regression.
+- **Deferred candidates (revisit after Tier 1):** **E1** (battery aging as per-episode capacity DR) and **E4** (weather/load coupling — would need the separate-seed guard so D11 parity is untouched). Not greenlit now; no work until reconsidered.
+- **Parked:** **E3** (ramp limits — weak at Δt=1 h, revisit only under a future 15-min Δt) and **E6** (dynamic grid — highest cost and the only candidate that risks the voltage/reactive boundary; if ever taken, restrict strictly to a scalar export-cap signal).
 
 ### 10.3 Per-enhancement deliverable (once approved)
 
