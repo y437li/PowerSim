@@ -21,7 +21,7 @@ Version pins live in `pyproject.toml` (Python) and `package.json` (frontend); th
 | **Backend tests** | **pytest** | `tests/<area>/test_<area>_<feature>.py` | CLAUDE.md conventions |
 | **Config** | **YAML** | `config/<site\|asset>_<name>.yaml`; site YAML composes assets and derives obs/action (§8.4) | REBUILD_SPEC §8; D2 |
 | **Telemetry wire format** | JSON per `contracts/shared/telemetry_schema.md` v1.0.0 (semver) | LOCKED; env_step / train_metrics / eval_compare | LOCKED PR #6; D3–D13 |
-| **Telemetry validation** | **JSON Schema** (draft 2020-12) `contracts/shared/telemetry_schema.json` + canonical examples; Python **`jsonschema`** ≥4.21; reference CLI `scripts/validate_telemetry.py`; frontend TS validator (ajv or zod) planned | machine-enforced field/identity conformance for all producers/consumers | PR #20 (D18) |
+| **Telemetry validation** | **JSON Schema** (draft 2020-12) `contracts/shared/telemetry_schema.json` + canonical examples; Python **`jsonschema`** ≥4.21; reference CLI `scripts/validate_telemetry.py`; frontend TS: **Zod** (`zod@^3.x`) in `src/validators/telemetryValidator.ts` | machine-enforced field/identity conformance for all producers/consumers | PR #20 (D18); Zod chosen PR task #24 (TypeScript-first, no JSON bundling) |
 | **CI** | **GitHub Actions** (`.github/workflows/ci.yml`) | Runs `scripts/check_conventions.sh`; gate via `scripts/check_pr_gate.sh` | setup commits; this PR |
 | **Install/launch** | `scripts/install_app.{sh,ps1}` + `run_app.{sh,ps1}`; Python via `uv`; Node LTS | macOS + Windows; server types dev/training/serving/full (§9) | REBUILD_SPEC §9 (PR #8) |
 
