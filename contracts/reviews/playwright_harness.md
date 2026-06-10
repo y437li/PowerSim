@@ -19,3 +19,17 @@
 2. `testMatch === '**/*.spec.ts'` (no collision with Vitest `*.test.ts`)
 
 Approved suite = author's 7 config-shape tests + these 2. Re-request when findings 1–2 land; smoke spec returns post-DECISION.
+
+---
+
+## Re-review (stage 1b) — 2026-06-10 — VERDICT: APPROVE (gate); functional acceptance deferred
+
+Re-review of 06a5b92. Both blockers resolved:
+1. S5 no longer vacuous — opens a real `new WebSocket(...)` via `page.evaluate()`, awaits error/close, asserts `pageErrors===0` (native connection-refused path).
+2. S2–S4 `consoleErrors===0` consistent — app shell doesn't auto-connect, so route loads see no WS activity; S5 drives its own isolated connection. Design note (smoke header) documents it; answers should-fix 3.
+- e2e area is sanctioned (D20 / PR #26) — team-lead correction noted; `smoke.spec.ts` has its home.
+- +1 reviewer smoke case (S6r: unknown route → 404 fallback, `pageErrors===0`).
+
+**Sole-gate note (QA-tooling, my APPROVE = acceptance):** functional evidence cannot run at this gate — no harness impl yet (`playwright.config.ts`/`errorCapture.ts` RED) and the app shell (PR #5) is unmerged, so nothing is servable. Final acceptance is conditional on, at the implementation commit (which also comes to me): `npm ci` + `npx playwright install chromium` succeed; `npm run test:e2e` runs S1–S5+S6r green vs the live dev server; an injected `console.error` surfaces in `error-report.ndjson` and fails S2/S3/S4; a fatal `throw` populates `pageErrors`; `playwright-report/` has results.json + HTML + on-failure screenshot.
+
+Verdict: APPROVE the contract+tests gate; I run the functional acceptance at implementation.

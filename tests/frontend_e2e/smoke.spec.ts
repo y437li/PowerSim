@@ -132,3 +132,17 @@ test(
     await expect(page.locator("body")).not.toBeEmpty();
   }
 );
+
+// reviewer (frontend-reviewer): a 404 route must render the app's fallback without a
+// page crash, and the capture fixture must record zero pageErrors on it. Extends route
+// coverage beyond S2–S4 (the happy routes) to the error-boundary/404 path.
+test("S6r: unknown route renders 404 fallback without a page crash", async ({ page, errorCapture }) => {
+  const response = await page.goto("/this-route-does-not-exist");
+  // SPA serves index.html (200) and the router renders the 404 fallback — not a server 404.
+  expect(response?.status()).toBe(200);
+  await expect(page.locator("body")).not.toBeEmpty();
+  // The app's own "Page not found" fallback (app_shell §2 routing) should be visible.
+  await expect(page.getByText(/not found/i)).toBeVisible();
+  // No unhandled exception on the fallback path.
+  expect(errorCapture.pageErrors).toHaveLength(0);
+});
