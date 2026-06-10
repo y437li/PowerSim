@@ -435,27 +435,36 @@ def assert_soc_dynamics(old_soc: float, result: Any, params: Any,
                        f"assert_soc_dynamics (no violation): soc_new={soc_new:.6f} ≠ "
                        f"soc_unconstrained={soc_unconstrained:.6f}")
     else:
-        # Violation: SOC must be at the boundary
-        if p_ch > 1e-9:
-            # Overcharge → clipped to soc_max
+        # Violation: SOC must be pinned to the boundary and violation must be > 0.
+        #
+        # NOTE: we intentionally do NOT reconstruct viol_expected here.
+        # p_bat_charge_mw / p_bat_discharge_mw are the POST-CLIP actual values.
+        # When SOC starts at the bound (e.g. soc==soc_max) the clip sets p_ch_actual=0
+        # even for an overcharge intent — so p_ch > 1e-9 is NOT a reliable discriminant.
+        # Instead we identify the hit bound by soc_new's proximity to each limit.
+        # The exact violation magnitude is unit-tested via battery_step directly.
+        if abs(soc_new - soc_max) < 1e-6:
+            # Overcharge → pinned to soc_max
             _assert_approx(soc_new, soc_max, 1e-9,
                            f"assert_soc_dynamics (overcharge violation): "
                            f"soc_new={soc_new:.6f} ≠ soc_max={soc_max}")
-            # violation_mwh = (soc_unconstrained - soc_max) × E_cap
-            viol_expected = (soc_unconstrained - soc_max) * E_cap
-            _assert_approx(soc_viol, viol_expected, tol,
-                           f"assert_soc_dynamics (overcharge violation energy): "
-                           f"soc_violation_mwh={soc_viol:.4f} ≠ expected={viol_expected:.4f}")
-        else:
-            # Over-discharge → clipped to soc_min
+            assert soc_viol > 0.0, (
+                f"assert_soc_dynamics: soc_violation_mwh={soc_viol:.6f} must be "
+                f"> 0 when SOC is clipped to soc_max ({soc_max})")
+        elif abs(soc_new - soc_min) < 1e-6:
+            # Over-discharge → pinned to soc_min
             _assert_approx(soc_new, soc_min, 1e-9,
                            f"assert_soc_dynamics (over-discharge violation): "
                            f"soc_new={soc_new:.6f} ≠ soc_min={soc_min}")
-            # violation_mwh = (soc_min - soc_unconstrained) × E_cap
-            viol_expected = (soc_min - soc_unconstrained) * E_cap
-            _assert_approx(soc_viol, viol_expected, tol,
-                           f"assert_soc_dynamics (over-discharge violation energy): "
-                           f"soc_violation_mwh={soc_viol:.4f} ≠ expected={viol_expected:.4f}")
+            assert soc_viol > 0.0, (
+                f"assert_soc_dynamics: soc_violation_mwh={soc_viol:.6f} must be "
+                f"> 0 when SOC is clipped to soc_min ({soc_min})")
+        else:
+            raise AssertionError(
+                f"assert_soc_dynamics: soc_violation_mwh={soc_viol:.6f} > 0 but "
+                f"soc_new={soc_new:.6f} is at neither soc_max={soc_max} nor "
+                f"soc_min={soc_min} — implementation inconsistency"
+            )
 
 
 # ---------------------------------------------------------------------------

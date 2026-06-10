@@ -50,12 +50,14 @@ from reference.gansu_params import GansuParams
 from reference.tariff import get_price
 
 # ---------------------------------------------------------------------------
-# JAX env imports (optional — tests are skipped until implemented)
+# JAX env imports (optional — Suite 2 tests are skipped until implemented)
 # ---------------------------------------------------------------------------
-jax_env = pytest.importorskip(
-    "energy_go.env.jax_env",
-    reason="JAX env not yet implemented; parity tests pending task #8",
-)
+try:
+    import energy_go.env.jax_env as jax_env  # type: ignore[import]
+    _JAX_ENV_AVAILABLE = True
+except ImportError:
+    jax_env = None  # type: ignore[assignment]
+    _JAX_ENV_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Shared constants
@@ -319,6 +321,13 @@ class TestJaxReferenceParity:
 
     Run on the Gansu config only — this is the D11 parity special case.
     """
+
+    # Skip the entire class when the JAX env is not yet implemented.
+    # Suite 1 (TestReferenceConsistency) always runs — it has no JAX dependency.
+    pytestmark = pytest.mark.skipif(
+        not _JAX_ENV_AVAILABLE,
+        reason="JAX env not yet implemented — parity tests pending",
+    )
 
     @pytest.fixture(scope="class")
     def jax_params(self):
