@@ -75,10 +75,10 @@ Maps directly to §9.2.
 
 | `--server-type` | `pyproject` extras groups installed | Processes launched (unless `--no-launch`) | Default `--accel` |
 |---|---|---|---|
-| `dev` | `jax-cpu` or `jax-gpu`, `training`, `serving`, `frontend-dev` | FastAPI (`--reload`) + Vite dev server | auto-detect: `gpu` if found, else `cpu` |
-| `training` | `jax-cpu` or `jax-gpu`, `training` | training/eval harness entrypoint | auto-detect |
+| `dev` | `jax-cpu` or `jax-gpu-cuda`/`jax-gpu-metal` (OS-selected), `training`, `serving`, `frontend-dev` | FastAPI (`--reload`) + Vite dev server | auto-detect: `gpu` if found, else `cpu` |
+| `training` | `jax-cpu` or `jax-gpu-cuda`/`jax-gpu-metal` (OS-selected), `training` | training/eval harness entrypoint | auto-detect |
 | `serving` | `jax-cpu`, `serving` | FastAPI serving locked telemetry stream + static bundle | `cpu` (always; even if GPU present, §9.2) |
-| `full` | `jax-cpu` or `jax-gpu`, `training`, `serving` | training harness + FastAPI + built frontend | auto-detect |
+| `full` | `jax-cpu` or `jax-gpu-cuda`/`jax-gpu-metal` (OS-selected), `training`, `serving` | training harness + FastAPI + built frontend | auto-detect |
 
 `serving` type: never installs training-only deps (`optax`, `flax`, `sbx`, `purejaxrl`). This keeps the serving image minimal per §9.2.
 
@@ -88,22 +88,26 @@ These groups are added to `pyproject.toml` under `[project.optional-dependencies
 
 | Group | Contents |
 |---|---|
-| `jax-cpu` | `jaxlib[cpu]>=0.4.25` |
-| `jax-gpu` | `jaxlib[cuda12]>=0.4.25` (Windows/Linux) or `jax-metal>=0.0.5` (macOS ARM) |
+| `jax-cpu` | `jax[cpu]>=0.4.25` (installs both the `jax` core package and the CPU `jaxlib` wheel in one extra) |
+| `jax-gpu-cuda` | `jax[cuda12]>=0.4.25` (Windows/Linux CUDA 12; installs `jax` core + CUDA jaxlib wheel) |
+| `jax-gpu-metal` | `jax>=0.4.25`, `jax-metal>=0.0.5` (macOS Apple Silicon Metal backend) |
 | `training` | `optax>=0.2`, `flax>=0.8`, `orbax-checkpoint>=0.5`, `sbx>=0.14` (or `purejaxrl` pinned ref), `numpy>=1.26`, `scipy>=1.12` |
 | `serving` | `fastapi>=0.110`, `uvicorn[standard]>=0.29`, `websockets>=12`, `onnxruntime>=1.17`, `pyyaml>=6.0`, `numpy>=1.26` |
 | `frontend-dev` | sentinel (lists Node requirement; script installs Node via Homebrew/winget, not pip) |
 | `dev` | `pytest>=8.0`, `pytest-xdist>=3.5`, `pytest-asyncio>=0.23`, `httpx>=0.27` (all of `training` + `serving` + `frontend-dev` + test tools) |
 
-All version pins must be consistent with STACK.md (once written, task #19 owns that file; for now the versions here are the floor pins from §9.5 and standard ecosystem).
+**JAX extras design note (B3 / reviewer non-blocking):** A single `jax-gpu` group cannot resolve per-OS without PEP 508 environment markers (`platform_system=='Darwin' and platform_machine=='arm64'`). Rather than add markers (which only work for pip, not `uv sync`), the contract splits into `jax-gpu-cuda` (Windows/Linux) and `jax-gpu-metal` (macOS ARM). The install scripts select the correct group via OS/arch detection at runtime. The original `jax-gpu` name is not used; tests reference `jax-gpu-cuda` and `jax-gpu-metal`.
+
+All version pins must be consistent with STACK.md (task #19 owns that file; the versions here are floor pins from §9.5 and the standard ecosystem).
 
 ---
 
 ## 5. `install_app` ordered steps (§9.3)
 
 1. **Preflight:** detect OS/arch; check/install Python (via `uv` preferred, `pyenv` fallback on macOS, winget fallback on Windows); install Node LTS only for `dev`/`serving`/`full`.
-   - Unsupported OS (not macOS or Windows): `exit 1` with message `"Unsupported OS: <name>. Supported: macOS, Windows."`.
-   - Unsupported arch: `exit 1` with `"Unsupported arch: <name>. Supported: x86_64, arm64."`.
+   - Unsupported OS (not macOS or Windows): `exit 2` with message `"ERROR [2]: Unsupported OS: <name>. Remediation: Supported OSes are macOS and Windows."`.
+   - Unsupported arch: `exit 2` with `"ERROR [2]: Unsupported arch: <name>. Remediation: Supported architectures are x86_64 and arm64."`.
+   - Toolchain install failure: `exit 2` with a message naming the tool and the remediation step.
 2. **Python env:** create `.venv/` in the project root via `uv venv` (or `python -m venv`). Idempotent: skip if `.venv/` already exists and Python version matches.
 3. **Dependency install:** `uv pip install -e ".[<extras>]"` with extras determined by server-type + accel (§4 above). Idempotent: up-to-date lock means no-op.
 4. **Config resolve:** validate `--site` YAML loads (Python `yaml.safe_load`). For `serving`/`full`: resolve `--checkpoint`; error with `"--checkpoint required for server-type <X>"` if absent and no default found at `.run/last_checkpoint`.
@@ -124,7 +128,7 @@ All version pins must be consistent with STACK.md (once written, task #19 owns t
 
 - **Auto-detect (macOS):** run `python -c "import jax; jax.devices('gpu')"` in the venv; success → GPU (Metal) available, else CPU.
 - **Auto-detect (Windows/Linux):** check for `nvidia-smi` in PATH; success → CUDA GPU present.
-- **`--accel gpu` on a box with no detected GPU:** `exit 1` with message `"GPU accelerator requested but no GPU detected. Use --accel cpu or install CUDA/Metal drivers. See STACK.md."`.
+- **`--accel gpu` on a box with no detected GPU:** `exit 6` with message `"ERROR [6]: GPU accelerator requested but no GPU detected. Remediation: Use --accel cpu or install CUDA/Metal drivers. See STACK.md."`.
 - **`--accel cpu` on any box:** always succeeds.
 - `serving` type always uses `cpu` regardless of `--accel`; a `--accel gpu` combined with `--server-type serving` prints a warning `"Note: serving type always uses CPU accelerator; --accel gpu ignored."` and continues.
 
@@ -205,3 +209,5 @@ These are machine-local; never committed to git (`.run/` is in `.gitignore`).
 
 - `serving` + `--accel gpu`: spec says `serving` default is `cpu` (§9.2). This contract makes it a warning + continue (not an error) when the user explicitly passes `--accel gpu` with `--server-type serving`, since the serving image is CPU-only regardless. The user is informed but not blocked.
 - Exit code table (§10): the spec does not enumerate exit codes beyond "exit non-zero". This contract assigns specific codes (1–6) so tests can assert them precisely. No behavioral change from the spec's perspective.
+- `jax-gpu` split into `jax-gpu-cuda` + `jax-gpu-metal`: the spec references a single `jax-gpu` group but a single group cannot resolve per-OS without PEP 508 markers (incompatible with `uv sync`). Splitting is a structural choice that has no user-visible effect — scripts select the right group automatically.
+- Exit code for unsupported OS/arch is `2` (preflight), not `1` (bad argument): OS/arch failures are distinguished from flag-parse errors so remediation messages can be more specific. §10 table is the normative definition.
