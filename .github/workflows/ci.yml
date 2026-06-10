@@ -31,14 +31,14 @@ jobs:
         run: |
           if [ -d tests ] && find tests -name 'test_*.py' | grep -q .; then
             if [ -f pyproject.toml ]; then
-              # Install only dev extras (no heavy jax/jaxlib); PYTHONPATH exposes src.
-              # Tests that require jax are skipped via pytest.importorskip.
-              pip install "pytest>=8.0" "pytest-xdist>=3.5" "jsonschema>=4.21"
-              PYTHONPATH=src pytest tests/ -q
+              # --no-deps skips the heavy jax/jaxlib install; we add the lightweight
+              # runtime deps manually.  Tests that need jax skip via pytest.importorskip.
+              pip install --no-deps -e .
+              pip install "pytest>=8.0" "pytest-xdist>=3.5" "jsonschema>=4.21" "numpy>=1.26"
             else
-              pip install pytest jax
-              pytest tests/ -q
+              pip install pytest jax numpy
             fi
+            pytest tests/ -q
           else
             echo "No Python tests yet — skipping"
           fi
