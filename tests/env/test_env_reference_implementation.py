@@ -969,16 +969,24 @@ class TestReward:
 class TestActionParsing:
 
     def test_fractions_renormalized_when_sum_exceeds_one(self):
-        # f_w→l = 0.8, f_w→b = 0.8, sum = 1.6 > 1 → renorm to 0.5 each
-        # Wind fraction: f_w→l / 1.6 = 0.5, f_w→b / 1.6 = 0.5
-        # Remaining = 0 → wind_to_grid = 0
-        action = np.array([0.0, 0.0, 0.0, 0.8, 0.8, 0.0])
+        # reviewer: CORRECTED through review (jax-env flagged a conflict with §3.2 / contract STEP 4).
+        # reviewer: f_w→l=0.8, f_w→b=0.8 (sum 1.6 > 1) → renormalize to 0.5 / 0.5 each (f_w→g=0).
+        # reviewer: ORIGINAL bug: it asserted wind_to_grid==0 with a_bat=0. But per §3.2 a_bat gates
+        # reviewer: ALL charging (P_target = a_bat·P_max = 0 → P_ch_from_gen=min(p_ren_to_bat,0)=0),
+        # reviewer: so the renewable allocated to battery is NOT absorbed and the f_w→b share spills
+        # reviewer: to grid → wind_to_grid ≈ 68 MW ≠ 0. The original setup could not exhibit renorm.
+        # reviewer: FIX: a_bat=1.0 so the f_w→b share is absorbed (soc=0.5 → no SOC clip), load=70 so
+        # reviewer: wind_to_load (≈64.2) is not load-capped. Renorm is then observable directly:
+        # reviewer:   p_wind = wind_power(6.0) ≈ 128.4 MW
+        # reviewer:   wind_to_load = p_wind·0.5 ≈ 64.2 ;  wind_to_bat = p_wind·0.5 ≈ 64.2 ;  wind_to_grid = 0
+        action = np.array([1.0, 0.0, 0.0, 0.8, 0.8, 0.0])  # a_bat=1.0, f_w→l=0.8, f_w→b=0.8
         state = make_state(t=0, soc=0.5)
         weather = (6.0, 0.0, 0.0)   # only wind
-        result = env_step(state, action, weather, 60.0, PARAMS)
-        # After renorm: f_w→l=0.5, f_w→b=0.5, f_w→g=0
+        result = env_step(state, action, weather, 70.0, PARAMS)
         p_wind = wind_power(6.0, PARAMS)
-        # wind_to_bat + wind_to_load should ≈ p_wind (none to grid if unconstrained)
+        # renormalized fractions are 0.5 / 0.5 — verified directly on the per-source flows
+        assert result.wind_to_load_mw == pytest.approx(p_wind * 0.5, rel=1e-5)
+        assert result.wind_to_bat_mw == pytest.approx(p_wind * 0.5, rel=1e-5)
         assert result.wind_to_grid_mw == pytest.approx(0.0, abs=1e-5)
 
     def test_abat_clipped_to_minus_one(self):
