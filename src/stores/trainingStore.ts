@@ -17,7 +17,8 @@ export interface TrainingState {
    * ISO-8601 UTC timestamp from the envelope of the most recent train_metrics
    * message (msg.ts_utc). Used by TrainingPanel's StreamStatusBanner to detect
    * data-stale scenarios (no message received in >30 s while WS is connected).
-   * Optional so test emptyTrainingState() mocks don't need it — undefined → null.
+   * Updated each message; null on clear(). Optional so test mocks that omit it
+   * receive null via ?? null — no test-breakage from emptyTrainingState().
    */
   latestTsUtc?: string | null;
 
