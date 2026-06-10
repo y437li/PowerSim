@@ -400,12 +400,19 @@ interface TrainingState {
   /** seq from last received train_metrics envelope; null before first message. */
   lastTrainSeq: number | null;
   /**
-   * true when a forward sequence gap detected in train_metrics stream:
-   * msg.seq > lastTrainSeq + 1.  Out-of-order / duplicate messages are
-   * silently accepted (gap flag unchanged).  Reset on clear().
-   * Mirrors telemetryStore.seqGap semantics for env_step.
+   * Non-sticky: true when the CURRENT message has a forward sequence gap
+   * (msg.seq > lastTrainSeq + 1). Resets to false on the next contiguous
+   * message. Out-of-order / duplicates are silently accepted (gap=false).
+   * Reset on clear(). Mirrors telemetryStore.seqGap semantics for env_step.
    */
   trainSeqGap: boolean;
+  /**
+   * ISO-8601 UTC ts_utc from the envelope of the most recent train_metrics
+   * message. Used by TrainingPanel's StreamStatusBanner for the local
+   * data-stale check (>30 s without a message while WS is connected).
+   * Optional so test mocks that omit it receive null via ?? null.
+   */
+  latestTsUtc?: string | null;
   receiveTrainMetrics(msg: TelemetryEnvelope & { payload: TrainMetricsPayload }): void;
   clear(): void;
 }
@@ -414,7 +421,8 @@ interface TrainingState {
 `receiveTrainMetrics` extracts `msg.seq` internally to update `lastTrainSeq` and
 `trainSeqGap` — callers do not need to pass seq separately.
 Gap rule: gap is flagged iff `seq > lastTrainSeq + 1`; the first message never
-flags; `trainSeqGap` is sticky (stays true until `clear()`).
+flags; `trainSeqGap` is non-sticky (reflects current message only, resets to
+false on the next contiguous message).
 
 ### 6.3 Eval store (`src/stores/evalStore.ts`)
 
