@@ -713,22 +713,33 @@ def _sh_flags_from_help(script: Path) -> set[str]:
 
 def _ps1_params_from_help(script: Path) -> set[str]:
     """Invoke `pwsh script -Help` and parse '-ParamName' names.
-    Falls back to param-block parsing on non-zero exit.
-    The param-block regex is anchored to the `param(` block only.
+    Falls back to type-annotation line parsing when pwsh is unavailable or
+    returns no output (e.g. on macOS without PowerShell installed).
     """
-    result = subprocess.run(
-        ["pwsh", "-NonInteractive", "-File", str(script), "-Help"],
-        capture_output=True, text=True, timeout=10,
-    )
-    text = result.stdout + result.stderr
+    text = ""
+    try:
+        result = subprocess.run(
+            ["pwsh", "-NonInteractive", "-File", str(script), "-Help"],
+            capture_output=True, text=True, timeout=10,
+        )
+        text = result.stdout + result.stderr
+    except (FileNotFoundError, OSError):
+        pass  # pwsh not installed; fall through to source-parse
     import re
     params = set(re.findall(r"-([A-Z][A-Za-z]+)", text))
     if not params:
-        # Fallback: extract only from the param() block, not the whole file
+        # Fallback: scan for [string]/[switch]/[bool]/[int] type-annotation lines
+        # e.g. "    [string]$ServerType = ..." → captures "ServerType".
+        # This avoids balanced-paren matching on the param() block (non-greedy
+        # regex stops at the first ")" inside a [Parameter(HelpMessage="...")] line).
         content = script.read_text(errors="replace")
-        param_block = re.search(r'(?is)param\s*\((.*?)\)', content)
-        if param_block:
-            params = set(re.findall(r'\$([A-Z][A-Za-z]+)', param_block.group(1)))
+        params = set(
+            re.findall(
+                r'^\s*\[(?:string|int|bool|switch)\]\s*\$([A-Z][A-Za-z]+)',
+                content,
+                re.MULTILINE,
+            )
+        )
     return params
 
 
