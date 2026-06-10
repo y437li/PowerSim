@@ -517,6 +517,10 @@ class TestDemandCharge:
         assert_demand_charge_timing(
             result, is_month_boundary=True,
             prev_month_peak_mw=80.0, params=PARAMS)
+        # Also verify cost_total_real includes c_demand_charge_yuan at boundary (D13 identity 3)
+        # via env_step. This is the only env_step-level test that crosses a month boundary,
+        # so identity 3 of assert_cost_identities is exercised with c_demand_charge > 0 here.
+        assert_cost_identities(result, PARAMS)   # identity 3: real = C_E + c_dc + C_deg + ...
 
     def test_two_month_no_double_count(self):  # reviewer: M2
         # Controlled 2-month rollout: Jan peak=80 MW, Feb peak=60 MW.

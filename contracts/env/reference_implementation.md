@@ -423,6 +423,7 @@ STEP 9 — Prices
   price_sell = compute_sell_price(price_buy, spread_noise, params)
 
 STEP 10 — Costs and reward (§3.4, §3.5, D10, D13)
+  # 10a. Intermediate cost components
   C_import  = price_buy  · p_import  · dt
   R_export  = price_sell · p_export  · dt      (p_export = sum of grid flows)
   C_E       = C_import − R_export
@@ -433,33 +434,26 @@ STEP 10 — Costs and reward (§3.4, §3.5, D10, D13)
   C_VOLL    = voll · load_unserved · dt
   penalty   = 20_000 · soc_viol_mwh
 
-  # D13: two separate totals
-  cost_total_reward_basis = C_E + 2·C_DC_shape + C_deg + C_curtail + C_VOLL  # ×2 applied here
-  cost_total_real         = C_E + monthly_demand_charge_this_step + C_deg + C_curtail + C_VOLL
-  #   monthly_demand_charge_this_step = 0 mid-month; = month_peak·demand_rate at month-end (D10)
-
-  reward = −(cost_total_reward_basis + penalty) · reward_scale
-
-STEP 11 — Month boundary (D10)
+  # 10b. Month-boundary demand charge (D10) — must be computed BEFORE cost_total_real below.
   # month_of_step is a precomputed int array shape (8760,): month_of_step[t] ∈ {0..11}
-  # This is computed ONCE at env initialisation from cumulative days-per-month (no datetime).
-
-  is_terminal     = (state.t == 8759)           # last step of the synthetic year
-  next_t          = min(state.t + 1, 8759)
-  is_month_end    = (month_of_step[next_t] != month_of_step[state.t]) OR is_terminal
-
+  # (computed ONCE at env init from cumulative days-per-month; no datetime in jitted step).
+  is_terminal  = (state.t == 8759)           # last step of the synthetic year
+  next_t       = min(state.t + 1, 8759)
+  is_month_end = (month_of_step[next_t] != month_of_step[state.t]) OR is_terminal
   if is_month_end:
       c_demand_charge_yuan = new_month_peak × demand_rate   # real monthly demand charge (≥ 0)
       new_month_peak       = 0.0                            # reset for next month
   else:
       c_demand_charge_yuan = 0.0   # NOT charged mid-month (D10: no per-step accrual)
+  # Anti-double-count (D10 fix): the charge is booked exactly ONCE via is_month_end.
+  # No separate "terminal flush" — the is_terminal flag in is_month_end handles it.
+  # Truncated episode (< 8760 steps): partial-month charge is NOT booked.
 
-  # Anti-double-count invariant (D10 fix):
-  # If is_terminal AND the last step is ALSO a month boundary, the charge is booked ONCE
-  # via the is_month_end branch above. There is NO second booking at terminal.
-  # A separate "end-of-episode flush" is NOT performed — the month_end branch handles it.
-  # Consequence: in a truncated episode (< 8760 steps), the partial-month demand charge
-  # is NOT booked. This matches the §6 D10 fix (avoids the old double-count on terminal).
+  # 10c. D13: two separate cost totals (c_demand_charge_yuan now defined above)
+  cost_total_reward_basis = C_E + 2·C_DC_shape + C_deg + C_curtail + C_VOLL  # ×2 applied here
+  cost_total_real         = C_E + c_demand_charge_yuan + C_deg + C_curtail + C_VOLL
+
+  reward = −(cost_total_reward_basis + penalty) · reward_scale
 ```
 
 ### `generate_year` (§4.1 and §4.2)
