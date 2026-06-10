@@ -494,3 +494,36 @@ describe("validate — §10 integration envelope pass-through", () => {
     }
   });
 });
+
+// ─── REVIEWER-ADDED (frontend-reviewer): eval_compare cost identity ───────────
+describe("reviewer: validate — eval_compare per-policy additive identity (D13)", () => {
+  // reviewer: MUST-FIX — the pipeline runs D13 only on env_step (§4.11). eval_compare
+  // is the headline RL-vs-baseline comparison; a policy whose total_cost_yuan !=
+  // energy+demand_charge+degradation+curtailment+voll would pass validation and
+  // mislabel the "best" policy. The validator must enforce this per policy
+  // (proposed pipeline step + error code `eval_total:<policy>:<delta>`).
+  it("a policy whose total_cost_yuan is off by 1000 → ok:false with an eval-total error", async () => {
+    const { validate } = await import("../../src/validators/telemetryValidator");
+    const broken = {
+      ...EVAL_COMPARE,
+      payload: {
+        ...EVAL_COMPARE.payload,
+        policies: {
+          ...EVAL_COMPARE.payload.policies,
+          rl: {
+            ...(EVAL_COMPARE.payload.policies as any).rl,
+            total_cost_yuan: (EVAL_COMPARE.payload.policies as any).rl.total_cost_yuan + 1000,
+          },
+        },
+      },
+    };
+    const r = validate(broken);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errors.some(e => e.startsWith("eval_total"))).toBe(true);
+  });
+
+  it("the unmodified golden eval_compare still passes (no false positive)", async () => {
+    const { validate } = await import("../../src/validators/telemetryValidator");
+    expect(validate(EVAL_COMPARE).ok).toBe(true);
+  });
+});
