@@ -16,6 +16,7 @@
     "zustand": "^5.0.0"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.5.0",
     "@testing-library/react": "^16.0.0",
     "@testing-library/user-event": "^14.5.2",
     "@types/react": "^18.3.5",
@@ -25,5 +26,9 @@
     "typescript": "^5.5.4",
     "vite": "^5.4.2",
     "vitest": "^2.0.5"
+  },
+  "optionalDependencies": {
+    "@react-three/fiber": "^8.17.5",
+    "three": "^0.168.0"
   }
 }
