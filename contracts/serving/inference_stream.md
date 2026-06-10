@@ -231,6 +231,36 @@ If ONNX export is available (`policy.onnx`), it is preferred over `policy.npz`
 The contract does not prescribe which backend is used — the test suite only checks
 that the served action matches a reference forward pass within 1e-5 tolerance.
 
+## Public policy utilities
+
+The `inference_stream` module exposes one public utility function for use by tests and
+other consumers that need the forward-pass logic without a live WebSocket session:
+
+```python
+def policy_forward(weights: dict[str, np.ndarray], obs: np.ndarray) -> np.ndarray:
+    """Run the MLP forward pass.
+
+    Args:
+        weights: dict loaded from policy.npz — keys "w_0", "b_0", ..., "w_N", "b_N"
+                 (N = number of layers; layer 0 = first hidden, layer N-1 = output).
+        obs:     float32 array of shape (obs_dim,), already normalized.
+
+    Returns:
+        float32 array of shape (action_dim,) clipped to [−1, 1].
+
+    Activation: tanh for hidden layers (indices 0 … N-2); identity for the output
+    layer (index N-1).  Output clipped to [−1, 1] before returning.
+    """
+```
+
+This function is the single source of truth for the forward-pass logic; the WebSocket
+handler and tests both call it.  The test suite imports it directly to verify the
+reference identity:
+```
+served = policy_forward(weights, obs)
+np.testing.assert_allclose(served, reference_forward(weights, obs), atol=1e-5)
+```
+
 ## Replay speed
 
 By default, the server streams as fast as the env step completes (no artificial throttle).

@@ -86,7 +86,7 @@ MOCK_TRAIN_FRAMES = [
             "critic_loss": 0.55,
             "ent_coef": 0.12,
             "reward_scaled_mean": -0.52,
-            "reward_norm_mean": None,          # null = no eval checkpoint yet
+            "reward_norm_mean": -0.52,         # non-null for regular training steps (VecNorm is active)
             "cost_total_real_mean_yuan": 42500.0,
             "is_eval_checkpoint": False,
             "checkpoint_id": None,
@@ -106,7 +106,7 @@ MOCK_TRAIN_FRAMES = [
             "critic_loss": 0.49,
             "ent_coef": 0.11,
             "reward_scaled_mean": -0.48,
-            "reward_norm_mean": -0.49,         # eval result available at step 2000
+            "reward_norm_mean": None,          # null on eval checkpoints (VecNorm not applied during eval)
             "cost_total_real_mean_yuan": 41000.0,
             "is_eval_checkpoint": True,
             "checkpoint_id": "run_001/epoch_20",
@@ -416,16 +416,47 @@ class TestTrainingWSStream:
             reward = frame["payload"]["reward_scaled_mean"]
             assert abs(reward - (-0.52)) < 1e-9, f"Expected -0.52, got {reward}"
 
-    def test_train_metrics_reward_norm_mean_null_first_frame(self, client):
-        """reward_norm_mean is null for global_step=1000 (no eval checkpoint yet; MOCK[0])."""
-        # expected: null (is_eval_checkpoint=False in MOCK_TRAIN_FRAMES[0])
+    def test_train_metrics_reward_norm_mean_non_null_on_training_step(self, client):
+        """reward_norm_mean is NON-null for a regular training step (is_eval_checkpoint=False).
+
+        Per LOCKED schema: reward_norm_mean is the VecNormalize-normalized reward,
+        which is active during training (non-null) and inactive during eval (null).
+        MOCK_TRAIN_FRAMES[0] has is_eval_checkpoint=False → reward_norm_mean=-0.52.
+        """
+        # expected: -0.52 (VecNorm-normalized; non-null for training steps per LOCKED schema)
         client.post("/training/start", json={"run_id": "run_001", "site_id": "gansu"})
         with client.websocket_connect("/ws/training/stream") as ws:
             ws.receive_text(timeout=5)
             frame = _recv_until(ws, "train_metrics", max_frames=30)
-            assert frame["payload"]["reward_norm_mean"] is None, (
-                "reward_norm_mean must be null for global_step=1000 (no eval checkpoint)"
+            val = frame["payload"]["reward_norm_mean"]
+            assert val is not None, (
+                "reward_norm_mean must be non-null for regular training steps "
+                "(LOCKED schema: null only on eval checkpoints)"
             )
+            assert abs(val - (-0.52)) < 1e-9, f"Expected reward_norm_mean=-0.52, got {val}"
+
+    def test_train_metrics_reward_norm_mean_null_on_eval_checkpoint(self, client):
+        """reward_norm_mean is null on eval checkpoints (is_eval_checkpoint=True).
+
+        Per LOCKED schema: VecNorm is not applied during eval → reward_norm_mean=null.
+        MOCK_TRAIN_FRAMES[1] has is_eval_checkpoint=True → reward_norm_mean=null.
+        """
+        # expected: null (VecNorm inactive during eval; MOCK_TRAIN_FRAMES[1])
+        client.post("/training/start", json={"run_id": "run_001", "site_id": "gansu"})
+        frames = []
+        with client.websocket_connect("/ws/training/stream") as ws:
+            ws.receive_text(timeout=5)
+            while len(frames) < 2:
+                raw = ws.receive_text(timeout=5)
+                msg = json.loads(raw)
+                if msg.get("kind") == "train_metrics":
+                    frames.append(msg)
+        eval_frame = frames[1]  # MOCK_TRAIN_FRAMES[1]: is_eval_checkpoint=True
+        assert eval_frame["payload"]["is_eval_checkpoint"] is True
+        assert eval_frame["payload"]["reward_norm_mean"] is None, (
+            "reward_norm_mean must be null on eval checkpoints "
+            "(LOCKED schema: null on is_eval_checkpoint=True)"
+        )
 
     def test_stop_stream_closes_ws(self, client):
         with client.websocket_connect("/ws/training/stream") as ws:
