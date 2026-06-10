@@ -17,6 +17,7 @@ Version pins live in `pyproject.toml` (Python) and `package.json` (frontend); th
 | **Frontend shell** | **React + Vite + TypeScript** | App shell, routing, websocket/REST clients | REBUILD_SPEC §6; charters |
 | **Frontend state** | **Zustand** | Client state store (app shell + dashboard + 3D scene) | PR #5 app_shell contract; ratified PR #20 |
 | **3D scene** | **Three.js / React Three Fiber** | `.glb` assets resolved only via `assets/3d/registry.json` (no hardcoded paths) | REBUILD_SPEC §8.5; charters |
+| **Dashboard charts** | **Recharts** (React wrapper around D3-based SVG charts) | `recharts` npm package; tree-shakeable; Vite-compatible; used for training metric curves in `TrainingPanel` | PR #21 (training dashboard) |
 | **Frontend tests** | **Vitest + React Testing Library** | `tests/frontend*/<feature>.test.tsx` | CLAUDE.md conventions |
 | **Backend tests** | **pytest** | `tests/<area>/test_<area>_<feature>.py` | CLAUDE.md conventions |
 | **Config** | **YAML** | `config/<site\|asset>_<name>.yaml`; site YAML composes assets and derives obs/action (§8.4) | REBUILD_SPEC §8; D2 |

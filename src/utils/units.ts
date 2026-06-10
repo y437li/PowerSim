@@ -68,3 +68,56 @@ export function formatSimTime(isoUtc: string): string {
   const mm = String(d.getUTCMinutes()).padStart(2, "0");
   return `${dayName} ${hh}:${mm}`;
 }
+
+// ─── Training Dashboard utilities (dashboard-engineer additions) ──────────────
+// All three functions use floor (not round) for sub-unit truncation — consistent
+// with the wall-seconds formatter.
+
+/**
+ * Format env_steps_per_sec throughput.
+ * Tiers (floor for sub-unit truncation in k range):
+ *   ≥1e9 → Math.round(v/1e9)     + "B/s"    e.g. 1,000,000,000 → "1B/s"
+ *   ≥1e6 → (v/1e6).toFixed(2)    + "M/s"    e.g. 1,350,000     → "1.35M/s"
+ *   ≥1e3 → Math.floor(v/1e3)     + "k/s"    e.g. 350,000 → "350k/s", 1500 → "1k/s"
+ *   <1e3 → Math.floor(v)         + "/s"     e.g. 850 → "850/s", 0 → "0/s"
+ */
+export function formatThroughput(stepsPerSec: number): string {
+  if (stepsPerSec >= 1e9) return `${Math.round(stepsPerSec / 1e9)}B/s`;
+  if (stepsPerSec >= 1e6) return `${(stepsPerSec / 1e6).toFixed(2)}M/s`;
+  if (stepsPerSec >= 1e3) return `${Math.floor(stepsPerSec / 1e3)}k/s`;
+  return `${Math.floor(stepsPerSec)}/s`;
+}
+
+/**
+ * Format a global_step count.
+ * Tiers (floor for sub-unit truncation in k range):
+ *   ≥1e9 → Math.round(v/1e9)    + "B steps"
+ *   ≥1e6 → (v/1e6).toFixed(2)   + "M steps"
+ *   ≥1e3 → Math.floor(v/1e3)    + "k steps"
+ *   <1e3 → Math.floor(v)        + " steps"
+ */
+export function formatSteps(steps: number): string {
+  if (steps >= 1e9) return `${Math.round(steps / 1e9)}B steps`;
+  if (steps >= 1e6) return `${(steps / 1e6).toFixed(2)}M steps`;
+  if (steps >= 1e3) return `${Math.floor(steps / 1e3)}k steps`;
+  return `${Math.floor(steps)} steps`;
+}
+
+/**
+ * Format wall_seconds duration. Floor (not round) for sub-unit truncation.
+ *   <60   → "{s}s"                   e.g. 45 → "45s", 59.9 → "59s"
+ *   <3600 → "{m}m {s}s"              e.g. 184.2 → "3m 4s"
+ *   ≥3600 → "{h}h {m}m"              e.g. 3662 → "1h 1m"
+ */
+export function formatWallSeconds(seconds: number): string {
+  const totalSec = Math.floor(seconds);
+  if (totalSec < 60) return `${totalSec}s`;
+  if (totalSec < 3600) {
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${m}m ${s}s`;
+  }
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  return `${h}h ${m}m`;
+}
