@@ -10,10 +10,11 @@ These rules apply to every agent working in this repo. They are non-negotiable.
 
 ## Workflow
 - All implementation work follows the `contract-first-dev` skill: contract → test cases → reviewer approval → implement → QA. **No implementation before reviewer approval of the tests.**
-- Reviewer routing: `contracts/env|training|harness|serving/` → backend-reviewer; `contracts/frontend|frontend3d/` → frontend-reviewer; shared contracts → both, locked by rl-architect.
+- Reviewer routing: `contracts/env|training|harness|serving/` → backend-reviewer; `contracts/frontend|frontend3d/` → frontend-reviewer; shared contracts → both for comment, locked by rl-architect on its own authority (reviewer input is advisory, not a gate).
+- **rl-architect authority:** rl-architect's decision and contract-lock PRs (area `meta`, no implementation code) merge on rl-architect's own authority — no reviewer APPROVE or QA_PASS required. Exception — these escalate to the human user for explicit approval before merge: changes to `REBUILD_SPEC.md`, altering or unlocking a LOCKED contract, and decisions that are costly to reverse (data formats already persisted, published APIs, cross-area architecture changes). When in doubt whether a decision is important enough, escalate.
 - **Never modify a reviewer-approved test to make it pass.** If a test seems wrong, go back through review.
 - QA (qa-engineer, `qa-verification` skill) issues the verdict that closes a task — not your own test run.
-- **All changes go through GitHub PRs.** Never commit to `main`. Branch `feat/<area>-<feature>`, open a draft PR for the contract+tests gate, mark ready after implementation. Reviewers verdict with `gh pr review` (inline comments, approve/request-changes); QA posts its verdict as a PR comment; every review comment gets an answer (fixing commit or reasoned reply). Merge requires reviewer APPROVE + QA_PASS.
+- **All changes go through GitHub PRs.** Never commit to `main`. Branch `feat/<area>-<feature>`, open a draft PR for the contract+tests gate, mark ready after implementation. Reviewers verdict with `gh pr review` (inline comments, approve/request-changes); QA posts its verdict as a PR comment; every review comment gets an answer (fixing commit or reasoned reply). Merge requires reviewer APPROVE + QA_PASS (exception: rl-architect decision PRs — see **rl-architect authority** above).
 
 ## File locations (no exceptions)
 - Contracts: `contracts/<area>/<feature>.md`; review records: `contracts/reviews/<feature>.md`. Worked example: `contracts/_example/`.
