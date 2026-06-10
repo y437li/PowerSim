@@ -79,8 +79,8 @@ returns `{ ok: false, errors, warnings }`. Steps that produce only warnings accu
 | 4.6 | `kind` is one of `"env_step"`, `"train_metrics"`, `"eval_compare"` | `ok: false`, error `"unknown_kind:<kind>"` |
 | 4.7 | `payload` is a non-null object | `ok: false`, error `"bad_payload"` |
 | 4.8 | `seq` is a non-negative integer | `ok: false`, error `"bad_seq"` |
-| 4.9 | Payload field conformance via Zod schema for the `kind` (required fields present, types correct) | `ok: false`, error `"payload_invalid:<zod_error_path>"` per Zod issue |
-| 4.10 | Finiteness: `checkFiniteness(payload)` — all number-typed fields must be finite | `ok: false`, errors `"non_finite:<path>"` per non-finite field |
+| 4.9 | Finiteness: `checkFiniteness(payload)` — all number-typed fields must be finite. **Runs before Zod** so NaN/±Infinity yields `non_finite:` codes rather than `payload_invalid:` codes (Zod `z.number()` rejects NaN). | `ok: false`, errors `"non_finite:<path>"` per non-finite field |
+| 4.10 | Payload field conformance via Zod schema for the `kind` (required fields present, types correct). All number fields are guaranteed finite at this point. | `ok: false`, error `"payload_invalid:<zod_error_path>"` per Zod issue |
 | 4.11 | **env_step only:** D13 identities: `checkD13Identities(payload.costs)` | `ok: false`, errors from `checkD13Identities` |
 | 4.12 | **env_step only:** Per-source conservation: `checkConservation(payload.generation, payload.flows)` | `ok: false`, errors from `checkConservation` |
 | 4.13 | **eval_compare only:** Per-policy additive identity: for each key in `payload.policies`, verify `total_cost_yuan = energy_cost_yuan + demand_charge_yuan + degradation_yuan + curtailment_yuan + voll_yuan` (tol ≤ 1.0 ¥) | `ok: false`, error `"eval_total:<policy_key>:<delta>"` per violating policy |
