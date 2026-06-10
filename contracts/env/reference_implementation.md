@@ -101,7 +101,10 @@ class EnvState:
 ### `StepResult` (dataclass)
 
 All power flows in **MW**, all costs in **¥** (already × Δt=1 h).
-Field names shadow `telemetry_schema.md` `env_step` payload (pending-LOCK — see status note).
+Field names match the **LOCKED** `telemetry_schema.md` v1.0.0 `env_step` payload (PR #6).
+Extra reference-only fields (`price_buy_yuan_per_mwh`, `price_sell_yuan_per_mwh`) are
+NOT in the telemetry schema — they are internal to the reference implementation for
+formula-level invariant checks and debugging.
 
 ```python
 @dataclass
@@ -135,15 +138,19 @@ class StepResult:
     p_import_mw:            float   # ≤ grid_max_import_mw
     p_export_mw:            float   # ≤ grid_max_export_mw
 
+    # Prices used this step (¥/MWh) — exposed for formula-level checks and debugging
+    price_buy_yuan_per_mwh:         float   # TOU buy price (D8: minute-aware); ∈ {250, 450, 620, 780}
+    price_sell_yuan_per_mwh:        float   # D7: max(0, price_buy − max(0, spread + noise)) ≥ 0
+
     # Per-step costs (¥, already × Δt = 1 h)
-    c_import_yuan:                  float   # display decomposition of c_energy (D13)
-    r_export_yuan:                  float   # display decomposition of c_energy (D13)
+    c_import_yuan:                  float   # price_buy × p_import × Δt
+    r_export_yuan:                  float   # price_sell × p_export × Δt  (D7: ≥ 0)
     c_energy_yuan:                  float   # C_import − R_export  (D13: c_import/r_export are display-only)
     c_demand_shape_yuan:            float   # RAW incremental C_DC_shape (D13: ×2 applied in reward, not stored)
-    c_degradation_yuan:             float
-    c_curtail_yuan:                 float
-    c_voll_yuan:                    float
-    penalty_yuan:                   float   # SOC overshoot penalty (D13: separate from cost totals)
+    c_degradation_yuan:             float   # c_deg_rate × (p_ch + p_dis) × Δt
+    c_curtail_yuan:                 float   # curtail_rate × (solar+wind+bat curtailed) × Δt
+    c_voll_yuan:                    float   # voll_rate × load_unserved × Δt
+    penalty_yuan:                   float   # 20 000 × soc_violation_mwh (D13: separate from cost totals)
 
     # Month-boundary demand charge (D10): 0 mid-month; = month_peak·demand_rate at month-end/episode-end
     c_demand_charge_yuan:           float   # real ¥ demand charge booked this step (≥ 0)
@@ -425,11 +432,25 @@ STEP 10 — Costs and reward (§3.4, §3.5, D10, D13)
   reward = −(cost_total_reward_basis + penalty) · reward_scale
 
 STEP 11 — Month boundary (D10)
-  hour_of_day = (state.t % 8760) // ... (based on precomputed month_of_step)
-  Detect month change: if month_of_step[state.t+1] ≠ month_of_step[state.t]:
-      # Charge full monthly demand: new_month_peak · demand_rate booked separately
-      # (as an end-of-month reward adjustment, NOT double-counted in C_DC_shape)
-      new_month_peak = 0  # reset for next month
+  # month_of_step is a precomputed int array shape (8760,): month_of_step[t] ∈ {0..11}
+  # This is computed ONCE at env initialisation from cumulative days-per-month (no datetime).
+
+  is_terminal     = (state.t == 8759)           # last step of the synthetic year
+  next_t          = min(state.t + 1, 8759)
+  is_month_end    = (month_of_step[next_t] != month_of_step[state.t]) OR is_terminal
+
+  if is_month_end:
+      c_demand_charge_yuan = new_month_peak × demand_rate   # real monthly demand charge (≥ 0)
+      new_month_peak       = 0.0                            # reset for next month
+  else:
+      c_demand_charge_yuan = 0.0   # NOT charged mid-month (D10: no per-step accrual)
+
+  # Anti-double-count invariant (D10 fix):
+  # If is_terminal AND the last step is ALSO a month boundary, the charge is booked ONCE
+  # via the is_month_end branch above. There is NO second booking at terminal.
+  # A separate "end-of-episode flush" is NOT performed — the month_end branch handles it.
+  # Consequence: in a truncated episode (< 8760 steps), the partial-month demand charge
+  # is NOT booked. This matches the §6 D10 fix (avoids the old double-count on terminal).
 ```
 
 ### `generate_year` (§4.1 and §4.2)

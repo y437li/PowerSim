@@ -26,6 +26,7 @@ import pytest
 # ---------------------------------------------------------------------------
 from energy_go.testing.invariants import (
     assert_cost_identities,
+    assert_demand_charge_timing,
     assert_energy_conserved,
     assert_episode_invariants,
     assert_physical_bounds,
@@ -109,16 +110,15 @@ class TestReferenceConsistency:
             assert 0.2 - 1e-9 <= r.new_state.soc <= 0.9 + 1e-9, (
                 f"Step {i}: SOC = {r.new_state.soc:.6f} outside [0.2, 0.9]")
 
-    def test_month_peak_monotone_within_month(self, episode_rollout):
-        # Within January (steps 0..167 for a 7-day episode), month_peak should be non-decreasing
-        # unless the month boundary resets it.
-        prev_peak = 0.0
-        prev_month = 0  # placeholder
+    def test_month_peak_nonnegative(self, episode_rollout):
+        # month_peak_mw is a running maximum of p_import → always ≥ 0.
+        # Non-blocking fix: renamed from _monotone_within_month which over-promised;
+        # a 7-day episode (steps 0..167) stays within Jan so no boundary reset occurs,
+        # but the monotonicity assertion is not what this test is set up to verify.
+        # Full monotonicity + D10 boundary checks live in TestDemandChargeD10.
         for i, r in enumerate(episode_rollout):
-            new_peak = r.new_state.month_peak_mw
-            # At month boundary the peak resets; skip the check there
-            # Simple check: peak is always ≥ the import this step (barring resets)
-            assert new_peak >= -1e-9, f"Step {i}: negative month_peak {new_peak}"
+            assert r.new_state.month_peak_mw >= -1e-9, (
+                f"Step {i}: negative month_peak {r.new_state.month_peak_mw}")
 
     def test_total_load_served_plus_unserved_equals_demand(self, year_data, episode_rollout):
         # Conservation: served + unserved = load for every step

@@ -99,35 +99,47 @@ def assert_energy_conserved(result: Any, *, tol: float = 1e-5) -> None:
 # 2. D13 cost accounting identities
 # ---------------------------------------------------------------------------
 
-def assert_cost_identities(result: Any, params: Any, *, tol: float = 1e-9) -> None:
+def assert_cost_identities(result: Any, params: Any, *, tol: float = 1e-9,
+                            check_formulas: bool = False) -> None:
     """
     Assert all D13 cost-accounting algebraic identities for one step.
 
-    Identities checked
-    ------------------
+    Identities checked (always)
+    ---------------------------
     1.  c_energy == c_import − r_export
     2.  cost_total_reward_basis ==
             c_energy + 2·c_demand_shape + c_degradation + c_curtail + c_voll
     3.  cost_total_real ==
             c_energy + c_demand_charge + c_degradation + c_curtail + c_voll
     4.  reward == −(cost_total_reward_basis + penalty) × reward_scale
-    5.  penalty == 20 000 × soc_violation_mwh   (§3.5 formula)
+    5.  penalty == 20 000 × soc_violation_mwh   (§3.5 formula — GAP 1 confirmed ✓)
     6.  c_curtail == (solar_curtailed + wind_curtailed + bat_curtailed)
-                     × curtail_penalty × Δt
-    7.  c_voll == load_unserved × voll × Δt
+                     × curtail_penalty × Δt                (GAP 6 rate check ✓)
+    7.  c_voll == load_unserved × voll × Δt                (GAP 6 rate check ✓)
     8.  r_export ≥ 0  (D7: price_sell ≥ 0 → no negative revenue)
-    9.  cost_total_reward_basis ≥ −r_export  (cost can be negative only through export revenue)
+    9.  c_degradation == c_deg_rate × (p_ch + p_dis) × Δt  (GAP 6 rate check ✓)
+
+    Additional formula checks (only when check_formulas=True, GAP 6)
+    ----------------------------------------------------------------
+    10. c_import == price_buy × p_import × Δt
+    11. r_export == price_sell × p_export × Δt
 
     Parameters
     ----------
     result:
-        Step result with all fields from ``StepResult``.
+        Step result with all fields from ``StepResult``, including
+        ``price_buy_yuan_per_mwh`` and ``price_sell_yuan_per_mwh``.
     params:
         Parameter object providing: ``reward_scale``, ``c_deg_yuan_per_mwh``,
         ``voll_yuan_per_mwh``, ``curtail_penalty_yuan_per_mwh``.
     tol:
         Relative tolerance.  Default 1e-9 (algebraic identity, float64).
         Use 1e-6 for float32 JAX outputs.
+    check_formulas:
+        If True, also verify c_import and r_export against their rate formulas
+        (identities 10–11).  Requires ``price_buy_yuan_per_mwh`` and
+        ``price_sell_yuan_per_mwh`` in result.  Default False for callers
+        that only want algebraic-total verification.
     """
     dt = 1.0  # Δt = 1 h (D3)
     r_scale = _p(params, "reward_scale")
@@ -202,11 +214,30 @@ def assert_cost_identities(result: Any, params: Any, *, tol: float = 1e-9) -> No
         f"assert_cost_identities: r_export = {r_export:.6f} is negative "
         "(D7 sell-price clamp violated)")
 
-    # 9. c_degradation = c_deg_rate × (p_ch + p_dis) × dt
+    # 9. c_degradation = c_deg_rate × (p_ch + p_dis) × dt  (GAP 6 ✓)
     c_deg_expected = c_deg_rate * (p_ch + p_dis) * dt
     _assert_approx(c_deg, c_deg_expected, tol,
                    f"Identity 9 (c_degradation): {c_deg:.4f} ≠ "
                    f"rate×(ch+dis)×dt={c_deg_expected:.4f}")
+
+    # 10–11. Formula-level rate checks (opt-in, GAP 6)
+    if check_formulas:
+        p_import  = float(_f(result, "p_import_mw"))
+        p_export  = float(_f(result, "p_export_mw"))
+        price_buy  = float(_f(result, "price_buy_yuan_per_mwh"))
+        price_sell = float(_f(result, "price_sell_yuan_per_mwh"))
+
+        # 10. c_import = price_buy × p_import × Δt
+        c_import_expected = price_buy * p_import * dt
+        _assert_approx(c_import, c_import_expected, tol,
+                       f"Identity 10 (c_import formula): {c_import:.4f} ≠ "
+                       f"price_buy×p_import×dt={c_import_expected:.4f}")
+
+        # 11. r_export = price_sell × p_export × Δt
+        r_export_expected = price_sell * p_export * dt
+        _assert_approx(r_export, r_export_expected, tol,
+                       f"Identity 11 (r_export formula): {r_export:.4f} ≠ "
+                       f"price_sell×p_export×dt={r_export_expected:.4f}")
 
 
 # ---------------------------------------------------------------------------
@@ -289,9 +320,74 @@ def assert_physical_bounds(result: Any, params: Any) -> None:
     assert penalty >= -1e-9, (
         f"assert_physical_bounds: penalty_yuan = {penalty:.6f} is negative")
 
+    # D7 sell-price explicit checks (GAP 3): both clamps must hold
+    #   price_sell = max(0, price_buy − max(0, spread + noise))
+    price_sell = float(_f(result, "price_sell_yuan_per_mwh"))
+    price_buy  = float(_f(result, "price_buy_yuan_per_mwh"))
+    assert price_sell >= -1e-9, (
+        f"assert_physical_bounds: price_sell={price_sell:.4f} < 0 "
+        "(D7 outer-clamp violated)")
+    assert price_sell <= price_buy + 1e-9, (
+        f"assert_physical_bounds: price_sell={price_sell:.4f} > price_buy={price_buy:.4f} "
+        "(D7 spread must be ≥ 0, sell ≤ buy)")
+
 
 # ---------------------------------------------------------------------------
-# 4. SOC dynamics consistency (§3.2)
+# 4. Demand-charge timing (D10) — GAP 2
+# ---------------------------------------------------------------------------
+
+def assert_demand_charge_timing(
+    result: Any,
+    *,
+    is_month_boundary: bool,
+    prev_month_peak_mw: float,
+    params: Any,
+    tol: float = 1e-9,
+) -> None:
+    """
+    Assert D10 demand-charge booking is correct for one step.
+
+    Contract rules (D10, §6 fix):
+    - On any step that is NOT a month boundary: ``c_demand_charge_yuan == 0``
+    - On a month-boundary (or terminal) step: ``c_demand_charge_yuan == prev_month_peak_mw × demand_rate``
+    - No double-count: the booking happens ONCE even if the step is both the
+      last step of a month AND the last step of the episode.
+
+    Parameters
+    ----------
+    result:
+        Step result containing ``c_demand_charge_yuan``.
+    is_month_boundary:
+        True if this step is the last step of a calendar month (or the last
+        step of the episode for the terminal flush).
+    prev_month_peak_mw:
+        The ``month_peak_mw`` of the *state going into this step*, i.e. the
+        peak that gets charged at a boundary.  Pass ``state.month_peak_mw``
+        BEFORE calling ``env_step``.
+    params:
+        GansuParams providing ``demand_rate_yuan_per_mw_month``.
+    tol:
+        Relative tolerance.  Default 1e-9 (algebraic identity).
+    """
+    demand_rate = _p(params, "demand_rate_yuan_per_mw_month")
+    c_dc = float(_f(result, "c_demand_charge_yuan"))
+
+    if not is_month_boundary:
+        # Mid-month: no demand charge booked (D10)
+        assert abs(c_dc) <= 1e-9, (
+            f"assert_demand_charge_timing: c_demand_charge_yuan={c_dc:.4f} on "
+            f"non-boundary step (D10: must be 0 mid-month)")
+    else:
+        # Month boundary: book previous month's peak × rate
+        expected = prev_month_peak_mw * demand_rate
+        _assert_approx(c_dc, expected, tol,
+                       f"assert_demand_charge_timing (boundary): {c_dc:.4f} ≠ "
+                       f"prev_peak×rate={prev_month_peak_mw:.2f}×{demand_rate:.0f}="
+                       f"{expected:.4f}")
+
+
+# ---------------------------------------------------------------------------
+# 5. SOC dynamics consistency (§3.2)
 # ---------------------------------------------------------------------------
 
 def assert_soc_dynamics(old_soc: float, result: Any, params: Any,
@@ -363,7 +459,7 @@ def assert_soc_dynamics(old_soc: float, result: Any, params: Any,
 
 
 # ---------------------------------------------------------------------------
-# 5. Determinism harness
+# 6. Determinism harness
 # ---------------------------------------------------------------------------
 
 def run_determinism_check(
@@ -426,7 +522,7 @@ def run_determinism_check(
 
 
 # ---------------------------------------------------------------------------
-# 6. Episode runner
+# 7. Episode runner
 # ---------------------------------------------------------------------------
 
 def run_episode(
@@ -494,6 +590,7 @@ def assert_episode_invariants(
     *,
     energy_tol: float = 1e-5,
     cost_tol: float = 1e-9,
+    check_formulas: bool = False,
 ) -> None:
     """
     Run all invariant assertions on every step of an episode.
@@ -512,6 +609,9 @@ def assert_episode_invariants(
         Passed to assert_energy_conserved.
     cost_tol:
         Passed to assert_cost_identities.
+    check_formulas:
+        If True, also run formula-level c_import/r_export checks via assert_cost_identities.
+        Requires ``price_buy_yuan_per_mwh`` and ``price_sell_yuan_per_mwh`` in each result.
     """
     for i, result in enumerate(results):
         try:
@@ -520,7 +620,8 @@ def assert_episode_invariants(
             raise AssertionError(f"Step {i}: energy conservation violated\n{exc}") from exc
 
         try:
-            assert_cost_identities(result, params, tol=cost_tol)
+            assert_cost_identities(result, params, tol=cost_tol,
+                                   check_formulas=check_formulas)
         except AssertionError as exc:
             raise AssertionError(f"Step {i}: cost identity violated\n{exc}") from exc
 

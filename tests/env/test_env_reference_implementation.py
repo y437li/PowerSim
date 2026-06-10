@@ -24,6 +24,7 @@ import pytest
 # Invariant helpers are always importable (no reference implementation dependency).
 from energy_go.testing.invariants import (
     assert_cost_identities,
+    assert_demand_charge_timing,
     assert_energy_conserved,
     assert_episode_invariants,
     assert_physical_bounds,
@@ -350,8 +351,8 @@ class TestBatteryStep:
     def test_discharge_no_violation(self):
         # SOC_0=0.7, a_bat=−1.0 → P_dis=98.16 MW (full discharge)
         # ΔSOC = −P_dis / (η_dis × E_cap) × dt = −98.16 / (0.97 × 294.5) = −98.16 / 285.665
-        #       = −0.34372
-        # SOC_new = 0.7 − 0.34372 = 0.35628 ∈ [0.2, 0.9] → no violation
+        #       = −0.34362  (non-blocking fix: comment was 0.34372; code value is correct)
+        # SOC_new = 0.7 − 0.34362 = 0.35638 ∈ [0.2, 0.9] → no violation
         soc_new, p_ch, p_dis, p_g2b, viol = battery_step(
             soc=0.7, a_bat=-1.0, p_ren_to_bat=0.0, params=PARAMS)
         expected_dsoc = -(98.16 / (0.97 * 294.5))
@@ -363,7 +364,8 @@ class TestBatteryStep:
 
     def test_discharge_clips_to_soc_min(self):
         # SOC_0=0.25, a_bat=−1.0 (wants 98.16 MW discharge)
-        # Unconstrained: SOC_new = 0.25 − 98.16/(0.97×294.5) = 0.25 − 0.34372 = −0.09372 < 0.2
+        # Unconstrained: SOC_new = 0.25 − 98.16/(0.97×294.5) = 0.25 − 0.34362 = −0.09362 < 0.2
+        # (non-blocking fix: comment was 0.34372; correct is 0.34362; code is correct)
         # Clip: P_dis_clip = (0.25−0.2) × 294.5 × 0.97 / 1 = 14.725 × 0.97 = 14.28325 MW
         # soc_violation = (0.2 − (−0.09372)) × 294.5 = 0.29372 × 294.5 = 86.471 MWh
         #   equivalently: (98.16 − 14.28325) × 1 / 0.97 = 83.8768 / 0.97 = 86.471 MWh
@@ -392,15 +394,31 @@ class TestBatteryStep:
             soc=0.5, a_bat=-0.5, p_ren_to_bat=50.0, params=PARAMS)
         assert soc_new_no_ren == pytest.approx(soc_new_with_ren, abs=1e-9)
 
-    def test_soc_exactly_at_max_with_charge_action(self):
-        # SOC_0 = soc_max = 0.9; any a_bat > 0 → no energy stored → P_ch=0, violation>0
-        # P_ch_clip = (0.9−0.9)×294.5/(0.97) = 0 MW
-        # violation = 0.97 × 98.16 × 1 / 294.5 × 294.5 = 0.97×98.16 = 95.215 MWh
+    def test_soc_exactly_at_max_with_charge_action(self):  # reviewer: M5 (exact values)
+        # SOC_0 = soc_max = 0.9; a_bat=1.0 → P_target=98.16 MW, p_ren_to_bat=0
+        # P_ch_clip = (0.9−0.9) × 294.5 / (0.97 × 1) = 0 MW
+        # soc_unconstrained = 0.9 + 0.97 × 98.16 / 294.5 = 0.9 + 0.32330 = 1.22330
+        # soc_violation_mwh = (1.22330 − 0.9) × 294.5 = 0.32330 × 294.5
+        #                    = 0.97 × 98.16 = 95.2152 MWh  (exact: η_ch × P_target × Δt)
+        # penalty_yuan = 20000 × 95.2152 = 1,904,304 ¥
+        viol_expected_mwh = 0.97 * 98.16 * 1.0   # = 95.2152 MWh
+        penalty_expected = 20_000.0 * viol_expected_mwh  # = 1,904,304 ¥
+
         soc_new, p_ch, p_dis, p_g2b, viol = battery_step(
             soc=0.9, a_bat=1.0, p_ren_to_bat=0.0, params=PARAMS)
         assert soc_new == pytest.approx(0.9, abs=1e-9)
         assert p_ch == pytest.approx(0.0, abs=1e-9)
-        assert viol > 0.0
+        assert viol == pytest.approx(viol_expected_mwh, rel=1e-5), (
+            f"M5: soc_violation_mwh={viol:.6f} ≠ 0.97×98.16={viol_expected_mwh:.6f}")
+        assert viol_expected_mwh == pytest.approx(95.2152, rel=1e-4)
+
+        # Now verify penalty via env_step
+        action = np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        state = make_state(soc=0.9, t=0)
+        result = env_step(state, action, (0.0, 0.0, 0.0), 0.0, PARAMS)
+        assert result.soc_violation_mwh == pytest.approx(viol_expected_mwh, rel=1e-5)
+        assert result.penalty_yuan == pytest.approx(penalty_expected, rel=1e-5), (
+            f"M5: penalty_yuan={result.penalty_yuan:.2f} ≠ 20000×95.2152={penalty_expected:.2f}")
 
     def test_soc_exactly_at_min_with_discharge_action(self):
         # SOC_0 = soc_min = 0.2; any a_bat < 0 → no energy available → P_dis=0, violation>0
@@ -458,6 +476,105 @@ class TestDemandCharge:
         result = self._step_no_battery(30.0, 30.0)
         assert result.c_demand_shape_yuan == pytest.approx(0.0, abs=1e-9)
 
+    def test_c_demand_charge_zero_mid_month(self):  # reviewer: M1-partial
+        # On any mid-month step c_demand_charge_yuan must be 0 (D10).
+        # t=100 → hour=4 (valley) — NOT a month boundary (Jan ends at t=743)
+        result = self._step_no_battery(30.0, 0.0)
+        assert result.c_demand_charge_yuan == pytest.approx(0.0, abs=1e-9), (
+            "D10: c_demand_charge_yuan must be 0 on non-boundary step")
+        # Use assert_demand_charge_timing helper to verify same thing
+        assert_demand_charge_timing(
+            result, is_month_boundary=False,
+            prev_month_peak_mw=0.0, params=PARAMS)
+
+    def test_month_boundary_demand_charge_booked_exact(self):  # reviewer: M1
+        # t=743 is the last hour of January (31×24−1 = 743).
+        # month_of_step[743] == Jan, month_of_step[744] == Feb → boundary.
+        # month_peak_mw=80 MW (prior peak) → c_demand_charge = 80 × 32000 = 2,560,000 ¥
+        #
+        # Also verifies on every step t ∈ {100, 200, 300} that c_demand_charge_yuan == 0.
+        action = np.zeros(6)
+        # First verify mid-month steps are zero
+        for t_mid in [100, 200, 300]:
+            state_mid = make_state(t=t_mid, month_peak_mw=80.0)
+            r_mid = env_step(state_mid, action, (0.0, 0.0, 0.0), 50.0, PARAMS)
+            assert r_mid.c_demand_charge_yuan == pytest.approx(0.0, abs=1e-9), (
+                f"Step t={t_mid}: D10 violated — mid-month step has "
+                f"c_demand_charge_yuan={r_mid.c_demand_charge_yuan:.2f}")
+
+        # Then verify the boundary step books the full charge ONCE
+        state_jan_end = make_state(t=743, month_peak_mw=80.0)
+        result = env_step(state_jan_end, action, (0.0, 0.0, 0.0), 50.0, PARAMS)
+        # Expected: 80 MW × 32000 ¥/MW·month = 2,560,000 ¥
+        assert result.c_demand_charge_yuan == pytest.approx(
+            80.0 * 32_000.0, rel=1e-9), (
+            f"D10 M1: c_demand_charge_yuan={result.c_demand_charge_yuan:.2f} "
+            f"≠ 80×32000=2,560,000 ¥")
+        # And new_state resets the month peak to start fresh for February
+        assert result.new_state.month_peak_mw <= result.p_import_mw + 1e-6, (
+            "D10: month_peak must reset after boundary booking")
+        # Use assert_demand_charge_timing helper
+        assert_demand_charge_timing(
+            result, is_month_boundary=True,
+            prev_month_peak_mw=80.0, params=PARAMS)
+
+    def test_two_month_no_double_count(self):  # reviewer: M2
+        # Controlled 2-month rollout: Jan peak=80 MW, Feb peak=60 MW.
+        # Σ c_demand_charge_yuan == 80×32000 + 60×32000 == 4,480,000 ¥ (each month once).
+        #
+        # Jan: t=0..743 (744 steps), set month_peak to 80 at t=742, then step t=743 books it.
+        # Feb: t=744..1415 (672 steps), set month_peak to 60 at t=1414, then step t=1415 books it.
+        action = np.zeros(6)
+        weather = (0.0, 0.0, 0.0)   # night: no RE
+
+        # Accumulate all demand charges over both months
+        total_demand_charge = 0.0
+
+        # Run Jan: start from t=742 with month_peak=80 already set
+        state = make_state(t=742, month_peak_mw=80.0)
+        # Step t=742: mid-month (Jan still continues until t=743)
+        r742 = env_step(state, action, weather, 0.0, PARAMS)
+        assert r742.c_demand_charge_yuan == pytest.approx(0.0, abs=1e-9), (
+            "t=742 is mid-month; no booking expected")
+        total_demand_charge += r742.c_demand_charge_yuan
+
+        # Step t=743: Jan boundary (month_of_step[744] == Feb)
+        # month_peak from state = 80 (set above); import ≈ 0 so peak unchanged
+        state743 = r742.new_state   # t=743 now
+        r743 = env_step(state743, action, weather, 0.0, PARAMS)
+        assert r743.c_demand_charge_yuan == pytest.approx(
+            80.0 * 32_000.0, rel=1e-9), (
+            f"t=743 (Jan→Feb): booking expected 80×32000=2,560,000; "
+            f"got {r743.c_demand_charge_yuan:.2f}")
+        total_demand_charge += r743.c_demand_charge_yuan
+
+        # Run Feb: start from Feb with month_peak already at 60
+        # month_peak should have reset after the Jan boundary booking
+        state_feb_start = r743.new_state   # t=744, month_peak reset
+        # Fast-forward to near end of Feb: t=1414 with peak set to 60
+        # (we simulate this by constructing a fresh state at t=1414 with peak=60)
+        state_feb_end = make_state(t=1414, month_peak_mw=60.0)
+        r1414 = env_step(state_feb_end, action, weather, 0.0, PARAMS)
+        assert r1414.c_demand_charge_yuan == pytest.approx(0.0, abs=1e-9), (
+            "t=1414 is mid-Feb; no booking expected")
+        total_demand_charge += r1414.c_demand_charge_yuan
+
+        # Step t=1415: Feb boundary (Feb ends at t=1415=Feb 28 23:00, assuming 28-day Feb)
+        # Actually: Feb has 28×24=672 hours; Feb starts at t=744; ends at t=744+671=1415
+        state1415 = r1414.new_state
+        r1415 = env_step(state1415, action, weather, 0.0, PARAMS)
+        assert r1415.c_demand_charge_yuan == pytest.approx(
+            60.0 * 32_000.0, rel=1e-9), (
+            f"t=1415 (Feb→Mar): booking expected 60×32000=1,920,000; "
+            f"got {r1415.c_demand_charge_yuan:.2f}")
+        total_demand_charge += r1415.c_demand_charge_yuan
+
+        # Total across both months: 80×32000 + 60×32000 = 4,480,000 ¥
+        assert total_demand_charge == pytest.approx(
+            80.0 * 32_000.0 + 60.0 * 32_000.0, rel=1e-9), (
+            f"M2: total demand charge {total_demand_charge:.2f} ≠ "
+            f"80×32000+60×32000=4,480,000 ¥")
+
 
 # ===========================================================================
 # 7. Constraint enforcement — load cap (§3.3 step 1, §3.6 row 7)
@@ -512,15 +629,18 @@ class TestExportLimit:
         p_wind = wind_power(15.0, params_tight)
         p_solar = solar_power(1000.0, 25.0, params_tight)
         gross_export = p_wind + p_solar
-        if gross_export > 600.0:
-            assert result.p_export_mw == pytest.approx(600.0, rel=1e-5)
-            # solar_curtailed + wind_curtailed should equal total curtailment
-            total_curtailed = result.solar_curtailed_mw + result.wind_curtailed_mw
-            assert total_curtailed > 0.0
-            assert total_curtailed == pytest.approx(gross_export - 600.0, rel=1e-5)
-            # Curtailment cost
-            expected_c_curtail = total_curtailed * 800.0 * 1.0
-            assert result.c_curtail_yuan == pytest.approx(expected_c_curtail, rel=1e-5)
+        # Non-blocking fix: assert the precondition explicitly instead of silently passing
+        assert gross_export > 600.0, (
+            f"Test precondition failed: gross_export={gross_export:.2f} MW ≤ 600 MW limit; "
+            f"wind={p_wind:.2f}, solar={p_solar:.2f}. Adjust weather inputs.")
+        assert result.p_export_mw == pytest.approx(600.0, rel=1e-5)
+        # solar_curtailed + wind_curtailed should equal total curtailment
+        total_curtailed = result.solar_curtailed_mw + result.wind_curtailed_mw
+        assert total_curtailed > 0.0
+        assert total_curtailed == pytest.approx(gross_export - 600.0, rel=1e-5)
+        # Curtailment cost
+        expected_c_curtail = total_curtailed * 800.0 * 1.0
+        assert result.c_curtail_yuan == pytest.approx(expected_c_curtail, rel=1e-5)
 
     def test_no_curtailment_under_limit(self):
         # Very low generation → export well below 945 MW → no curtailment
@@ -556,6 +676,61 @@ class TestExportLimit:
         assert total_curtailed == pytest.approx(55.0, rel=1e-9)
         assert total_curtailed * 800.0 * 1.0 == pytest.approx(44_000.0, rel=1e-9)
 
+    def test_per_source_conservation_equality_with_curtailment(self):  # reviewer: M4
+        """M4: per-source conservation must be strict == (not ≤) even when curtailment active.
+
+        Set up: v_hub = v_rated (12.0 m/s) → P_wind = 615 MW; irr=1000 W/m², T=25°C →
+        P_solar = 330×1×1×0.97×0.98 = 313.698 MW; a_bat=−1.0, SOC=0.7, f_b→l=0 → P_dis=98.16 MW.
+        All flows directed to grid: action=(−1,0,0,0,0,0).
+        Total available for export = 615+313.698+98.16 = 1026.858 MW > 945 → curtailment.
+        scale = 945/1026.858 = 0.92026...
+
+        wind_curtailed = 615 × (1−scale); solar_curtailed = 313.698 × (1−scale)
+        Per-source: wind_to_grid + wind_curtailed == 615  (== not ≤)
+                    solar_to_grid + solar_curtailed == 313.698  (== not ≤)
+                    bat_to_grid + bat_curtailed == 98.16  (== not ≤)
+        """
+        # v_10m such that v_hub = 12.0 exactly (at rated → P_wind = 615 MW)
+        v10_rated = 12.0 / SHEAR
+        action = np.array([-1.0, 0.0, 0.0, 0.0, 0.0, 0.0])  # full discharge, all to grid
+        state = make_state(soc=0.7, t=0)
+        weather = (v10_rated, 1000.0, 25.0)
+        result = env_step(state, action, weather, 0.0, PARAMS)
+
+        p_wind_expected = 615.0
+        p_solar_expected = 330.0 * 1.0 * 1.0 * 0.97 * 0.98  # = 313.698 MW
+
+        # Test precondition: curtailment must be happening
+        total_available = p_wind_expected + p_solar_expected + PARAMS.bat_power_mw
+        assert total_available > PARAMS.grid_max_export_mw, (
+            f"M4 precondition: total={total_available:.2f} must exceed export limit="
+            f"{PARAMS.grid_max_export_mw}")
+
+        # Wind per-source conservation EQUALITY (B3 fix: includes wind_curtailed)
+        wind_sum = (result.wind_to_load_mw + result.wind_to_bat_mw
+                    + result.wind_to_grid_mw + result.wind_curtailed_mw)
+        assert wind_sum == pytest.approx(result.p_wind_mw, rel=1e-5), (
+            f"M4 wind conservation: {wind_sum:.6f} ≠ p_wind_mw={result.p_wind_mw:.6f}")
+
+        # Solar per-source conservation EQUALITY
+        solar_sum = (result.solar_to_load_mw + result.solar_to_bat_mw
+                     + result.solar_to_grid_mw + result.solar_curtailed_mw)
+        assert solar_sum == pytest.approx(result.p_solar_mw, rel=1e-5), (
+            f"M4 solar conservation: {solar_sum:.6f} ≠ p_solar_mw={result.p_solar_mw:.6f}")
+
+        # Battery discharge conservation EQUALITY
+        bat_sum = result.bat_to_load_mw + result.bat_to_grid_mw + result.bat_curtailed_mw
+        assert bat_sum == pytest.approx(result.p_bat_discharge_mw, rel=1e-5), (
+            f"M4 bat conservation: {bat_sum:.6f} ≠ p_bat_discharge_mw={result.p_bat_discharge_mw:.6f}")
+
+        # Also verify via invariant helper
+        assert_energy_conserved(result, tol=1e-5)
+
+        # Spot-check curtailment is non-zero (curtailment did happen)
+        assert result.wind_curtailed_mw > 0.0, "M4: expected wind curtailment"
+        assert result.solar_curtailed_mw > 0.0, "M4: expected solar curtailment"
+        assert result.bat_curtailed_mw > 0.0, "M4: expected bat curtailment"
+
 
 # ===========================================================================
 # 9. Constraint enforcement — import limit and VOLL (§3.3 step 4, §3.6 row 9)
@@ -584,6 +759,45 @@ class TestImportLimit:
         assert result.load_unserved_mw == pytest.approx(0.0, abs=1e-9)
         assert result.c_voll_yuan == pytest.approx(0.0, abs=1e-9)
 
+    def test_import_limit_shed_branch_bat_exceeds_grid(self):  # reviewer: M6
+        """M6: STEP 8 branch where grid_max_import < p_g2b → load fully shed.
+
+        Contract STEP 8 pseudocode (lines 386-389):
+          if grid_max_import_mw < p_g2b:
+              p_g2b_actual = grid_max_import_mw   # battery charge capped at grid limit
+              grid_to_load = 0                     # no grid capacity left for load
+        So: load_unserved == load, grid_to_load_mw == 0.
+
+        Setup: grid_max_import=50 MW, a_bat=1.0 (full charge from grid, p_g2b=98.16 MW),
+        no RE, load=60 MW.
+        p_g2b (98.16) > grid_max_import (50) → grid gives 50 MW to battery, 0 to load.
+        load_unserved = 60 MW.
+        """
+        params_tight = GansuParams(grid_max_import_mw=50.0)
+        action = np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0])  # full charge, no RE
+        state = make_state(soc=0.5, t=0)
+        weather = (0.0, 0.0, 0.0)   # no RE
+        load = 60.0   # MW
+
+        result = env_step(state, action, weather, load, params_tight)
+
+        # Battery charge draws up to grid_max_import
+        assert result.grid_to_bat_mw == pytest.approx(50.0, rel=1e-5), (
+            f"M6: grid_to_bat_mw={result.grid_to_bat_mw:.2f} ≠ 50 MW "
+            "(grid_max_import fully used by battery)")
+        # No grid capacity left for load
+        assert result.grid_to_load_mw == pytest.approx(0.0, abs=1e-9), (
+            f"M6: grid_to_load_mw={result.grid_to_load_mw:.4f} ≠ 0 "
+            "(branch: grid_max_import < p_g2b → grid_to_load = 0)")
+        # All load is shed
+        assert result.load_unserved_mw == pytest.approx(load, rel=1e-5), (
+            f"M6: load_unserved_mw={result.load_unserved_mw:.2f} ≠ load={load}")
+        # C_VOLL = 60 × 20000 × 1 = 1,200,000 ¥
+        assert result.c_voll_yuan == pytest.approx(load * 20_000.0 * 1.0, rel=1e-5), (
+            f"M6: c_voll_yuan={result.c_voll_yuan:.2f} ≠ {load * 20_000.0:.2f}")
+        # Import limit respected
+        assert result.p_import_mw == pytest.approx(50.0, rel=1e-5)
+
 
 # ===========================================================================
 # 10. Energy conservation (§3.6 row 14)
@@ -591,35 +805,13 @@ class TestImportLimit:
 
 class TestEnergyConservation:
 
-    def _check_conservation(self, result: StepResult, p_wind, p_solar):
-        """Each source: to_load + to_bat + to_grid + curtailed = gross (within 1e-6 MW)."""
-        # Wind conservation
-        wind_sum = (result.wind_to_load_mw + result.wind_to_bat_mw
-                    + result.wind_to_grid_mw)
-        # Note: curtailment may belong to wind or solar proportionally
-        assert wind_sum <= p_wind + 1e-6, (
-            f"Wind over-allocated: {wind_sum:.6f} > {p_wind:.6f}")
+    def _check_conservation(self, result: StepResult, p_wind=None, p_solar=None):
+        """B3 fix: delegate to assert_energy_conserved for equality == checks with curtailed flows.
 
-        # Solar conservation
-        solar_sum = (result.solar_to_load_mw + result.solar_to_bat_mw
-                     + result.solar_to_grid_mw)
-        assert solar_sum <= p_solar + 1e-6, (
-            f"Solar over-allocated: {solar_sum:.6f} > {p_solar:.6f}")
-
-        # Total generation = total consumption (load served + bat charged + exported + curtailed)
-        # Note: LOCKED schema uses split curtailment: solar_curtailed_mw + wind_curtailed_mw
-        total_gen = p_wind + p_solar + result.p_bat_discharge_mw
-        total_consumption = (
-            result.wind_to_load_mw + result.solar_to_load_mw + result.bat_to_load_mw
-            + result.grid_to_load_mw
-            + result.wind_to_bat_mw + result.solar_to_bat_mw + result.grid_to_bat_mw
-            + result.p_export_mw
-            + result.solar_curtailed_mw + result.wind_curtailed_mw + result.bat_curtailed_mw
-        )
-        # Note: import adds to the "available" side
-        # The full balance: generation + import = load + (bat charge change) + export + curtailed
-        # For a simpler check: verify total load served + unserved = original load
-        action = None  # not needed here
+        The original method used ≤ without curtailed flows — replaced by the invariant helper
+        which asserts per-source equality including wind_curtailed_mw and solar_curtailed_mw.
+        """
+        assert_energy_conserved(result, tol=1e-5)  # B3: == not <=, includes curtailed
 
     def test_energy_conservation_wind_only(self):
         # All wind to grid, no solar, no battery
@@ -715,6 +907,39 @@ class TestReward:
                                 + result.c_degradation_yuan + result.c_curtail_yuan
                                 + result.c_voll_yuan)
         assert result.cost_total_reward_basis_yuan == pytest.approx(reconstructed_basis, rel=1e-9)
+
+    def test_cost_total_real_reconstruction(self):  # reviewer: M3
+        # cost_total_real_yuan == c_energy + c_demand_charge + c_degradation + c_curtail + c_voll
+        # (D13: real money, uses actual monthly demand charge not reward-shaping version)
+        # Two sub-cases: mid-month (c_demand_charge=0) and boundary (c_demand_charge>0)
+
+        # Mid-month case: t=100, month_peak=50 (so no new peak, c_demand_shape=0 too)
+        action = np.zeros(6)
+        weather = (0.0, 0.0, 0.0)
+
+        state_mid = make_state(t=100, month_peak_mw=200.0)
+        result_mid = env_step(state_mid, action, weather, 50.0, PARAMS)
+        # C_import = 250×50×1=12500; R_export=0; C_E=12500
+        # C_demand_charge=0 (mid-month); C_deg=0; C_curtail=0; C_VOLL=0
+        # cost_total_real = 12500
+        reconstructed_real = (result_mid.c_energy_yuan + result_mid.c_demand_charge_yuan
+                               + result_mid.c_degradation_yuan + result_mid.c_curtail_yuan
+                               + result_mid.c_voll_yuan)
+        assert result_mid.cost_total_real_yuan == pytest.approx(
+            reconstructed_real, rel=1e-9), (
+            f"M3 mid-month: cost_total_real={result_mid.cost_total_real_yuan:.2f} ≠ "
+            f"reconstructed={reconstructed_real:.2f}")
+
+        # Boundary case: t=743, month_peak=80 → c_demand_charge = 80×32000 = 2,560,000 ¥
+        state_bdy = make_state(t=743, month_peak_mw=80.0)
+        result_bdy = env_step(state_bdy, action, weather, 0.0, PARAMS)
+        reconstructed_real_bdy = (result_bdy.c_energy_yuan + result_bdy.c_demand_charge_yuan
+                                   + result_bdy.c_degradation_yuan + result_bdy.c_curtail_yuan
+                                   + result_bdy.c_voll_yuan)
+        assert result_bdy.cost_total_real_yuan == pytest.approx(
+            reconstructed_real_bdy, rel=1e-9), (
+            f"M3 boundary: cost_total_real={result_bdy.cost_total_real_yuan:.2f} ≠ "
+            f"reconstructed={reconstructed_real_bdy:.2f}")
 
 
 # ===========================================================================
@@ -1009,6 +1234,10 @@ class TestInvariantHelpersAPI:
         cost_real = c_energy + c_dc + c_deg + c_curtail + c_voll
         reward = -(cost_rb + penalty) * 1e-5
 
+        # price_buy=250 (hour=4, valley), price_sell=220 (=250−30 nominal spread)
+        price_buy  = 250.0
+        price_sell = 220.0   # = max(0, 250 − max(0, 30 + 0)) = 220 (D7 nominal)
+
         new_state = EnvState(soc=soc_new, month_peak_mw=100.0, t=101,
                              rng=np.random.default_rng(42))
         return StepResult(
@@ -1024,6 +1253,8 @@ class TestInvariantHelpersAPI:
             p_bat_charge_mw=0.0, p_bat_discharge_mw=0.0,
             soc_violation_mwh=0.0,
             p_import_mw=p_import, p_export_mw=p_export,
+            price_buy_yuan_per_mwh=price_buy,
+            price_sell_yuan_per_mwh=price_sell,
             c_import_yuan=c_import, r_export_yuan=r_export,
             c_energy_yuan=c_energy,
             c_demand_shape_yuan=c_ds,
@@ -1045,7 +1276,9 @@ class TestInvariantHelpersAPI:
 
     def test_assert_cost_identities_passes_on_good_result(self):
         result = self._make_good_result()
-        assert_cost_identities(result, PARAMS, tol=1e-9)  # must not raise
+        assert_cost_identities(result, PARAMS, tol=1e-9)  # must not raise (identities only)
+        # Also test formula-level checks (GAP 6): price_buy × p_import × dt = c_import
+        assert_cost_identities(result, PARAMS, tol=1e-9, check_formulas=True)
 
     def test_assert_physical_bounds_passes_on_good_result(self):
         result = self._make_good_result()
@@ -1080,17 +1313,54 @@ class TestInvariantHelpersAPI:
         with pytest.raises(AssertionError, match="Identity 4"):
             assert_cost_identities(bad, PARAMS, tol=1e-9)
 
+    def test_assert_demand_charge_timing_passes_non_boundary(self):
+        # c_demand_charge_yuan = 0 on a non-boundary step → helper must not raise
+        result = self._make_good_result()  # has c_demand_charge_yuan = 0.0
+        assert_demand_charge_timing(result, is_month_boundary=False,
+                                    prev_month_peak_mw=100.0, params=PARAMS)
+
+    def test_assert_demand_charge_timing_passes_boundary(self):
+        # prev_peak=100 MW at boundary → expected charge = 100×32000=3,200,000 ¥
+        # Build a result with c_demand_charge_yuan=3,200,000
+        import dataclasses
+        result = self._make_good_result()
+        result_with_dc = dataclasses.replace(result, c_demand_charge_yuan=100.0 * 32_000.0)
+        assert_demand_charge_timing(result_with_dc, is_month_boundary=True,
+                                    prev_month_peak_mw=100.0, params=PARAMS)
+
+    def test_assert_demand_charge_timing_fails_when_nonzero_mid_month(self):
+        # Non-boundary step with c_demand_charge_yuan > 0 → must raise (D10 violated)
+        import dataclasses
+        result = self._make_good_result()
+        bad = dataclasses.replace(result, c_demand_charge_yuan=100.0)  # should be 0
+        with pytest.raises(AssertionError, match="non-boundary"):
+            assert_demand_charge_timing(bad, is_month_boundary=False,
+                                        prev_month_peak_mw=100.0, params=PARAMS)
+
     def test_assert_physical_bounds_fails_on_soc_out_of_range(self):
         # SOC above soc_max → helper must raise
         result = self._make_good_result()
+        import dataclasses
         bad_state = EnvState(soc=0.95, month_peak_mw=100.0, t=101,
                              rng=np.random.default_rng(42))
-        bad = StepResult(
-            **{k: getattr(result, k) for k in result.__dataclass_fields__
-               if k != "new_state"},
-            new_state=bad_state,
-        )
+        bad = dataclasses.replace(result, new_state=bad_state)
         with pytest.raises(AssertionError, match="soc_max"):
+            assert_physical_bounds(bad, PARAMS)
+
+    def test_assert_physical_bounds_fails_on_price_sell_negative(self):
+        # GAP 3: price_sell < 0 → must raise (D7 outer clamp violated)
+        import dataclasses
+        result = self._make_good_result()
+        bad = dataclasses.replace(result, price_sell_yuan_per_mwh=-5.0)
+        with pytest.raises(AssertionError, match="D7 outer-clamp"):
+            assert_physical_bounds(bad, PARAMS)
+
+    def test_assert_physical_bounds_fails_on_price_sell_above_buy(self):
+        # GAP 3: price_sell > price_buy → must raise (D7 spread must be ≥ 0)
+        import dataclasses
+        result = self._make_good_result()
+        bad = dataclasses.replace(result, price_sell_yuan_per_mwh=260.0)  # > price_buy=250
+        with pytest.raises(AssertionError, match="sell ≤ buy"):
             assert_physical_bounds(bad, PARAMS)
 
 
