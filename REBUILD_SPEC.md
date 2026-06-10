@@ -501,3 +501,67 @@ Each approved enhancement ships as: a numbered LINEAGE **DECISION**; a site-YAML
 1. Which tier(s) to greenlight? (Recommend approving **Tier 1** now, scoping Tier 2/3 later.)
 2. For E1, is per-episode capacity sampling (vs a true multi-year per-step fade) the right fidelity, given 7-day episodes?
 3. For E4/E6, confirm the "separate seed, parity-year untouched" and "no voltage/reactive" guardrails are acceptable boundaries.
+
+---
+
+## 11. Benchmark algorithms for RL comparison (proposal — user approval)
+
+**Status: PROPOSAL for user approval.** §5 compares the RL policy only against two heuristics (no-battery, rule-based TOU). This section adds **principled optimization baselines** so "RL beats the baselines" means "RL beats optimization given the same information," not just "RL beats two heuristics." The whole point is the **information-set ladder**: bracket the RL policy between a causal-myopic floor, a fair-information optimizer, and an acausal oracle ceiling.
+
+All baselines run in the **same JAX eval env** (the D11 parity env), over the **same realized 365-day year** (8760 steps at Δt=1 h, D3) with the **same weather/price/load seed**, so every comparison is apples-to-apples **real money** (the `cost_total_real_yuan` basis, D13). Each baseline emits one `eval_compare` policy entry (see §11.5).
+
+### 11.0 The information-set ladder
+
+| Baseline | Information set | Causal? | Role |
+|---|---|---|---|
+| no-battery (§5) | — | causal | trivial floor |
+| rule-based TOU (§5) | tariff schedule only | causal | heuristic floor |
+| **greedy myopic** | current realized step only, no lookahead | causal | reactive-optimization floor |
+| **MPC (receding horizon)** | current + the **same noisy 24-step forecast the RL sees** (D6) | causal | **fair-information baseline — the real test** |
+| **DP oracle** | the **entire** realized year (perfect foresight) | acausal | **unreachable upper bound** |
+| RL policy (§5) | current obs + noisy 24-step forecast (D6) | causal | the system under test |
+
+RL and MPC share an information set, so **MPC is the baseline RL must beat to justify itself**; greedy/rule-based/no-battery are floors it must clear comfortably; the DP oracle is the ceiling — RL can never beat it, and `(RL_cost − oracle_cost)/oracle_cost` is the headline "money left on the table."
+
+### 11.1 Greedy myopic dispatch (NEW)
+
+- **Decision variables:** the §2.2 action at the current step — renewable flow fractions `f_s→·`, battery `a_bat ∈ [−1,1]`, `f_bat→load`.
+- **Objective:** minimize **this step's** `cost_total_real` given the realized prices/weather/load now; no value placed on future SOC.
+- **Information:** causal, current step only.
+- **Solve:** closed-form / tiny per-step rule — serve load from the cheapest available source, charge only from otherwise-curtailed surplus (no lookahead → no speculative arbitrage), discharge when `price_buy` is high. O(1) per step.
+- **Demand charge:** greedy is **blind** to the monthly peak (no lookahead) — it sets new peaks freely. This intended weakness separates it from MPC/DP and shows the value of foresight.
+
+### 11.2 Perfect-foresight DP oracle (NEW) — the upper bound
+
+- **State:** battery `SOC`, **discretized** on `[0.2, 0.9]` (D4) at a default grid of **Δsoc = 0.01 → 71 states** (configurable; coarser for speed, finer for tightness). Stage = step (Δt = 1 h, D3).
+- **Decision variable:** per-step battery power (charge/discharge), from which the §3.3 dispatch and `cost_total_real` follow deterministically under known exogenous data.
+- **Objective:** minimize **total** real-money cost over the horizon, **including the monthly demand charge**.
+- **The demand-charge coupling (key subtlety):** the monthly peak makes cost **non-separable** across steps, so plain per-step DP is invalid. Resolve by **augmenting the state with the running month-peak** (peak discretized too) **or** by decomposition: for each calendar month, sweep a candidate peak cap `P̄`, run SOC-DP that forbids import > `P̄`, add `P̄·demand_rate`, minimize over `P̄`. Default = augmented-state; per-month sweep noted as the cheaper approximation.
+- **Information:** perfect foresight over the whole realized year (acausal) — **not achievable online**; the bound, computed **offline once per eval**.
+- **Compute:** O(steps × SOC-states × actions) per month × the peak sweep/augmentation. Heaviest baseline but run once; report wall-time. Exact within the SOC/peak discretization — the reported oracle is an upper bound on achievable performance **up to grid resolution**.
+
+### 11.3 MPC / receding horizon (NEW) — the fair-information baseline
+
+- **Decision variables:** the action **sequence** over a horizon `H = 24` steps (matching the RL forecast horizon, D6/D9).
+- **Objective:** minimize predicted `cost_total_real` over the horizon (with a terminal SOC value/penalty to avoid end-of-horizon myopia), **apply only the first action**, advance one step, re-solve (receding horizon).
+- **Information:** **causal** — current realized state + the **same horizon-scaled noisy 24-step forecast the RL consumes** (D6). This is what makes it the fair comparison.
+- **Demand charge:** the 24-step horizon cannot see the full month, so MPC needs a **peak-aware terminal/soft-constraint term** (penalize import above the running month-peak); document that MPC, like RL, only partially solves the monthly-peak credit-assignment problem — which is precisely why it's the honest baseline rather than the oracle.
+- **Solve:** per-step linear/quadratic program over 24 steps (the env is piecewise-linear: flows, clips, proportional scaling). Use a fast LP/QP solver; vmappable across the parallel eval envs if linearized. Note the per-step solve cost vs greedy.
+
+### 11.4 What "RL is good" means against this ladder
+
+- **Must clear comfortably:** no-battery, rule-based TOU, greedy.
+- **Must beat or match:** **MPC** (same information) — the decisive result. RL beating MPC means the learned policy captures structure (esp. the monthly-peak long-horizon credit assignment, γ=0.999) better than a 24-step optimizer.
+- **Cannot beat:** the **DP oracle** — report the optimality gap. Small gap = little left on the table; large gap = the policy or the information bottleneck (forecast noise) is the limiter.
+
+### 11.5 Eval-harness & telemetry integration
+
+- Each baseline is an `agents/baseline_agent.py`-style policy (greedy, MPC) or an offline solver (DP oracle) producing a per-step action stream consumed by the **same eval env**; the DP oracle's optimal SOC trajectory is replayed through the env for identical cost accounting.
+- **`eval_compare` telemetry:** add policy keys `greedy`, `mpc`, `dp_oracle` alongside `rl`/`no_battery`/`rule_based_tou`. Per the LOCKED schema's versioning this is an **additive (minor) bump** — the `policies` object already allows additional keys (`additionalProperties: true`), no field removed/retyped, **no re-review required** (minor bump + a one-line note in the telemetry contract that these keys may appear). Each entry uses the existing `policy_costs` shape (five real-money components summing to `total_cost_yuan`, plus SOC/penalty metrics). The headline panel renders RL vs the full ladder with the oracle gap highlighted.
+
+### 11.6 Open questions for the user
+
+1. Include all three (greedy + DP oracle + MPC), or defer MPC (most implementation-heavy)? Recommend **all three** — MPC is the most informative comparison.
+2. DP oracle: augmented-state (SOC × running-peak) formulation, or the cheaper per-month peak-sweep approximation? Default proposed: augmented state, sweep as documented fallback.
+3. SOC discretization for the oracle — Δsoc = 0.01 (71 states) a good speed/tightness default, or coarser?
+4. Confirm baselines run in the JAX eval env (not a separate solver env) so cost accounting is identical to RL — proposed yes.
