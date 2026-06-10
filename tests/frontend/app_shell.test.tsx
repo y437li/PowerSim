@@ -665,6 +665,21 @@ describe("trainingStore — receiveTrainMetrics", () => {
     expect(useTrainingStore.getState().trainSeqGap).toBe(false);
   });
 
+  it("§6.2 — trainSeqGap is non-sticky: contiguous message after gap resets it to false", async () => {
+    // Non-sticky: trainSeqGap = gap of the CURRENT message, not a latched flag.
+    const { useTrainingStore } = await import("../../src/stores/trainingStore");
+    useTrainingStore.getState().clear();
+    act(() => {
+      useTrainingStore.getState().receiveTrainMetrics({ ...FIXTURE_TRAIN_METRICS, seq: 10 } as any);
+      useTrainingStore.getState().receiveTrainMetrics({ ...FIXTURE_TRAIN_METRICS, seq: 15 } as any); // gap → true
+    });
+    expect(useTrainingStore.getState().trainSeqGap).toBe(true);
+    act(() => {
+      useTrainingStore.getState().receiveTrainMetrics({ ...FIXTURE_TRAIN_METRICS, seq: 16 } as any); // contiguous → false
+    });
+    expect(useTrainingStore.getState().trainSeqGap).toBe(false);
+  });
+
   it("§6.2 — clear() resets lastTrainSeq and trainSeqGap", async () => {
     const { useTrainingStore } = await import("../../src/stores/trainingStore");
     act(() => {

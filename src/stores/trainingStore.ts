@@ -7,10 +7,10 @@ export interface TrainingState {
   /** seq from last received train_metrics envelope (null before first message). */
   lastTrainSeq: number | null;
   /**
-   * true when a forward sequence gap was detected in the train_metrics stream:
-   * msg.seq > lastTrainSeq + 1. Out-of-order / duplicate messages are silently
-   * accepted (gap flag stays unchanged). Reset on clear().
-   * Mirrors telemetryStore.seqGap semantics for env_step.
+   * true when the CURRENT message has a forward sequence gap:
+   * msg.seq > lastTrainSeq + 1. Resets to false on the next contiguous message.
+   * Out-of-order / duplicate messages are silently accepted (gap=false).
+   * Reset on clear(). Non-sticky — mirrors telemetryStore.seqGap semantics.
    */
   trainSeqGap: boolean;
 
@@ -34,7 +34,7 @@ export const useTrainingStore = create<TrainingState>((set) => ({
         latest: payload,
         history: [...state.history, payload],
         lastTrainSeq: incomingSeq,
-        trainSeqGap: state.trainSeqGap || gap,
+        trainSeqGap: gap,
       };
     });
   },

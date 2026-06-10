@@ -400,10 +400,10 @@ interface TrainingState {
   /** seq from last received train_metrics envelope; null before first message. */
   lastTrainSeq: number | null;
   /**
-   * true when a forward sequence gap detected in train_metrics stream:
-   * msg.seq > lastTrainSeq + 1.  Out-of-order / duplicate messages are
-   * silently accepted (gap flag unchanged).  Reset on clear().
-   * Mirrors telemetryStore.seqGap semantics for env_step.
+   * true when the CURRENT message has a forward sequence gap:
+   * msg.seq > lastTrainSeq + 1.  Resets to false on the next contiguous
+   * message (non-sticky).  Out-of-order / duplicate messages → gap=false.
+   * Reset on clear().  Mirrors telemetryStore.seqGap (non-sticky) semantics.
    */
   trainSeqGap: boolean;
   receiveTrainMetrics(msg: TelemetryEnvelope & { payload: TrainMetricsPayload }): void;
@@ -413,8 +413,9 @@ interface TrainingState {
 
 `receiveTrainMetrics` extracts `msg.seq` internally to update `lastTrainSeq` and
 `trainSeqGap` — callers do not need to pass seq separately.
-Gap rule: gap is flagged iff `seq > lastTrainSeq + 1`; the first message never
-flags; `trainSeqGap` is sticky (stays true until `clear()`).
+Gap rule (non-sticky, mirrors telemetryStore): `trainSeqGap = seq > lastTrainSeq + 1`;
+resets to `false` on the next contiguous message; the first message never flags;
+`clear()` resets both to null/false.
 
 ### 6.3 Eval store (`src/stores/evalStore.ts`)
 
