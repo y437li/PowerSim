@@ -1,6 +1,6 @@
 # Contract: assets/3d/registry.json schema
 
-- **Status:** DRAFT — pending rl-architect LOCK (shared contract; advisory review by both frontend-reviewer + backend-reviewer)
+- **Status:** LOCKED (2026-06-10, PR #24 + lock PR) — rl-architect LOCK on `assets/3d/registry.json` v1.0.0. Additive entries (new GLB models) are minor bumps; field removal/rename/retype is breaking → superseding DECISION + re-LOCK + re-review by both reviewers.
 - **Owner:** 3d-assets-engineer (schema); rl-architect (LOCK authority)
 - **Reviewers:** frontend-reviewer (scene consumer), backend-reviewer (config YAML producer — asset IDs must match)
 - **Area:** assets (shared)
