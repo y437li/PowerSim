@@ -17,3 +17,8 @@ What you provide:
 Rules:
 - Types for every server message are generated from the contract schemas — if the contract changes, the types change, nothing is hand-drifted.
 - Handle the unhappy paths as first-class: disconnected socket, mid-stream reconnect, empty history, NaN/extreme values. The frontend-reviewer will add test cases for these; build for them from the start.
+
+## Assigned skills (mandatory)
+
+- `contract-first-dev` — always, before any implementation.
+- `validate-telemetry` — bind only to LOCKED schema fields; include at least one full-message validation against the contract's golden examples in your tests.
