@@ -420,6 +420,15 @@ No inline unit conversion math. All conversions imported from `units.ts`.
 - **The 3D scene** is not touched — `LiveDashboard` renders in the dashboard panel only.
 - **No history persistence** — only the in-memory `telemetryStore.history` ring buffer (168 steps);
   no localStorage or IndexedDB.
+- **CI lock-file workaround (known issue)** — the `.github/workflows/ci.yml` frontend test step
+  runs `rm -f package-lock.json && npm install` instead of `npm ci` to work around the npm/rollup
+  cross-platform optional-dependency bug ([npm/cli#4828](https://github.com/npm/cli/issues/4828))
+  where a macOS-generated `package-lock.json` omits `@rollup/rollup-linux-x64-gnu`, causing CI to
+  fail even under `npm install` with an existing lock. This trades reproducibility (exact pinned
+  versions) for CI reliability. **Proper fix:** generate `package-lock.json` on Linux (e.g., in a
+  `chore/config-linux-lockfile` PR that runs `npm install` on the GitHub Actions Ubuntu runner and
+  commits the resulting lock), or adopt a cross-platform lockfile strategy. Deferred to a later
+  chore PR.
 
 ---
 
