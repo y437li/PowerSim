@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0.0",
+  "entries": [
+    {
+      "id": "vestas-v150-4.2",
+      "path": "turbines/vestas-v150-4.2.glb",
+      "type": "turbine",
+      "dims_m": { "x": 150, "y": 166, "z": 150 },
+      "pivot": { "x": 0, "y": 0, "z": 0 },
+      "animation_hooks": {
+        "rotor_node": "Rotor"
+      }
+    },
+    {
+      "id": "trina-vertex-n-670w",
+      "path": "pv/trina-vertex-n-670w.glb",
+      "type": "pv_array",
+      "dims_m": { "x": 40, "y": 3, "z": 20 },
+      "pivot": { "x": 0, "y": 0, "z": 0 },
+      "animation_hooks": {
+        "irradiance_material": "PVSurface"
+      }
+    },
+    {
+      "id": "catl-lmp-300mwh",
+      "path": "batteries/catl-lmp-300mwh.glb",
+      "type": "battery",
+      "dims_m": { "x": 20, "y": 5, "z": 60 },
+      "pivot": { "x": 0, "y": 0, "z": 0 },
+      "animation_hooks": {
+        "soc_fill_mesh": "SOCFillMesh"
+      }
+    },
+    {
+      "id": "pcc-substation-945mw",
+      "path": "grid/pcc-substation-945mw.glb",
+      "type": "grid_pcc",
+      "dims_m": { "x": 50, "y": 15, "z": 30 },
+      "pivot": { "x": 0, "y": 0, "z": 0 },
+      "animation_hooks": {}
+    }
+  ]
+}
