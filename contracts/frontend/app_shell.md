@@ -400,29 +400,28 @@ interface TrainingState {
   /** seq from last received train_metrics envelope; null before first message. */
   lastTrainSeq: number | null;
   /**
-   * Non-sticky: true when the CURRENT message has a forward sequence gap
-   * (msg.seq > lastTrainSeq + 1). Resets to false on the next contiguous
-   * message. Out-of-order / duplicates are silently accepted (gap=false).
-   * Reset on clear(). Mirrors telemetryStore.seqGap semantics for env_step.
+   * true when the CURRENT message has a forward sequence gap:
+   * msg.seq > lastTrainSeq + 1.  Resets to false on the next contiguous
+   * message (non-sticky).  Out-of-order / duplicate messages → gap=false.
+   * Reset on clear().  Mirrors telemetryStore.seqGap (non-sticky) semantics.
    */
   trainSeqGap: boolean;
   /**
-   * ISO-8601 UTC ts_utc from the envelope of the most recent train_metrics
-   * message. Used by TrainingPanel's StreamStatusBanner for the local
-   * data-stale check (>30 s without a message while WS is connected).
-   * Optional so test mocks that omit it receive null via ?? null.
+   * ISO-8601 UTC ts_utc from the most recent train_metrics envelope.
+   * Used by TrainingPanel StreamStatusBanner for local data-stale check.
+   * null before first message; reset to null on clear().
    */
-  latestTsUtc?: string | null;
+  latestTsUtc: string | null;
   receiveTrainMetrics(msg: TelemetryEnvelope & { payload: TrainMetricsPayload }): void;
   clear(): void;
 }
 ```
 
-`receiveTrainMetrics` extracts `msg.seq` internally to update `lastTrainSeq` and
-`trainSeqGap` — callers do not need to pass seq separately.
-Gap rule: gap is flagged iff `seq > lastTrainSeq + 1`; the first message never
-flags; `trainSeqGap` is non-sticky (reflects current message only, resets to
-false on the next contiguous message).
+`receiveTrainMetrics` extracts `msg.seq` and `msg.ts_utc` internally — callers do not
+pass these separately.
+Gap rule (non-sticky, mirrors telemetryStore): `trainSeqGap = seq > lastTrainSeq + 1`;
+resets to `false` on the next contiguous message; the first message never flags;
+`clear()` resets `lastTrainSeq` → null, `trainSeqGap` → false, `latestTsUtc` → null.
 
 ### 6.3 Eval store (`src/stores/evalStore.ts`)
 
