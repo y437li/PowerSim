@@ -1,6 +1,6 @@
 # Contract: Frontend App Shell
 
-- **Status:** DRAFT — awaiting VERDICT: APPROVE from frontend-reviewer
+- **Status:** ADDRESSING REVIEW — must-fix items resolved; awaiting VERDICT: APPROVE from frontend-reviewer (re-review requested)
 - **Spec:** REBUILD_SPEC.md §2 (MDP/obs), §3 (physics & costs), §3.7 (tariff/TOU), §5 (training/eval), telemetry schema `contracts/shared/telemetry_schema.md` (DRAFT — wire-format-dependent sections marked **⚠ PENDING TELEMETRY LOCK**)
 - **Owner:** frontend-engineer · **Reviewer:** frontend-reviewer
 - **Area:** frontend
@@ -346,8 +346,21 @@ interface TelemetryState {
 
   // Actions
   receiveEnvStep(msg: TelemetryEnvelope & { payload: EnvStepPayload }): void;
+  // receiveEnvStep run_id change handling (§12.3, store-internal):
+  //   When msg.run_id differs from the current non-null runId, the store
+  //   MUST reset history, envStep, lastSeq, seqGap, step, episode, simTimeUtc
+  //   (equivalent to clearHistory() followed by updating runId) BEFORE appending
+  //   the new message. After reset, msg.seq is treated as the first seq (no gap).
+  //   wsClient does NOT call clearHistory() explicitly — the store handles it.
+  //
+  // seqGap semantics:
+  //   seqGap = true  iff seq > lastSeq + 1  (a forward gap, i.e. missed messages).
+  //   Out-of-order or duplicate delivery (seq ≤ lastSeq) is silently accepted and
+  //   does NOT set seqGap. The first message (lastSeq === null) never sets seqGap.
   setWsStatus(status: WsStatus): void;
   clearHistory(): void;
+  // clearHistory also resets lastSeq to null and seqGap to false so that the
+  // first message after a reconnect is never a false gap.
 }
 ```
 
@@ -407,10 +420,16 @@ interface NumberDisplayProps {
 ```typescript
 interface TouBadgeProps {
   tier: TariffTier | null;
-  showPrice?: boolean;    // if true, renders price from §3.7 after the tier label
+  showPrice?: boolean;        // if true and priceYuanPerMwh is provided, appends the price
+  priceYuanPerMwh?: number;  // fed from telemetryStore.envStep.price_buy_yuan_per_mwh;
+                              //   formatted via formatYuanPerMwh() — never a hardcoded table
 }
 // Renders: <span class="tou-badge tou-{tier}">Peak</span>
+//   — with showPrice=true and priceYuanPerMwh provided:
+//   <span class="tou-badge tou-{tier}">Peak ¥620/MWh</span>
 // tier === null → renders "—" with neutral style
+// Price source is ALWAYS the wire value from telemetryStore; the component renders
+// whatever is passed in and does no §3.7 table lookup.
 ```
 
 ### 7.4 `TimeAxis.tsx`
@@ -461,10 +480,15 @@ function formatYuanPerMwh(yuanPerMwh: number): string;        // e.g. "¥620/MWh
 function formatPower(mw: number): string;      // <1 MW → "850 kW"; ≥1 MW → "1.2 MW"
 
 // Time: ISO-8601 UTC → display string for sim clock
-function formatSimTime(isoUtc: string): string;  // e.g. "Mon 08:00" (day-of-week + HH:MM)
+function formatSimTime(isoUtc: string): string;
+// Returns e.g. "Tue 08:00" — 3-letter day-of-week abbreviation (Mon/Tue/Wed/Thu/Fri/Sat/Sun)
+// followed by HH:MM in 24-hour format.
+// Implementation MUST use getUTCDay() / getUTCHours() / getUTCMinutes() — the sim clock
+// is the UTC clock and must be rendered as-is regardless of the browser/CI runner timezone.
+// A getHours()/getDay() implementation is incorrect.
 ```
 
-No `Date.now()` or timezone conversions here — `formatSimTime` formats the UTC clock as-is for display.
+No `Date.now()` or timezone conversions — `formatSimTime` displays the UTC sim clock as-is.
 
 ---
 
