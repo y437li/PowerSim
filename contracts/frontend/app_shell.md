@@ -1,6 +1,6 @@
 # Contract: Frontend App Shell
 
-- **Status:** ADDRESSING REVIEW — must-fix items resolved; awaiting VERDICT: APPROVE from frontend-reviewer (re-review requested)
+- **Status:** ADDRESSING REVIEW — must-fix items resolved; PENDING_LOCK sections updated to telemetry_schema.md v1.0.0 LOCK (PR #6, 98beee0); awaiting VERDICT: APPROVE from frontend-reviewer
 - **Spec:** REBUILD_SPEC.md §2 (MDP/obs), §3 (physics & costs), §3.7 (tariff/TOU), §5 (training/eval), telemetry schema `contracts/shared/telemetry_schema.md` (DRAFT — wire-format-dependent sections marked **⚠ PENDING TELEMETRY LOCK**)
 - **Owner:** frontend-engineer · **Reviewer:** frontend-reviewer
 - **Area:** frontend
@@ -77,9 +77,9 @@ No test files next to source — all tests live under `tests/frontend/`.
 
 ---
 
-## 3. Type definitions (⚠ PENDING TELEMETRY LOCK)
+## 3. Type definitions (LOCKED — telemetry_schema.md v1.0.0, PR #6)
 
-> These types are derived from `contracts/shared/telemetry_schema.md` (DRAFT). Shapes are correct against the draft but are subject to change when rl-architect locks the contract. Implementation of any code that parses these wire messages must wait for the LOCK. The type interfaces are safe to write now.
+> These types are derived from `contracts/shared/telemetry_schema.md` v1.0.0 (LOCKED, PR #6, 98beee0). Implementations MUST use these exact field names and units. A field change here requires a new rl-architect DECISION and re-review.
 
 ### 3.1 Envelope
 
@@ -103,8 +103,15 @@ interface BatteryState {
   soc: number;               // fraction [0.2, 0.9] (D4) — display as soc*100 %
   p_charge_mw: number;       // MW ≥ 0
   p_discharge_mw: number;    // MW ≥ 0; charge XOR discharge
+  p_max_charge_mw: number;   // §3.6 row 3 — carried so 3D can scale the battery wire
+  p_max_discharge_mw: number;// §3.6 row 3
   soc_violation_mwh: number; // MWh ≥ 0
   capacity_mwh: number;      // MWh (294.5 Gansu)
+}
+
+interface GenerationBlock {
+  gross_solar_mw: number;    // §3.1 P_pv before curtailment/dispatch; conservation: solar_to_*+solar_curtailed == gross_solar
+  gross_wind_mw: number;     // §3.1 P_wind before curtailment/dispatch; conservation: wind_to_*+wind_curtailed == gross_wind
 }
 
 interface PowerFlows {
@@ -118,7 +125,8 @@ interface PowerFlows {
   bat_to_grid_mw: number;
   grid_to_load_mw: number;
   grid_to_bat_mw: number;
-  ren_curtailed_mw: number;
+  solar_curtailed_mw: number; // §3.3 step 3 — per-source (was ren_curtailed_mw in DRAFT, split at LOCK)
+  wind_curtailed_mw: number;  // §3.3 step 3
   bat_curtailed_mw: number;
   load_unserved_mw: number;
 }
@@ -127,29 +135,40 @@ interface PccState {
   export_mw: number;         // MW
   import_mw: number;         // MW
   max_export_mw: number;     // MW (D5: 945 Gansu physics limit)
-  max_import_mw: number;     // MW (400 Gansu)
+  max_import_mw: number;     // MW (D12: 400 Gansu)
 }
 
 type TariffTier = "critical_peak" | "peak" | "mid" | "valley";
 
 interface PerStepCosts {
-  c_energy_yuan: number;
-  c_import_yuan: number;
-  r_export_yuan: number;
-  c_demand_shape_yuan: number;
+  // Real-money summands — additive identity: cost_total_real_yuan = c_energy + c_demand_charge + c_degradation + c_curtail + c_voll
+  c_energy_yuan: number;        // = c_import_yuan − r_export_yuan (§3.4); can be negative (net revenue)
+  c_import_yuan: number;        // decomposition of c_energy — display-only, NOT an additional summand
+  r_export_yuan: number;        // decomposition of c_energy — display-only, NOT an additional summand
+  c_demand_charge_yuan: number; // REAL monthly charge; 0 except at month-boundary / terminal flush step (D10)
   c_degradation_yuan: number;
   c_curtail_yuan: number;
   c_voll_yuan: number;
-  penalty_yuan: number;
-  cost_total_yuan: number;
+  // Reward-shaping terms (NOT real money, excluded from cost_total_real_yuan)
+  c_demand_shape_yuan: number;  // RAW C_DC_shape (§3.4); reward applies 2.0× weight, not stored pre-weighted
+  penalty_yuan: number;         // SOC overshoot etc. (D4/§3.5); enters reward, NOT a cost summand
+  // Rates (carried so dashboard needs no hardcoded constant)
+  demand_rate_yuan_per_mw_month: number; // §3.7 = 32 000 ¥/MW·month
+  // Two cost totals — see "Cost-accounting model" in telemetry_schema.md
+  cost_total_real_yuan: number;         // real money only: c_energy+c_demand_charge+c_degradation+c_curtail+c_voll
+  cost_total_reward_basis_yuan: number; // reward basis: c_energy+2.0·c_demand_shape+c_degradation+c_curtail+c_voll
 }
 
 interface CumulativeCosts {
   c_energy_yuan_cum: number;
   c_demand_charge_yuan_cum: number;
+  c_demand_shape_yuan_cum: number;
   c_degradation_yuan_cum: number;
   c_curtail_yuan_cum: number;
   c_voll_yuan_cum: number;
+  penalty_yuan_cum: number;
+  cost_total_real_yuan_cum: number;
+  cost_total_reward_basis_yuan_cum: number;
 }
 
 interface GasAsset { id: string; p_mw: number; c_fuel_yuan: number; setpoint: number; }
@@ -175,14 +194,15 @@ interface EnvStepPayload {
   load_mw: number;           // MW
   price_buy_yuan_per_mwh: number;
   price_sell_yuan_per_mwh: number;
-  tariff_tier: TariffTier;
+  tariff_tier: TariffTier;   // price label for this step only — NOT band geometry (draw TOU bands from static §3.7 schedule)
   battery: BatteryState;
+  generation: GenerationBlock;
   flows: PowerFlows;
   pcc: PccState;
   costs: PerStepCosts;
   cost_cum: CumulativeCosts;
   month_peak_mw: number;     // MW
-  reward: number;            // unitless, scaled ×1e-5 (§3.5)
+  reward: number;            // unitless, = −(cost_total_reward_basis_yuan + penalty_yuan)×1e-5 (§3.5)
   assets_ext?: AssetsExt;    // absent for Gansu parity; feature-detect by key presence
 }
 ```
@@ -197,8 +217,10 @@ interface TrainMetricsPayload {
   actor_loss: number;
   critic_loss: number;
   ent_coef: number;
-  reward_mean: number;
-  reward_unnorm_mean_yuan: number;
+  reward_scaled_mean: number;           // batch mean of ×1e-5-scaled env reward (matches env_step.reward); unitless
+  reward_norm_mean: number | null;      // VecNormalize-normalized reward seen by optimizer (§5 norm_reward=True);
+                                        //   null on eval checkpoints (eval is unnormalized)
+  cost_total_real_mean_yuan: number;    // mean per-episode REAL-money cost (negative = net revenue)
   is_eval_checkpoint: boolean;
   checkpoint_id: string | null;
 }
@@ -208,18 +230,23 @@ interface TrainMetricsPayload {
 
 ```typescript
 interface PolicyMetrics {
+  // Real-money cost components — additive identity: total_cost_yuan = energy+demand_charge+degradation+curtailment+voll
   energy_cost_yuan: number;
   demand_charge_yuan: number;
   degradation_yuan: number;
   curtailment_yuan: number;
   voll_yuan: number;
-  soc_violations_count: number;
-  total_cost_yuan: number;
+  total_cost_yuan: number;       // real-money headline (excludes soc/penalty which are reward-shaping safety metrics)
+  // Safety metrics — reported alongside but NOT included in total_cost_yuan
+  soc_violations_count: number;  // integer count
+  soc_violation_mwh: number;     // cumulative overshoot energy
+  penalty_yuan: number;          // reward-basis penalty total (transparency; not real money)
 }
 
 interface EvalComparePayload {
-  eval_horizon_steps: number;  // 8760 (D3)
+  eval_horizon_steps: number;    // 8760 (D3)
   checkpoint_id: string;
+  cost_basis: "real_money";      // explicit: all *_yuan fields are real money, not reward-basis
   policies: {
     rl: PolicyMetrics;
     no_battery: PolicyMetrics;
@@ -230,7 +257,7 @@ interface EvalComparePayload {
 
 ---
 
-## 4. WebSocket client (`src/clients/wsClient.ts`) ⚠ PENDING TELEMETRY LOCK (envelope parsing)
+## 4. WebSocket client (`src/clients/wsClient.ts`)
 
 ```typescript
 type WsStatus = "connecting" | "connected" | "disconnected" | "stale";
@@ -323,7 +350,7 @@ Error handling:
 
 ## 6. Shared state stores
 
-### 6.1 Telemetry store (`src/stores/telemetryStore.ts`) ⚠ PENDING TELEMETRY LOCK
+### 6.1 Telemetry store (`src/stores/telemetryStore.ts`)
 
 ```typescript
 interface TelemetryState {
@@ -558,7 +585,8 @@ All of the following must be handled gracefully — no crashes, no silent data c
 
 - **No 3D logic in the shell:** the shell provides only `SceneMountPoint`. The R3F canvas, scene graph, and asset loading live entirely in 3d-assets-engineer's code.
 - **No chart library:** all charting is dashboard-engineer's domain; the shell provides `TimeAxis` as a utility only.
-- **Wire-format parsing deferred:** TypeScript types are written now; parsing/validation code that runs against live WebSocket data is gated on the telemetry LOCK.
+- **Wire-format types are now LOCKED:** TypeScript types match `telemetry_schema.md` v1.0.0 exactly. Implementations build against these.
+- **TOU band geometry vs. per-step label:** `tariff_tier` in `env_step` is the price label for that step only — NOT band geometry. TOU timeline bands (e.g., "critical peak from 10:30–11:30") MUST be drawn from the static §3.7 tariff schedule, not reconstructed from the `tariff_tier` stream (C1 in telemetry schema). The shell's `TouBadge` and `TouColors` use `tariff_tier` for per-step labeling only; band geometry is dashboard-engineer's responsibility.
 
 ---
 

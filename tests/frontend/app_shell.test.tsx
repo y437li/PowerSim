@@ -3,11 +3,10 @@
  *
  * Framework: Vitest + React Testing Library
  * Contract:  contracts/frontend/app_shell.md
- * Spec refs: REBUILD_SPEC.md §2, §3, §3.5, §3.7, §5; telemetry_schema.md (DRAFT)
+ * Spec refs: REBUILD_SPEC.md §2, §3, §3.5, §3.7, §5; telemetry_schema.md v1.0.0 (LOCKED, PR #6)
  *
- * ⚠ PENDING TELEMETRY LOCK: tests that parse wire messages are marked with the
- *   comment // PENDING_LOCK — they compile and run but the fixture shapes
- *   MUST be re-verified once rl-architect locks contracts/shared/telemetry_schema.md.
+ * Wire-format fixtures have been verified against telemetry_schema.md v1.0.0 (LOCKED).
+ * Tests previously marked PENDING_LOCK are now active against the locked schema.
  *
  * Tests are intentionally RED at this point — no implementation exists yet.
  * That is correct per the contract-first-dev workflow.
@@ -20,7 +19,10 @@ import { MemoryRouter } from "react-router-dom";
 
 // ─── Fixture data ─────────────────────────────────────────────────────────────
 
-/** Minimal valid env_step envelope fixture (PENDING_LOCK — matches DRAFT telemetry schema) */
+/** Minimal valid env_step envelope fixture — verified against telemetry_schema.md v1.0.0 (LOCKED, PR #6).
+ *  Matches golden step A from the locked schema: net-export, no demand activity.
+ *  c_energy = c_import − r_export = 0 − 53100 = −53100; cost_total_real = −53100+0+400 = −52700; reward = 0.527.
+ */
 const FIXTURE_ENV_STEP = {
   schema_version: "1.0.0",
   kind: "env_step" as const,
@@ -45,8 +47,16 @@ const FIXTURE_ENV_STEP = {
       soc: 0.55,
       p_charge_mw: 0.0,
       p_discharge_mw: 40.0,
+      p_max_charge_mw: 98.16,     // §3.6 row 3; carried for 3D scaling
+      p_max_discharge_mw: 98.16,  // §3.6 row 3
       soc_violation_mwh: 0.0,
       capacity_mwh: 294.5,
+    },
+    generation: {
+      // conservation: solar_to_* + solar_curtailed = 30+0+0+0 = 30 ✓
+      gross_solar_mw: 30.0,
+      // conservation: wind_to_* + wind_curtailed = 12.5+0+80+0 = 92.5 ✓
+      gross_wind_mw: 92.5,
     },
     flows: {
       solar_to_load_mw: 30.0,
@@ -59,7 +69,8 @@ const FIXTURE_ENV_STEP = {
       bat_to_grid_mw: 10.0,
       grid_to_load_mw: 0.0,
       grid_to_bat_mw: 0.0,
-      ren_curtailed_mw: 0.0,
+      solar_curtailed_mw: 0.0,  // per-source split (ren_curtailed_mw retired at LOCK)
+      wind_curtailed_mw: 0.0,
       bat_curtailed_mw: 0.0,
       load_unserved_mw: 0.0,
     },
@@ -70,25 +81,35 @@ const FIXTURE_ENV_STEP = {
       max_import_mw: 400.0,
     },
     costs: {
-      c_energy_yuan: 0.0,
-      c_import_yuan: 0.0,
-      r_export_yuan: 53100.0,
-      c_demand_shape_yuan: 0.0,
+      // c_energy = c_import − r_export = 0 − 53100 = −53100 (§3.4)
+      c_energy_yuan: -53100.0,
+      c_import_yuan: 0.0,         // decomposition of c_energy — display only
+      r_export_yuan: 53100.0,     // decomposition of c_energy — display only
+      c_demand_charge_yuan: 0.0,  // 0 on non-month-boundary step (D10)
+      c_demand_shape_yuan: 0.0,   // reward-shaping term (§3.4)
       c_degradation_yuan: 400.0,
       c_curtail_yuan: 0.0,
       c_voll_yuan: 0.0,
       penalty_yuan: 0.0,
-      cost_total_yuan: -52700.0,
+      demand_rate_yuan_per_mw_month: 32000.0,
+      // cost_total_real = −53100+0+400+0+0 = −52700
+      cost_total_real_yuan: -52700.0,
+      // cost_total_reward_basis = −53100+2.0·0+400+0+0 = −52700 (same here: no shaping)
+      cost_total_reward_basis_yuan: -52700.0,
     },
     cost_cum: {
       c_energy_yuan_cum: 0.0,
       c_demand_charge_yuan_cum: 0.0,
+      c_demand_shape_yuan_cum: 0.0,
       c_degradation_yuan_cum: 0.0,
       c_curtail_yuan_cum: 0.0,
       c_voll_yuan_cum: 0.0,
+      penalty_yuan_cum: 0.0,
+      cost_total_real_yuan_cum: 0.0,
+      cost_total_reward_basis_yuan_cum: 0.0,
     },
     month_peak_mw: 95.0,
-    reward: 0.527,
+    reward: 0.527,  // = −(−52700 + 0) × 1e-5 = 0.527 ✓
     // assets_ext absent for Gansu parity config
   },
 };
@@ -106,8 +127,9 @@ const FIXTURE_TRAIN_METRICS = {
     actor_loss: 0.42,
     critic_loss: 1.31,
     ent_coef: 0.18,
-    reward_mean: 0.61,
-    reward_unnorm_mean_yuan: -61000.0,
+    reward_scaled_mean: 0.61,           // ×1e-5-scaled env reward (was reward_mean in DRAFT)
+    reward_norm_mean: 0.83,             // VecNorm-normalized; null when is_eval_checkpoint=true
+    cost_total_real_mean_yuan: -61000.0,// mean per-episode real ¥ (was reward_unnorm_mean_yuan in DRAFT)
     is_eval_checkpoint: false,
     checkpoint_id: null,
   },
@@ -122,10 +144,27 @@ const FIXTURE_EVAL_COMPARE = {
   payload: {
     eval_horizon_steps: 8760,
     checkpoint_id: "ckpt_001",
+    cost_basis: "real_money" as const,  // explicit: all *_yuan fields are real money
     policies: {
-      rl:            { energy_cost_yuan: 100_000, demand_charge_yuan: 20_000, degradation_yuan: 5_000, curtailment_yuan: 500, voll_yuan: 0, soc_violations_count: 0, total_cost_yuan: 125_500 },
-      no_battery:    { energy_cost_yuan: 200_000, demand_charge_yuan: 50_000, degradation_yuan: 0,     curtailment_yuan: 1_000, voll_yuan: 100, soc_violations_count: 0, total_cost_yuan: 251_100 },
-      rule_based_tou:{ energy_cost_yuan: 160_000, demand_charge_yuan: 35_000, degradation_yuan: 4_000, curtailment_yuan: 800, voll_yuan: 50, soc_violations_count: 2, total_cost_yuan: 199_850 },
+      // total_cost_yuan = energy+demand_charge+degradation+curtailment+voll (safety metrics excluded)
+      rl: {
+        energy_cost_yuan: 100_000, demand_charge_yuan: 20_000, degradation_yuan: 5_000,
+        curtailment_yuan: 500, voll_yuan: 0,
+        total_cost_yuan: 125_500,    // 100000+20000+5000+500+0 = 125500 ✓
+        soc_violations_count: 0, soc_violation_mwh: 0.0, penalty_yuan: 0.0,
+      },
+      no_battery: {
+        energy_cost_yuan: 200_000, demand_charge_yuan: 50_000, degradation_yuan: 0,
+        curtailment_yuan: 1_000, voll_yuan: 100,
+        total_cost_yuan: 251_100,    // 200000+50000+0+1000+100 = 251100 ✓
+        soc_violations_count: 0, soc_violation_mwh: 0.0, penalty_yuan: 0.0,
+      },
+      rule_based_tou: {
+        energy_cost_yuan: 160_000, demand_charge_yuan: 35_000, degradation_yuan: 4_000,
+        curtailment_yuan: 800, voll_yuan: 50,
+        total_cost_yuan: 199_850,    // 160000+35000+4000+800+50 = 199850 ✓
+        soc_violations_count: 2, soc_violation_mwh: 0.5, penalty_yuan: 500.0,
+      },
     },
   },
 };
@@ -476,7 +515,7 @@ describe("ErrorBoundary — catches render errors", () => {
   });
 });
 
-// ─── §4: Telemetry store — state shape & updates (PENDING_LOCK) ───────────────
+// ─── §4: Telemetry store — state shape & updates ─────────────────────────────
 
 describe("telemetryStore — initial state", () => {
   it("starts with null envStep and connected status 'disconnected'", async () => {
@@ -610,7 +649,7 @@ describe("evalStore — receiveEvalCompare", () => {
   });
 });
 
-// ─── §4: WebSocket client — lifecycle (PENDING_LOCK) ──────────────────────────
+// ─── §4: WebSocket client — lifecycle ────────────────────────────────────────
 
 describe("wsClient — connection lifecycle", () => {
   let server: WebSocket & { readyState: number };
