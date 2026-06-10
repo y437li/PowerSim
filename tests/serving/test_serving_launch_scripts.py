@@ -1327,3 +1327,44 @@ def test_health_endpoint_gap_acknowledged():
     """
     # This test always passes — it exists to prevent the gap from being invisible.
     pass
+
+
+# ---------------------------------------------------------------------------
+# reviewer (backend-reviewer): destructive --purge path safety invariant
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.slow
+@skip_on_windows
+def test_purge_preserves_config_but_removes_checkpoints_sh(tmp_path):
+    # reviewer: the suite pins uninstall-preserves-config but NOT the riskier
+    # reviewer: --purge path. Contract §9.4 / §9 (line 155): --purge additionally
+    # reviewer: removes checkpoints/ and *.run artifacts, but config/ is NEVER
+    # reviewer: removed. This pins that safety invariant on the destructive path.
+    shutil.copy(REPO_ROOT / "pyproject.toml", tmp_path / "pyproject.toml")
+    shutil.copy(INSTALL_SH, tmp_path / "install_app.sh")
+    os.chmod(tmp_path / "install_app.sh", 0o755)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "site_gansu.yaml").write_text("site:\n  name: gansu\n")
+    (tmp_path / "checkpoints").mkdir()
+    (tmp_path / "checkpoints" / "run_001").write_text("dummy")
+
+    base = [
+        "bash", str(tmp_path / "install_app.sh"),
+        "--server-type", "serving", "--accel", "cpu",
+        "--checkpoint", "checkpoints/run_001",
+    ]
+    r_install = subprocess.run(base + ["--no-launch"], capture_output=True, text=True, cwd=tmp_path)
+    if r_install.returncode != 0:
+        pytest.skip(f"Install failed (toolchain absent?): {r_install.stderr[:200]}")
+
+    r_purge = subprocess.run(base + ["--uninstall", "--purge"], capture_output=True, text=True, cwd=tmp_path)
+    assert r_purge.returncode == 0, f"--uninstall --purge failed: {r_purge.stderr}"
+    # config/ MUST survive even under --purge (§9.4: config is NEVER removed)
+    assert (tmp_path / "config" / "site_gansu.yaml").exists(), (
+        "config/site_gansu.yaml was removed by --purge — §9.4 says config is NEVER removed"
+    )
+    # checkpoints/ MUST be cleared by --purge
+    assert not (tmp_path / "checkpoints" / "run_001").exists(), (
+        "--purge did not remove checkpoints/run_001"
+    )
