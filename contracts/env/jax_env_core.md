@@ -406,12 +406,19 @@ P_load_unserved = jnp.maximum(0.0, P_import_raw − params.grid_max_import_mw �
 #### 5.3.6 Price lookup (D7, D8)
 
 ```
-hour           = state.t % 24
-price_buy      = PRICE_TABLE_YPW[hour]           # module constant, D8
-rng_spread, new_rng = jax.random.split(state.rng)
-noise          = jax.random.normal(rng_spread) * params.price_spread_sigma
-eff_spread     = jnp.maximum(0.0, params.price_spread_yuan_per_mwh + noise)  # D7: clamp ≥ 0
-price_sell     = jnp.maximum(0.0, price_buy − eff_spread)                    # D7: sell ≥ 0
+hour = state.t % 24
+price_buy = PRICE_TABLE_YPW[hour]           # module constant, D8
+
+# RNG: three-way split from state.rng so price-spread, forecast-noise, and new state key
+# are all independent children — no key shared between any two draws.
+rng_spread, rng_fc_init, new_rng = jax.random.split(state.rng, 3)
+#   rng_spread  → single normal draw for sell-price spread (this section)
+#   rng_fc_init → starting key for 24-horizon forecast splits in get_obs() §5.4
+#   new_rng     → stored in new_state.rng
+
+noise      = jax.random.normal(rng_spread) * params.price_spread_sigma
+eff_spread = jnp.maximum(0.0, params.price_spread_yuan_per_mwh + noise)  # D7: clamp ≥ 0
+price_sell = jnp.maximum(0.0, price_buy − eff_spread)                    # D7: sell ≥ 0
 ```
 
 #### 5.3.7 Costs (§3.4, D13)
@@ -431,13 +438,14 @@ C_VOLL    = params.voll_yuan_per_mwh   * P_load_unserved * 1.0
 
 **Demand charge booking (D10, D21):**
 ```
-is_month_end = (MONTH_OF_STEP[state.t + 1] != MONTH_OF_STEP[state.t])
-is_terminal  = (state.t == 8759)  # year-end eval terminal flush
-books_charge = is_month_end | is_terminal
-new_month_peak = jnp.where(books_charge, P_import, jnp.maximum(state.month_peak, P_import))
-C_demand_charge = jnp.where(books_charge, new_month_peak * params.demand_rate_yuan_per_mw_month, 0.0)
+is_month_end    = (MONTH_OF_STEP[state.t + 1] != MONTH_OF_STEP[state.t])
+is_terminal     = (state.t == 8759)  # year-end eval terminal flush
+books_charge    = is_month_end | is_terminal
+peak_incl_now   = jnp.maximum(state.month_peak, P_import)   # running max including this step
+C_demand_charge = jnp.where(books_charge, peak_incl_now * params.demand_rate_yuan_per_mw_month, 0.0)
+new_month_peak  = jnp.where(books_charge, 0.0, peak_incl_now)   # reset to 0 after booking
 ```
-> D21: a sub-month training episode (episode_len=168) never crosses a calendar month boundary and t is never 8759, so `C_demand_charge = 0` throughout. This is correct by design — training pressure comes from `2·C_DC_shape` in the reward.
+> **Invariants:** (1) `C_demand_charge = peak_incl_now × rate` at month boundaries — the running-max peak, NOT just this step's P_import. (2) `new_month_peak = 0.0` immediately after booking (the new month starts fresh). (3) D21: a sub-month training episode (episode_len=168) never crosses a calendar month boundary and t is never 8759, so `C_demand_charge = 0` throughout. Training pressure comes from `2·C_DC_shape` in the reward.
 
 **Cost totals (D13):**
 ```
@@ -487,22 +495,31 @@ obs[10] = jnp.cos(2π * MONTH_OF_STEP[t] / 12.0)
 
 **Forecast (indices 11–106): 24 horizons × 4 features:**
 
-For each horizon `h = 1 … 24`:
+RNG threading for forecast noise: the initial key `rng_fc_init` is the second child from
+the 3-way split of `state.rng` performed in §5.3.6 (see above).  When `get_obs()` is called
+externally (not from within `step()`), it derives the same key as:
+```
+_, rng_fc_init, _ = jax.random.split(state.rng, 3)
+```
+This guarantees that forecast noise is always independent from the price-spread draw.
+
+For each horizon `h = 1 … 24` (starting from `rng = rng_fc_init`):
 ```
 base = 11 + 4*(h-1)
 t_fc = jnp.minimum(t + h, 8759)        # D9: clamp at end of year, no wraparound
 σ_h  = params.forecast_sigma_max * h / 24.0   # D6: horizon-scaled noise
 
-rng_fc, rng = jax.random.split(rng)     # per-horizon noise (4 draws)
+rng_fc, rng = jax.random.split(rng)     # advance per-horizon; rng carries forward to h+1
 ε = jax.random.normal(rng_fc, shape=(4,)) * σ_h
 
-obs[base+0] = jnp.clip(data[t_fc,0]*(1+ε[0]), 0.0, 25.0) / 20.0       # wind/20
-obs[base+1] = jnp.clip(data[t_fc,1]*(1+ε[1]), 0.0)        / 1000.0     # irr/1000
-obs[base+2] = jnp.clip(data[t_fc,3]*1000.0*(1+ε[2]), 0.0) / 100_000.0  # load_kw/100000
-obs[base+3] = jnp.clip(data[t_fc,4_price_column]*(1+ε[3]), 0.0)         # price ¥/MWh, clipped ≥ 0 (D6)
+price_fc    = PRICE_TABLE_YPW[t_fc % 24]                # tariff at forecast horizon (no 5th column)
+obs[base+0] = jnp.clip(data[t_fc,0]*(1+ε[0]), 0.0, 25.0) / 20.0         # wind/20
+obs[base+1] = jnp.clip(data[t_fc,1]*(1+ε[1]), 0.0)        / 1000.0       # irr/1000
+obs[base+2] = jnp.clip(data[t_fc,3]*1000.0*(1+ε[2]), 0.0) / 100_000.0    # load_kw/100000
+obs[base+3] = jnp.clip(price_fc * (1 + ε[3]), 0.0)                        # price ¥/MWh, clipped ≥ 0 (D6)
 ```
 
-> **Note:** the 4th forecast feature is the tariff price at `t_fc`. Since `PRICE_TABLE_YPW` is a 24-element array, `price_at_t_fc = PRICE_TABLE_YPW[(t_fc % 24).astype(int)]`.
+> **Note:** `data` has 4 columns `[wind_mps, irr_wm2, temp_c, load_mw]`. The 4th forecast feature (price at horizon `t_fc`) is looked up from the module-level constant `PRICE_TABLE_YPW[t_fc % 24]` — there is no 5th column in `data`.
 
 > VecNormalize (running mean/std, clip ±10) is applied by the training loop, not inside `step`. The obs returned by `step` are raw/lightly-normalized.
 
