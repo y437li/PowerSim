@@ -4,8 +4,8 @@
 - **Spec:** REBUILD_SPEC.md §1 (site totals), §3.1 (wind/PV power curves), §3.2 (battery), §3.3 (power balance flows), §3.6 (constraint table), §8.5 (per-asset 3D category)
 - **Owner:** 3d-assets-engineer · **Reviewer:** frontend-reviewer
 - **Area:** frontend3d
-- **Depends on DECISIONS:** D3 (Δt=1h), D4 (SOC 0.2–0.9), D5 (PCC export 945 MW), telemetry schema `contracts/shared/telemetry_schema.md` (DRAFT — wire-format-dependent sections marked **⚠ PENDING TELEMETRY LOCK**)
-- **Depends on contracts:** `contracts/frontend/app_shell.md` — `SceneMountPoint.tsx` provides the container div
+- **Depends on DECISIONS:** D3 (Δt=1h), D4 (SOC 0.2–0.9), D5 (PCC export 945 MW), D12 (import limit per-site field)
+- **Depends on contracts:** `contracts/shared/telemetry_schema.md` (**LOCKED v1.0.0, PR #6, 98beee0**); `contracts/frontend/app_shell.md` — `SceneMountPoint.tsx` provides the container div
 
 ---
 
@@ -161,9 +161,9 @@ interface SiteSceneConfig {
 
 ---
 
-## 3. Telemetry binding (⚠ PENDING TELEMETRY LOCK)
+## 3. Telemetry binding (LOCKED v1.0.0, PR #6)
 
-> Fields cited below match `contracts/shared/telemetry_schema.md` (DRAFT). The 3D scene may be coded against these field names now; production binding to the live WebSocket waits for the LOCK.
+Fields cited below are from `contracts/shared/telemetry_schema.md` **LOCKED v1.0.0 (PR #6, 98beee0)**. All field names and units below are stable.
 
 The scene reads **only** from `useTelemetryStore()`. It never calls `fetch`, `WebSocket`, or any other I/O primitive.
 
@@ -172,13 +172,20 @@ The scene reads **only** from `useTelemetryStore()`. It never calls `fetch`, `We
 | Field | Used for |
 |---|---|
 | `flows.solar_to_load_mw` … `flows.bat_to_grid_mw` | Power-flow line visibility/magnitude (§4) |
-| `flows.ren_curtailed_mw` | Curtailment visual (§4.3) |
+| `flows.solar_curtailed_mw` | Solar curtailment visual (§4.3) |
+| `flows.wind_curtailed_mw` | Wind curtailment visual (§4.3) |
+| `flows.bat_curtailed_mw` | Battery curtailment (available but not separately visualised in v1) |
 | `flows.load_unserved_mw` | VOLL alert visual (§4.3) |
+| `generation.gross_solar_mw` | PV source label (total before curtailment/dispatch) |
+| `generation.gross_wind_mw` | Wind source label (total before curtailment/dispatch) |
 | `battery.soc` | SOC fill animation (§5) |
 | `battery.p_charge_mw`, `battery.p_discharge_mw` | Battery direction indicator |
+| `battery.p_max_charge_mw`, `battery.p_max_discharge_mw` | Battery wire scaling (98.16 MW Gansu) |
 | `wind_speed_mps` | Rotor spin rate (§6) |
 | `irradiance_wm2` | PV emissive intensity (§7) |
-| `pcc.export_mw`, `pcc.import_mw`, `pcc.max_export_mw` | Grid line thickness / direction |
+| `pcc.export_mw`, `pcc.import_mw` | Grid line thickness / direction |
+| `pcc.max_export_mw`, `pcc.max_import_mw` | Grid wire scaling (per-site, D5/D12) |
+| `sim_time_utc`, `step` | Sim clock display — **never use envelope `ts_utc`** (emit clock only) |
 
 ### 3.2 Stale / null telemetry
 
@@ -186,6 +193,10 @@ The scene reads **only** from `useTelemetryStore()`. It never calls `fetch`, `We
 - `wsStatus === "stale"` (from telemetryStore): show a `<Html>` overlay label "Stale — last update: …" in the canvas. Freeze all animation.
 - `wsStatus === "disconnected"`: show "Disconnected" overlay. Freeze.
 - Receiving a new `envStep` clears the overlay immediately.
+
+### 3.3 Finiteness guard
+
+The locked telemetry schema guarantees all numeric fields are finite (no `NaN`, `+Inf`, `−Inf`). If a message arrives containing any non-finite number, the scene **silently discards** that message (does not apply it to any animated value) and logs a warning to the console. This prevents a single corrupt message from breaking flow-line width/speed calculations or causing Three.js geometry errors.
 
 ---
 
@@ -207,6 +218,8 @@ Every power flow in `flows.*` maps to a directed animated line between two node 
 | `bat_to_grid_mw` | Battery bank | PCC |
 | `grid_to_load_mw` | PCC | Load zone marker |
 | `grid_to_bat_mw` | PCC | Battery bank |
+| `solar_curtailed_mw` | PV array centroid | Curtailment sink marker |
+| `wind_curtailed_mw` | Turbine field centroid | Curtailment sink marker |
 
 ### 4.2 Animation mapping
 
@@ -226,7 +239,9 @@ particle_speed (units/s)  = 0.2 + normalized × 2.8    // range [0.2, 3.0]
 
 | Condition | Visual |
 |---|---|
-| `ren_curtailed_mw > 0` | Dedicated curtailment line from turbine/PV centroid to a "curtailed" sink marker; line colour red/orange; `line_width = 0.5 + (ren_curtailed_mw / site_max_mw) × 5.5` |
+| `solar_curtailed_mw > 0` | Dedicated solar-curtailment line from PV array centroid to "curtailed" sink marker; colour red-orange `#ef4444`; `line_width = 0.5 + (solar_curtailed_mw / site_max_mw) × 5.5` |
+| `wind_curtailed_mw > 0` | Dedicated wind-curtailment line from turbine field centroid to "curtailed" sink marker; same colour scheme; `line_width = 0.5 + (wind_curtailed_mw / site_max_mw) × 5.5` |
+| Both curtailment fields > 0 | Both lines shown simultaneously (each independently sized) |
 | `load_unserved_mw > 0` | Load zone marker flashes amber/red; a VOLL indicator label shows the unserved MW |
 | `battery.soc_violation_mwh > 0` | Battery mesh briefly flashes red (one render cycle, no blinking loop) |
 
@@ -264,7 +279,7 @@ A numeric label rendered via R3F `<Html>` shows `{(soc * 100).toFixed(1)}%` and 
 
 ## 6. Turbine rotor animation
 
-Rotor spin rate (rad/s) derived from `wind_speed_mps` per §3.1 power curve:
+Rotor spin rate (rad/s) derived from `wind_speed_mps`. **Note:** §3.1 uses a cubic curve for electrical power output; the visual rotor speed uses a **linear** formula in `(v − v_cutin)` — this is the physically correct mapping for RPM and avoids the near-zero region being invisible at low wind speeds:
 
 ```
 v       = wind_speed_mps

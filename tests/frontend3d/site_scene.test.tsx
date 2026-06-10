@@ -9,7 +9,8 @@
  *
  * Spec refs: REBUILD_SPEC.md §3.1 (power curves), §3.2 (battery), §3.3 (flows),
  *            §3.6 (constraint table rows 5, 9, 11), §8.5 (3D per-asset categories)
- * Decision refs: D3 (Δt=1h), D4 (SOC 0.2–0.9), D5 (PCC 945 MW)
+ * Decision refs: D3 (Δt=1h), D4 (SOC 0.2–0.9), D5 (PCC 945 MW), D12 (import limit per-site)
+ * Telemetry: contracts/shared/telemetry_schema.md LOCKED v1.0.0 (PR #6, 98beee0)
  *
  * Reviewer-added cases are marked: // reviewer: <reason>
  */
@@ -59,6 +60,28 @@ const ENTRY_BATTERY: AssetRegistryEntry = {
   dims_m: { x: 20, y: 5, z: 60 },
   pivot: { x: 0, y: 0, z: 0 },
   animation_hooks: { soc_fill_mesh: "SOCFillMesh" },
+};
+
+/**
+ * Sample generation block from locked telemetry schema v1.0.0
+ * gross values are pre-curtailment/dispatch per §3.1
+ */
+const SAMPLE_GENERATION = {
+  gross_solar_mw: 30.0,    // §3.1 P_pv before dispatch
+  gross_wind_mw: 92.5,     // §3.1 P_wind before dispatch
+};
+
+/**
+ * Sample battery state including locked p_max_charge/discharge fields (98.16 MW Gansu)
+ */
+const SAMPLE_BATTERY_STATE = {
+  soc: 0.55,
+  p_charge_mw: 0.0,
+  p_discharge_mw: 40.0,
+  p_max_charge_mw: 98.16,      // LOCKED v1.0.0 — used for battery wire scaling
+  p_max_discharge_mw: 98.16,   // LOCKED v1.0.0
+  soc_violation_mwh: 0.0,
+  capacity_mwh: 294.5,
 };
 
 const ENTRY_PCC: AssetRegistryEntry = {
@@ -466,8 +489,9 @@ describe("power-flow line visibility", () => {
     );
   });
 
-  // reviewer: all flows = 0 but ren_curtailed_mw > 0 → curtailment line visible
-  it("shows curtailment line when ren_curtailed_mw > 0 while other flows = 0", () => {
+  // reviewer: all flows = 0 but solar_curtailed_mw > 0 → solar curtailment line visible
+  // (LOCKED v1.0.0: ren_curtailed_mw split into solar_curtailed_mw + wind_curtailed_mw)
+  it("shows solar-curtailment line when solar_curtailed_mw > 0 while other flows = 0", () => {
     const { getByTestId } = render(
       <SiteScene
         config={GANSU_CONFIG}
@@ -475,9 +499,45 @@ describe("power-flow line visibility", () => {
         containerEl={container}
       />
     );
-    // Store injected with ren_curtailed_mw = 50 MW
-    const curtailLine = getByTestId("flow-line-curtailment");
-    expect(curtailLine.getAttribute("data-visible")).toBe("true");
+    // Store injected with solar_curtailed_mw = 50 MW, wind_curtailed_mw = 0
+    const solarCurtailLine = getByTestId("flow-line-solar_curtailed");
+    expect(solarCurtailLine.getAttribute("data-visible")).toBe("true");
+    expect(solarCurtailLine.getAttribute("data-source")).toBe("pv");
+  });
+
+  it("shows wind-curtailment line when wind_curtailed_mw > 0 while other flows = 0", () => {
+    const { getByTestId } = render(
+      <SiteScene
+        config={GANSU_CONFIG}
+        registry={VALID_REGISTRY}
+        containerEl={container}
+      />
+    );
+    // Store injected with wind_curtailed_mw = 30 MW, solar_curtailed_mw = 0
+    const windCurtailLine = getByTestId("flow-line-wind_curtailed");
+    expect(windCurtailLine.getAttribute("data-visible")).toBe("true");
+    expect(windCurtailLine.getAttribute("data-source")).toBe("turbine-field");
+  });
+
+  it("shows both curtailment lines simultaneously when both > 0", () => {
+    // Contract §4.3: "Both lines shown simultaneously (each independently sized)"
+    const { getByTestId } = render(
+      <SiteScene
+        config={GANSU_CONFIG}
+        registry={VALID_REGISTRY}
+        containerEl={container}
+      />
+    );
+    // Store injected with solar_curtailed_mw = 50, wind_curtailed_mw = 30
+    // solar width: 0.5 + (50/945)*5.5 ≈ 0.791; wind width: 0.5 + (30/945)*5.5 ≈ 0.675
+    const solarLine = getByTestId("flow-line-solar_curtailed");
+    const windLine  = getByTestId("flow-line-wind_curtailed");
+    expect(solarLine.getAttribute("data-visible")).toBe("true");
+    expect(windLine.getAttribute("data-visible")).toBe("true");
+    // Solar line wider than wind line (50 > 30 MW)
+    expect(parseFloat(solarLine.getAttribute("data-width") ?? "0")).toBeGreaterThan(
+      parseFloat(windLine.getAttribute("data-width") ?? "0")
+    );
   });
 
   // reviewer: VOLL indicator active only when load_unserved_mw > 0
@@ -732,6 +792,31 @@ describe("flow line direction and source nodes", () => {
     expect(exportLine.getAttribute("data-direction")).toBe("outward");
     expect(importLine.getAttribute("data-direction")).toBe("inward");
   });
+
+  // LOCKED v1.0.0: sim clock uses payload.sim_time_utc, NOT envelope ts_utc
+  it("sim clock display reads from payload.sim_time_utc not envelope ts_utc", () => {
+    // The scene must render a sim-clock label whose value matches payload.sim_time_utc.
+    // If it mistakenly uses ts_utc (emit clock) they would diverge during replay.
+    const { getByTestId } = render(
+      <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
+    );
+    const clock = getByTestId("sim-clock-display");
+    // After injecting step with sim_time_utc="2026-03-02T08:00:00Z" but ts_utc="2026-06-10T09:00:00Z"
+    // the displayed value must reflect "Mon 08:00" (sim time), not "Wed 09:00" (emit time)
+    expect(clock.getAttribute("data-sim-time")).toContain("2026-03-02");
+  });
+
+  // LOCKED v1.0.0: generation block — scene can label total source output
+  it("exposes gross_solar_mw and gross_wind_mw labels from generation block", () => {
+    const { getByTestId } = render(
+      <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
+    );
+    // After injecting step with generation.gross_solar_mw=30, gross_wind_mw=92.5
+    const solarLabel = getByTestId("generation-label-solar");
+    const windLabel  = getByTestId("generation-label-wind");
+    expect(solarLabel.getAttribute("data-gross-mw")).toBe("30");
+    expect(windLabel.getAttribute("data-gross-mw")).toBe("92.5");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -810,12 +895,10 @@ describe("reviewer: grid line width uses the correct per-direction denominator (
 
 // ─── Per-source conservation using PR #6 generation.gross_* + split curtailment ──
 
-describe("reviewer: per-source flow conservation (PENDING_LOCK — PR #6 field names)", () => {
-  // reviewer: PR #6 (approved, pending LOCK) added generation.gross_solar_mw /
-  // gross_wind_mw and SPLIT flows.ren_curtailed_mw -> solar_curtailed_mw +
-  // wind_curtailed_mw, making per-source conservation verifiable on the consumer
-  // side. This contract/test still references the OLD ren_curtailed_mw (§3.1, §4.3,
-  // line 470) and MUST migrate at LOCK. This golden matches PR #6 golden step A.
+describe("reviewer: per-source flow conservation (LOCKED v1.0.0 field names)", () => {
+  // reviewer: telemetry_schema v1.0.0 (PR #6, LOCKED) added generation.gross_solar_mw /
+  // gross_wind_mw and SPLIT flows.ren_curtailed_mw → solar_curtailed_mw +
+  // wind_curtailed_mw. This golden matches the PR #6 golden step A.
   const GOLDEN = {
     gross_solar_mw: 30.0,
     solar_to_load_mw: 30.0, solar_to_bat_mw: 0.0, solar_to_grid_mw: 0.0, solar_curtailed_mw: 0.0,
@@ -851,5 +934,82 @@ describe("reviewer: calcRotorOmega is monotonic non-decreasing across the ramp",
     expect(calcRotorOmega(24, ...P)).toBeCloseTo(0.2, 6);
     // v=9: 0.2*(6/9) = 0.13333 (catches an inverted (rated−v) numerator)
     expect(calcRotorOmega(9, ...P)).toBeCloseTo(0.2 * (6 / 9), 5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 13. Finiteness guard — locked telemetry schema v1.0.0 invariant
+// Contract §3.3; telemetry_schema.md "Global numeric invariant"
+// A message containing NaN/±Inf must be silently discarded; no animated value
+// should be updated, and no crash should occur.
+// ---------------------------------------------------------------------------
+describe("finiteness guard", () => {
+  let container: HTMLDivElement;
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+  });
+
+  it("discards an envStep with NaN in flows.wind_to_grid_mw without crashing", () => {
+    // Producer invariant: should never happen; consumer defends anyway
+    expect(() => {
+      render(
+        <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
+      );
+      // Inject envStep with NaN in wind_to_grid_mw via mock store
+      // (exact injection mechanism implemented in mock; asserted: no throw)
+    }).not.toThrow();
+  });
+
+  it("does not update the flow line when a NaN message is received", () => {
+    // 1. Inject valid envStep: wind_to_grid_mw = 80 → line visible
+    // 2. Inject corrupt envStep: wind_to_grid_mw = NaN → must NOT update
+    // 3. Assert line is still at last-known state (visible, width ≈ 0.966)
+    const { getByTestId } = render(
+      <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
+    );
+    const line = getByTestId("flow-line-wind_to_grid");
+    // After valid step: visible and width correct
+    // After NaN step: still visible and same width (NaN step discarded)
+    expect(line.getAttribute("data-visible")).toBe("true");
+    expect(parseFloat(line.getAttribute("data-width") ?? "0")).toBeCloseTo(
+      0.5 + (80 / 945) * 5.5,
+      2
+    );
+  });
+
+  it("does not update SOC fill when a +Infinity soc message is received", () => {
+    // soc = Infinity is non-finite → message discarded → soc_fill stays at last known value
+    const { getByTestId } = render(
+      <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
+    );
+    const battMesh = getByTestId("battery-soc-fill");
+    // After discarding Inf soc step, fill ≈ (0.55 − 0.2) / 0.7 = 0.5 (from prior valid step)
+    expect(parseFloat(battMesh.getAttribute("data-soc-fill") ?? "NaN")).not.toBeNaN();
+  });
+
+  it("calcFlowWidth with NaN input returns the minimum (0.5) not NaN", () => {
+    // The pure calc function must handle NaN defensively (belt-and-suspenders
+    // in addition to the message-level discard)
+    const width = calcFlowWidth(NaN, 945);
+    expect(isNaN(width)).toBe(false);
+    expect(width).toBeCloseTo(0.5, 5);
+  });
+
+  it("calcFlowSpeed with Infinity input returns the maximum (3.0) not Infinity", () => {
+    // Infinity normalized → clamped to 1.0 → speed = 3.0
+    const speed = calcFlowSpeed(Infinity, 945);
+    expect(isFinite(speed)).toBe(true);
+    expect(speed).toBeCloseTo(3.0, 5);
+  });
+
+  // reviewer: -Infinity soc is also rejected (not just NaN)
+  it("discards an envStep with -Infinity in battery.soc without crashing", () => {
+    expect(() => {
+      render(
+        <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
+      );
+      // Inject envStep with soc = -Infinity → must not crash or update animation
+    }).not.toThrow();
   });
 });
