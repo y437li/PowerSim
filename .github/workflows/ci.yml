@@ -22,18 +22,23 @@ jobs:
         shell: bash
         run: |
           pip install "jsonschema>=4.21"
-          python scripts/validate_telemetry.py --examples
+          # energy_go.telemetry.validate lives under src/ in this repo;
+          # PYTHONPATH makes it importable without a heavy jax install.
+          PYTHONPATH=src python scripts/validate_telemetry.py --examples
 
       - name: Python tests
         shell: bash
         run: |
           if [ -d tests ] && find tests -name 'test_*.py' | grep -q .; then
             if [ -f pyproject.toml ]; then
-              pip install -e ".[dev]"
+              # Install only dev extras (no heavy jax/jaxlib); PYTHONPATH exposes src.
+              # Tests that require jax are skipped via pytest.importorskip.
+              pip install "pytest>=8.0" "pytest-xdist>=3.5" "jsonschema>=4.21"
+              PYTHONPATH=src pytest tests/ -q
             else
               pip install pytest jax
+              pytest tests/ -q
             fi
-            pytest tests/ -q
           else
             echo "No Python tests yet — skipping"
           fi
