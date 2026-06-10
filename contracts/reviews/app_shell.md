@@ -180,3 +180,35 @@ default as `50` (the value is untested). Reconcile — recommend updating the co
 `1000` (the saner value) or the impl to `50`.
 
 **Verdict: APPROVE** (stage-2 code audit). Mergeable on reviewer APPROVE + QA_PASS.
+
+---
+
+## Stage-2 follow-up — PR #36 (§6.2 regression restoration)
+
+- **PR:** #36 (`feat/frontend-app-shell-impl`, ready)
+- **Reviewer:** frontend-reviewer
+- **Date:** 2026-06-10
+- **Verdict:** **APPROVE**
+- **Scope:** 2 files only (`contracts/frontend/app_shell.md` §6.2, `tests/frontend/app_shell.test.tsx`);
+  `src/` untouched. Restores the PR #32 `latestTsUtc` + non-sticky-`trainSeqGap` amendments that
+  PR #27 (training_dashboard squash) accidentally reverted.
+
+### Audited
+- **Contract §6.2:** `latestTsUtc?: string | null` (optional) → `latestTsUtc: string | null`
+  (required). Verified this aligns the contract WITH the already-merged impl
+  (`src/stores/trainingStore.ts`): `latestTsUtc: msg.ts_utc ?? null` on receive, `null` in
+  `initialState` and `clear()`. Contract-accuracy restoration, no behavior change.
+- **4 restored tests** vs the approved PR #32 baseline (`3e72bad`): all 9 §6.2 test titles match
+  the approved set exactly; bodies faithful. One intentional deviation — the
+  "`latestTsUtc` null before first message" test gains a leading `act(() => clear())`. **Accepted:**
+  every sibling test in the `trainingStore — receiveTrainMetrics` block already clears first; the
+  zustand store is a module singleton (dynamic `import`) that leaks across tests, so the un-cleared
+  original was order-fragile. Factory-default null is still covered by `initialState` + the dedicated
+  `clear()`-reset test (same code path). Not a weakening.
+- **Hand-traced impl against each restored test:** ts_utc capture (`08:01:00Z`), per-message update
+  (`09:00:00Z`), `clear()`→null, non-sticky gap (seq 10→15 gap=true → 16 gap=false). All consistent.
+- **Telemetry conformance:** `ts_utc` is a LOCKED-schema envelope field; capturing it for the
+  StreamStatusBanner stale-check is correct consumer behavior.
+
+Mergeable on reviewer APPROVE + QA_PASS. QA to confirm the suite runs green (engineer reports
+352 passing).
