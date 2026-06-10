@@ -370,12 +370,13 @@ INSTALL_OUT="$(uv pip install --python ".venv/bin/python" -e ".[${EXTRAS}]" 2>&1
     die 3 "Dependency install failed. Remediation: Check internet connection, uv installation, and pyproject extras. Run: uv pip install -e \".[${EXTRAS}]\" manually to see full output."
 }
 
-# Idempotency signal: uv emits an "Installed N packages" line only when REMOTE
-# packages change.  Editable rebuilds of the local package (lines containing
-# "from file://") are excluded — uv always reinstalls the local editable even
-# when nothing changed, so counting them would suppress the "up to date" message.
-REMOTE_INSTALL_OUT="$(printf "%s\n" "$INSTALL_OUT" | grep -v "from file://")"
-if printf "%s\n" "$REMOTE_INSTALL_OUT" | grep -qiE "Installed [0-9]+ package|Downloading"; then
+# Idempotency signal: detect REMOTE package changes by looking at per-package
+# change lines (lines starting with +/-/~ in uv output) while excluding the
+# local editable entry (which always gets a "~ energy-go (from file://...)"
+# line even when nothing changed).  The summary line "Installed N package(s)"
+# is deliberately NOT used because it counts local editable rebuilds too.
+REMOTE_CHANGES="$(printf "%s\n" "$INSTALL_OUT" | grep -E '^[[:space:]]*[-+~] ' | grep -v 'from file://')"
+if [[ -n "$REMOTE_CHANGES" ]] || printf "%s\n" "$INSTALL_OUT" | grep -qi "Downloading"; then
     printf "%s\n" "$INSTALL_OUT"
 else
     info "Environment up to date. Nothing to do."
