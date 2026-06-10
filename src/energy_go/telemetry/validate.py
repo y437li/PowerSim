@@ -35,7 +35,7 @@ def _load_schema() -> dict:
         return json.loads(pkg.read_text(encoding="utf-8"))
     except Exception:
         # Fallback: repo-root path for tests run without an editable install
-        fallback = Path(__file__).resolve().parents[4] / "contracts" / "shared" / "telemetry_schema.json"
+        fallback = Path(__file__).resolve().parents[3] / "contracts" / "shared" / "telemetry_schema.json"
         return json.loads(fallback.read_text(encoding="utf-8"))
 
 
