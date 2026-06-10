@@ -186,7 +186,7 @@ def empty_client(tmp_path):
         with TestClient(app) as c:
             yield c
     finally:
-        os.chdir(tmp_path)
+        os.chdir(old_cwd)
 
 
 # ===========================================================================
