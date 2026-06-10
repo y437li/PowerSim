@@ -80,9 +80,16 @@ const CHECKPOINT_TRAIN: TrainMetricsPayload = {
   reward_norm_mean: null,  // null on eval checkpoints per schema
 };
 
-/** Default mock store state — empty training */
+/** Default mock store state — empty training (includes amended seq-gap fields, contract §2.3) */
 function emptyTrainingState() {
-  return { history: [], latest: null, receiveTrainMetrics: vi.fn(), clear: vi.fn() };
+  return {
+    history: [],
+    latest: null,
+    lastTrainSeq: null,
+    trainSeqGap: false,
+    receiveTrainMetrics: vi.fn(),
+    clear: vi.fn(),
+  };
 }
 function emptyEvalState() {
   return { history: [], latest: null, receiveEvalCompare: vi.fn(), clear: vi.fn() };
@@ -244,37 +251,54 @@ describe("validate-telemetry: golden fixture conformance", () => {
 // SECTION 2 — Formatting utilities (units.ts additions)
 // ─────────────────────────────────────────────────────────────────────────────
 describe("formatThroughput", () => {
-  it("≥1,000,000 → M/s notation", () => {
-    // 1,350,000 → "1.35M/s"
+  it("≥1e9 → B/s notation (E17)", () => {
+    // 1,000,000,000 → Math.round(1e9/1e9) = 1 → "1B/s"
+    expect(formatThroughput(1e9)).toBe("1B/s");
+  });
+  it("≥1,000,000 → M/s notation (2 decimal places)", () => {
+    // 1,350,000 → (1350000/1e6).toFixed(2) = "1.35" → "1.35M/s"
     expect(formatThroughput(1350000)).toBe("1.35M/s");
   });
   it("exactly 1,000,000 → '1.00M/s'", () => {
     expect(formatThroughput(1000000)).toBe("1.00M/s");
   });
-  it("≥1,000 < 1,000,000 → k/s notation", () => {
-    // 350,000 → "350k/s"
+  it("≥1,000 < 1,000,000 → k/s notation (floor)", () => {
+    // 350,000 → Math.floor(350000/1000) = 350 → "350k/s"
     expect(formatThroughput(350000)).toBe("350k/s");
   });
+  it("non-exact thousands floor — not round (1500 → '1k/s', not '2k/s')", () => {
+    // Math.floor(1500/1000) = 1 → "1k/s"; confirms floor not round
+    expect(formatThroughput(1500)).toBe("1k/s");
+  });
   it("< 1,000 → integer /s notation", () => {
-    // 850 → "850/s"
+    // 850 → Math.floor(850) = 850 → "850/s"
     expect(formatThroughput(850)).toBe("850/s");
   });
 });
 
 describe("formatSteps", () => {
-  it("≥1,000,000 → M steps notation", () => {
+  it("≥1e9 → B steps notation (E17)", () => {
+    // 1,000,000,000 → Math.round(1e9/1e9) = 1 → "1B steps"
+    expect(formatSteps(1e9)).toBe("1B steps");
+  });
+  it("≥1,000,000 → M steps notation (2 decimal places)", () => {
     // 1,350,000 → "1.35M steps"
     expect(formatSteps(1350000)).toBe("1.35M steps");
   });
-  it("≥1,000 < 1,000,000 → k steps notation", () => {
+  it("≥1,000 < 1,000,000 → k steps notation (floor)", () => {
     // 250,000 → "250k steps"
     expect(formatSteps(250000)).toBe("250k steps");
+  });
+  it("non-exact thousands floor — not round (1500 → '1k steps', not '2k steps')", () => {
+    // Math.floor(1500/1000) = 1 → "1k steps"
+    expect(formatSteps(1500)).toBe("1k steps");
   });
   it("< 1,000 → integer steps", () => {
     // 999 → "999 steps"
     expect(formatSteps(999)).toBe("999 steps");
   });
   it("exactly 1,000 → '1k steps'", () => {
+    // Math.floor(1000/1000) = 1 → "1k steps"
     expect(formatSteps(1000)).toBe("1k steps");
   });
 });
@@ -572,6 +596,24 @@ describe("EvalCompareTable", () => {
     expect(rows[1].textContent).toContain("RL Agent");
   });
 
+  it("TIE: RL wins tie when it shares the minimum total_cost_yuan with another policy", () => {
+    // §5 criterion: RL ≤ baselines; a tie satisfies ≤ → RL should be highlighted as best
+    const tiedEval: EvalComparePayload = {
+      ...GOLDEN_EVAL,
+      policies: {
+        rl:        { ...GOLDEN_EVAL.policies["rl"],         total_cost_yuan: 22800000 },
+        no_battery: { ...GOLDEN_EVAL.policies["no_battery"], total_cost_yuan: 22800000 }, // tied with RL
+        rule_based_tou: { ...GOLDEN_EVAL.policies["rule_based_tou"], total_cost_yuan: 28500000 },
+      },
+    };
+    render(<EvalCompareTable latest={tiedEval} />);
+    const rlRow = screen.getByText("RL Agent").closest("tr");
+    const noBatRow = screen.getByText("No Battery").closest("tr");
+    // RL wins the tie → RL highlighted, no_battery not highlighted
+    expect(rlRow).toHaveAttribute("data-best", "true");
+    expect(noBatRow).not.toHaveAttribute("data-best", "true");
+  });
+
   it("additive identity visible in rendered values (total == sum of five components)", () => {
     render(<EvalCompareTable latest={GOLDEN_EVAL} />);
     // RL: energy 12M + demand 9M + degrad 1.5M + curtail 0.3M + voll 0 = 22.8M
@@ -625,8 +667,21 @@ describe("StreamStatusBanner", () => {
     const { container } = render(
       <StreamStatusBanner wsStatus="connected" lastMessageTsUtc={null} seqGap={false} />
     );
-    // No stale banner when lastMessageTsUtc is null (training hasn't started yet)
+    // No stale banner when lastMessageTsUtc is null (training hasn't started yet — E11b)
     expect(container.firstChild).toBeNull();
+  });
+
+  it("wsStatus='stale' (WS transport stale) shows 'stale (connection)' banner (E10b)", () => {
+    // "stale" is a real WsStatus value from app_shell (not "error"). Distinct from data-stale.
+    render(<StreamStatusBanner wsStatus="stale" lastMessageTsUtc={null} seqGap={false} />);
+    expect(screen.getByText(/stale.*connection/i)).toBeInTheDocument();
+  });
+
+  it("wsStatus='stale' takes precedence over seq gap (E10b > E9 in severity chain)", () => {
+    render(<StreamStatusBanner wsStatus="stale" lastMessageTsUtc={null} seqGap={true} />);
+    // WS-transport stale > seq gap in severity
+    expect(screen.getByText(/stale.*connection/i)).toBeInTheDocument();
+    expect(screen.queryByText(/sequence gap/i)).toBeNull();
   });
 });
 
@@ -776,53 +831,78 @@ describe("TrainingPanel", () => {
     render(<TrainingPanel />);
     expect(screen.getByText(/disconnected/i)).toBeInTheDocument();
   });
+
+  it("empty history + disconnected: banner renders but 'Waiting' placeholder does NOT (E11c)", () => {
+    // When disconnected AND no history, 'waiting' is misleading — show only the disconnection banner.
+    vi.mocked(useTelemetryStore).mockReturnValue({ wsStatus: "disconnected" });
+    vi.mocked(useTrainingStore).mockReturnValue(emptyTrainingState());
+    render(<TrainingPanel />);
+    expect(screen.getByText(/disconnected/i)).toBeInTheDocument();
+    expect(screen.queryByText(/waiting for training data/i)).toBeNull();
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SECTION 10 — Seq-gap detection for train_metrics stream
+// SECTION 10 — Seq-gap detection for train_metrics stream (store-based)
+// contract §5: TrainingPanel reads trainingStore.trainSeqGap directly.
+// The store (amended §2.3) tracks lastTrainSeq/trainSeqGap internally from
+// envelope seq. Tests mock the store state — not a fictional _seq payload field.
 // ─────────────────────────────────────────────────────────────────────────────
-describe("train_metrics seq-gap detection", () => {
-  // These tests exercise the gap-detection logic that TrainingPanel
-  // maintains locally (see contract §5). We test via the StreamStatusBanner
-  // rendered by TrainingPanel.
-
-  it("no gap when messages are contiguous (seq N then N+1)", () => {
+describe("train_metrics seq-gap detection (store-based, contract §5)", () => {
+  beforeEach(() => {
     vi.mocked(useTelemetryStore).mockReturnValue({ wsStatus: "connected" });
     vi.mocked(useEvalStore).mockReturnValue(emptyEvalState());
+  });
 
-    const recentTs = new Date(Date.now() - 1_000).toISOString();
-    const history = [
-      makeEnvelope("train_metrics", GOLDEN_TRAIN, 10),
-      makeEnvelope("train_metrics", GOLDEN_TRAIN, 11),
-    ].map(e => e.payload as TrainMetricsPayload);
+  it("no gap banner when trainingStore.trainSeqGap is false", () => {
     vi.mocked(useTrainingStore).mockReturnValue({
       ...emptyTrainingState(),
-      history,
-      latest: history[1],
+      history: [GOLDEN_TRAIN, GOLDEN_TRAIN],
+      latest: GOLDEN_TRAIN,
+      trainSeqGap: false,           // store computed: contiguous seqs
+      lastTrainSeq: 11,
     });
     render(<TrainingPanel />);
-    // No gap banner
     expect(screen.queryByText(/sequence gap/i)).toBeNull();
   });
 
-  it("gap detected when seq jumps by 2 (seq 10 then 12)", () => {
-    vi.mocked(useTelemetryStore).mockReturnValue({ wsStatus: "connected" });
-    vi.mocked(useEvalStore).mockReturnValue(emptyEvalState());
-    // History with injected seq gap — TrainingPanel detects this internally.
-    // We simulate by constructing messages with gap; in implementation
-    // TrainingPanel tracks lastTrainSeq and sets seqGap accordingly.
-    // The test verifies the banner appears.
-    const msg1 = { ...GOLDEN_TRAIN, _seq: 10 } as TrainMetricsPayload & { _seq: number };
-    const msg2 = { ...GOLDEN_TRAIN, _seq: 12 } as TrainMetricsPayload & { _seq: number };
+  it("gap banner appears when trainingStore.trainSeqGap is true", () => {
+    // Store sets trainSeqGap=true when it received seq 10 then seq 12 (skipped 11)
     vi.mocked(useTrainingStore).mockReturnValue({
       ...emptyTrainingState(),
-      history: [msg1, msg2],
-      latest: msg2,
+      history: [GOLDEN_TRAIN, GOLDEN_TRAIN],
+      latest: GOLDEN_TRAIN,
+      trainSeqGap: true,            // store computed: forward gap detected
+      lastTrainSeq: 12,
     });
-    // NOTE: implementation must expose seqGap via internal state derived from store
-    // history seqs. The test verifies the eventual UI outcome, not internal mechanism.
     render(<TrainingPanel />);
     expect(screen.getByText(/sequence gap/i)).toBeInTheDocument();
+  });
+
+  it("gap clears after contiguous message (trainSeqGap resets to false)", () => {
+    // Simulate the state AFTER the gap was resolved — store cleared trainSeqGap
+    vi.mocked(useTrainingStore).mockReturnValue({
+      ...emptyTrainingState(),
+      history: [GOLDEN_TRAIN, GOLDEN_TRAIN, GOLDEN_TRAIN],
+      latest: GOLDEN_TRAIN,
+      trainSeqGap: false,           // store cleared gap on receiving seq 13 after seq 12
+      lastTrainSeq: 13,
+    });
+    render(<TrainingPanel />);
+    expect(screen.queryByText(/sequence gap/i)).toBeNull();
+  });
+
+  it("first message (lastTrainSeq=null→1) never triggers gap banner", () => {
+    // Store: received first message (seq 1), lastTrainSeq was null → no gap
+    vi.mocked(useTrainingStore).mockReturnValue({
+      ...emptyTrainingState(),
+      history: [GOLDEN_TRAIN],
+      latest: GOLDEN_TRAIN,
+      trainSeqGap: false,           // first message never sets gap per spec
+      lastTrainSeq: 1,
+    });
+    render(<TrainingPanel />);
+    expect(screen.queryByText(/sequence gap/i)).toBeNull();
   });
 });
 

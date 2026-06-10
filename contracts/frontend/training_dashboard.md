@@ -94,10 +94,19 @@ interface EvalComparePayload {
 
 ```typescript
 // trainingStore — import useTrainingStore from 'src/stores/trainingStore'
+// NOTE: This is the AMENDED interface (app_shell.md §6.2 amendment, coordinated with
+// frontend-engineer on 2026-06-10). The two new fields are additive; existing API unchanged.
 interface TrainingState {
   history: TrainMetricsPayload[];   // all received train_metrics, newest last
   latest: TrainMetricsPayload | null;
-  receiveTrainMetrics(msg: TelemetryEnvelope & { payload: TrainMetricsPayload }): void;
+  // Seq-gap tracking (additive amendment — mirrors telemetryStore's env_step gap pattern):
+  lastTrainSeq: number | null;      // seq from last received train_metrics envelope; null until first msg
+  trainSeqGap: boolean;             // true when a FORWARD gap detected (msg.seq > lastTrainSeq + 1).
+                                    // Out-of-order / duplicate (seq ≤ lastTrainSeq) does NOT set gap.
+                                    // First message (lastTrainSeq === null) never sets gap.
+                                    // clear() also resets → lastTrainSeq: null, trainSeqGap: false.
+  receiveTrainMetrics(msg: TelemetryEnvelope): void;
+  // receiveTrainMetrics takes the full envelope so the store can extract msg.seq internally.
   clear(): void;
 }
 
@@ -110,7 +119,10 @@ interface EvalState {
 }
 
 // telemetryStore — read wsStatus only (NO env_step data consumed by this dashboard)
-type WsStatus = "connecting" | "connected" | "disconnected" | "error";
+// WsStatus verbatim from app_shell.md §4 / src/types/telemetry.ts (APPROVED, PR #5):
+type WsStatus = "connecting" | "connected" | "disconnected" | "stale";
+// "stale" = WS transport considered stale by the shell's WS client (distinct from the local
+// ts_utc-based data-staleness check in StreamStatusBanner).
 interface TelemetryState {
   wsStatus: WsStatus;
   // (remaining fields not consumed by training dashboard)
@@ -136,7 +148,9 @@ Layout (top-to-bottom):
 5. `CheckpointEventList` — sidebar or below MetricCurves; shows checkpoint events
 6. `EvalCompareTable` — below MetricCurves; shown only when `evalStore.latest !== null`
 
-Empty state: when `trainingStore.history.length === 0` AND `wsStatus !== "error"`, render a centered placeholder: `"Waiting for training data…"` with a subtle spinner. No charts or table are rendered in this state.
+Empty state: when `trainingStore.history.length === 0` AND `wsStatus !== "disconnected"`, render a centered placeholder: `"Waiting for training data…"` with a subtle spinner. No charts or table are rendered in this state.
+
+When `trainingStore.history.length === 0` AND `wsStatus === "disconnected"`: `StreamStatusBanner` renders (disconnection is the primary signal) but the "Waiting for training data…" placeholder does **not** render — "waiting" implies imminent data, which is false when disconnected. The empty content area is blank.
 
 ### 3.2 `RunSelector`
 
@@ -211,10 +225,12 @@ When `latest === null`: all three rows render `"—"`.
 **Formatting functions** (live in `src/utils/units.ts` — this contract defines the required signatures; tests pin the outputs):
 
 ```typescript
-// Format env_steps_per_sec: ≥1,000,000 → "1.35M/s"; ≥1,000 → "1,350k/s"; else → "850/s"
+// Format env_steps_per_sec (see §4 for full tier table):
+// ≥1e9 → "1B/s"; ≥1e6 → "1.35M/s"; ≥1e3 → "350k/s"; else → "850/s"
 function formatThroughput(stepsPerSec: number): string;
 
-// Format global_step: ≥1,000,000 → "1.35M steps"; ≥1,000 → "250k steps"; else → "999 steps"
+// Format global_step (see §4 for full tier table):
+// ≥1e9 → "1B steps"; ≥1e6 → "1.35M steps"; ≥1e3 → "250k steps"; else → "999 steps"
 function formatSteps(steps: number): string;
 
 // Format wall_seconds: <60 → "45s"; <3600 → "3m 4s"; else → "1h 2m"
@@ -281,6 +297,8 @@ Renders a `Card` titled "Policy Comparison (latest eval)" with a responsive tabl
 
 **Best-policy highlight:** the row with the lowest `total_cost_yuan` (regardless of SOC violations) receives a `data-best="true"` attribute and a distinct CSS class `row-best` for styling. If the RL agent has the lowest total cost, the RL row is highlighted (§5 acceptance criterion). If another policy beats RL, RL is NOT highlighted, and the better policy row is highlighted — a visual signal that the RL agent has NOT met the §5 baseline.
 
+**Tie-breaking rule:** when two or more policies share the minimum `total_cost_yuan`, the `rl` policy wins the tie and receives `data-best="true"`. This is consistent with the §5 acceptance criterion "RL ≤ both baselines" (equality satisfies ≤). If RL is not present in the tie group (i.e., RL is strictly worse than some other tied policies), the tied non-RL policy that appears first in the sorted order gets `data-best="true"`.
+
 **SOC footnote:** a `<tfoot>` row renders `"† SOC penalty excluded from Total Cost (reward-basis safety metric)"`.
 
 **`null` case:** renders `"No eval run yet — waiting for first 365-day eval"` placeholder (not an empty table with no rows).
@@ -290,26 +308,27 @@ Renders a `Card` titled "Policy Comparison (latest eval)" with a responsive tabl
 ### 3.7 `StreamStatusBanner`
 
 ```typescript
-// Stale threshold: no train_metrics received in > STALE_THRESHOLD_MS (30_000ms default)
-// measured by comparing Date.now() to the last-received message's ts_utc
+// Data-stale threshold: no train_metrics received in > STALE_THRESHOLD_MS (30_000ms default)
+// measured by comparing Date.now() to the last-received message's ts_utc (emit clock).
+// This is distinct from wsStatus === "stale" (WS transport stale).
 const STALE_THRESHOLD_MS = 30_000;
 
 interface StreamStatusBannerProps {
-  wsStatus: WsStatus;
-  lastMessageTsUtc: string | null;  // envelope ts_utc of most recent train_metrics
-  seqGap: boolean;                  // from trainingStore (if tracked) or detected locally
-  // Note: trainingStore does not expose seqGap directly (that's telemetryStore, for env_step).
-  // TrainingPanel tracks the last-seen seq for train_metrics locally and computes seqGap.
+  wsStatus: WsStatus;              // verbatim from telemetryStore (app_shell WsStatus union)
+  lastMessageTsUtc: string | null; // envelope ts_utc of most recent train_metrics; null = never received
+  seqGap: boolean;                 // from trainingStore.trainSeqGap (the amended §2.3 store field)
 }
 function StreamStatusBanner({ wsStatus, lastMessageTsUtc, seqGap }: StreamStatusBannerProps): JSX.Element | null;
 ```
 
-- Returns `null` (renders nothing) when: `wsStatus === "connected"` AND NOT stale AND NOT seqGap.
-- Stale condition: `wsStatus === "connected"` AND `lastMessageTsUtc !== null` AND `Date.now() - Date.parse(lastMessageTsUtc) > STALE_THRESHOLD_MS`.
-- Stale banner text: `"Training stream stale — no update in >30s"` with `severity="warning"`.
-- Disconnected banner text: `"Training stream disconnected"` with `severity="error"`.
-- Seq gap banner text: `"Sequence gap detected — some training steps may be missing"` with `severity="warning"`.
-- When multiple conditions are true, show only the highest severity banner (disconnected > gap > stale).
+- Returns `null` (renders nothing) when: `wsStatus === "connected"` AND NOT data-stale AND NOT seqGap.
+- **Disconnected** (`wsStatus === "disconnected"`): banner text `"Training stream disconnected"`, `severity="error"`.
+- **WS transport stale** (`wsStatus === "stale"`): banner text `"Training stream stale (connection)"`, `severity="warning"`.
+- **Data stale** (local check): `wsStatus === "connected"` AND `lastMessageTsUtc !== null` AND `Date.now() - Date.parse(lastMessageTsUtc) > STALE_THRESHOLD_MS` → text `"Training stream stale — no update in >30s"`, `severity="warning"`.
+  - When `lastMessageTsUtc === null` (stream never received a message): no data-stale banner (training hasn't started yet, "stale" is misleading).
+- **Seq gap** (`seqGap === true`): banner text `"Sequence gap detected — some training steps may be missing"`, `severity="warning"`.
+- **Precedence** (when multiple conditions are true, show only the highest severity):
+  `disconnected` > `wsStatus=stale` > `seqGap` > `data-stale`.
 
 ---
 
@@ -319,15 +338,27 @@ All new formatting functions are added to the EXISTING `src/utils/units.ts`. Das
 
 ```typescript
 // Throughput: steps/second
-// ≥1,000,000 → "1.35M/s"; ≥1,000 → "350k/s"; else → "850/s"
+// Tier table (tiers checked ≥-first):
+//   ≥1e9 → Math.round(v/1e9)          + "B/s"    e.g. 1,000,000,000 → "1B/s"
+//   ≥1e6 → (v/1e6).toFixed(2)         + "M/s"    e.g. 1,350,000     → "1.35M/s"
+//   ≥1e3 → Math.floor(v/1e3)          + "k/s"    e.g. 350,000       → "350k/s"
+//          (floor: 1500 → "1k/s", 999,999 → "999k/s")
+//   <1e3 → Math.floor(v)              + "/s"     e.g. 850 → "850/s", 0 → "0/s"
 function formatThroughput(stepsPerSec: number): string;
 
 // Step count
-// ≥1,000,000 → "1.35M steps"; ≥1,000 → "250k steps"; else → "999 steps"
+// Tier table (same thresholds as formatThroughput, different suffix):
+//   ≥1e9 → Math.round(v/1e9)          + "B steps"   e.g. 1,000,000,000 → "1B steps"
+//   ≥1e6 → (v/1e6).toFixed(2)         + "M steps"   e.g. 1,350,000     → "1.35M steps"
+//   ≥1e3 → Math.floor(v/1e3)          + "k steps"   e.g. 250,000       → "250k steps"
+//          (floor: 1500 → "1k steps", 999,999 → "999k steps")
+//   <1e3 → Math.floor(v)              + " steps"    e.g. 999 → "999 steps"
 function formatSteps(steps: number): string;
 
-// Wall seconds
-// <60 → "45s"; <3600 → "3m 4s"; else → "1h 2m"
+// Wall seconds — floor (not round) for sub-unit truncation:
+//   <60   → Math.floor(v)+"s"                   e.g. 45 → "45s", 59.9 → "59s"
+//   <3600 → Math.floor(v/60)+"m "+Math.floor(v%60)+"s"  e.g. 184.2 → "3m 4s"
+//   ≥3600 → Math.floor(v/3600)+"h "+Math.floor((v%3600)/60)+"m"  e.g. 3662 → "1h 1m"
 function formatWallSeconds(seconds: number): string;
 ```
 
@@ -335,21 +366,15 @@ Existing `formatYuan(yuan, decimals?)` is already in `units.ts`; no change neede
 
 ---
 
-## 5. Seq-gap detection for train_metrics
+## 5. Seq-gap detection for train_metrics (store-based)
 
-`TrainingPanel` maintains a local React ref `lastTrainSeq: number | null` to detect gaps in the `train_metrics` stream (separate from `telemetryStore.seqGap` which tracks `env_step`):
+`TrainingPanel` reads `useTrainingStore(s => s.trainSeqGap)` directly — it does **not** maintain a local React ref for this. The `trainingStore` (amended §2.3) tracks `lastTrainSeq` and `trainSeqGap` internally on every `receiveTrainMetrics(msg)` call by extracting `msg.seq` from the envelope.
 
-```typescript
-// In TrainingPanel, on each new train_metrics message msg:
-if (lastTrainSeq.current !== null && msg.seq > lastTrainSeq.current + 1) {
-  setTrainSeqGap(true);
-} else {
-  setTrainSeqGap(false); // clear gap once a contiguous message arrives
-}
-lastTrainSeq.current = msg.seq;
-```
-
-Gap semantics: same as telemetryStore — only FORWARD gaps (missed messages) set `seqGap=true`; out-of-order / duplicate delivery does not.
+Gap semantics (identical to `telemetryStore` for `env_step`):
+- `trainSeqGap = true` iff `msg.seq > lastTrainSeq + 1` (a forward gap — missed messages).
+- Out-of-order or duplicate delivery (`msg.seq ≤ lastTrainSeq`) does NOT set `trainSeqGap`.
+- The first message (`lastTrainSeq === null`) never sets `trainSeqGap`.
+- `clear()` resets both `lastTrainSeq → null` and `trainSeqGap → false`.
 
 ---
 
@@ -407,9 +432,12 @@ All of the following MUST be handled without crashing and without rendering inco
 | E6 | `policies` with unknown future key (e.g. `"greedy"`) | New row rendered with fallback display name; no crash |
 | E7 | `restClient.getRuns()` rejects | `RunSelector` shows error state with retry button |
 | E8 | `getRuns()` returns `[]` | `RunSelector` shows "No runs available" |
-| E9 | Seq gap in `train_metrics` (msg.seq > lastSeq + 1) | `StreamStatusBanner` shows gap warning |
+| E9 | `trainingStore.trainSeqGap === true` | `StreamStatusBanner` shows gap warning |
 | E10 | `wsStatus === "disconnected"` | `StreamStatusBanner` shows disconnection banner |
-| E11 | `lastMessageTsUtc` > 30s ago | `StreamStatusBanner` shows stale warning |
+| E10b | `wsStatus === "stale"` (WS transport stale) | `StreamStatusBanner` shows "stale (connection)" warning |
+| E11 | `lastMessageTsUtc` > 30s ago and `wsStatus === "connected"` | `StreamStatusBanner` shows data-stale warning |
+| E11b | `lastMessageTsUtc === null` AND connected | No stale banner (training not started yet) |
+| E11c | `history === []` AND `wsStatus === "disconnected"` | Banner renders; "Waiting" placeholder does NOT |
 | E12 | All-zero `train_metrics` values | Charts render `0.0` values correctly; no NaN ticks |
 | E13 | `evalStore.policies.rl.total_cost_yuan` > all baselines | RL row NOT highlighted as best; no crash; the baseline with lowest cost is highlighted |
 | E14 | `eval_compare` with only one policy | Table renders that one row correctly |
