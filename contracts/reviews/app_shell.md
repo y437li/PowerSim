@@ -114,3 +114,38 @@ telemetry LOCK re-check for the `PENDING_LOCK`-marked cases.
 Re-review on: (a) the 3 must-fix items addressed in a revised contract + tests, and
 (b) the telemetry_schema.md LOCK (re-verify every `PENDING_LOCK` fixture against locked
 field names/units). Stage-2 (implementation) audit happens when the PR is marked ready.
+
+---
+
+## Re-review (stage 1b) — 2026-06-10 — VERDICT: APPROVE
+
+Re-reviewed after commits 2df39b8 (must-fix + should-fix) and 517af89 (post-LOCK
+re-verification). Verified against the code, not the summary:
+
+- **Must-fix 1 (TouBadge price source):** RESOLVED — `priceYuanPerMwh?: number` fed from the
+  wire `price_buy_yuan_per_mwh`, formatted via `formatYuanPerMwh`, explicit "never a hardcoded
+  table"; 3 tests pin render/absent/showPrice=false. Thread resolved.
+- **Must-fix 2 (formatSimTime UTC):** RESOLVED — §8 mandates `getUTCDay/getUTCHours/getUTCMinutes`,
+  states `getHours()/getDay()` is incorrect, returns `"Tue 08:00"`; dev test relabeled Tuesday and
+  tightened to `toBe("Tue 08:00")`. Thread resolved.
+- **Must-fix 3 (§12.3 run_id reset):** RESOLVED — §6.1 specifies store-internal reset before
+  append; seqGap defined (`seq > lastSeq+1`; out-of-order/dup accepted; first never flags);
+  clearHistory resets lastSeq/seqGap. Thread resolved.
+- **Should-fix:** evalStore test self-contained; seqGap non-monotonic defined. Resolved.
+- **Post-LOCK field conformance (telemetry_schema v1.0.0, PR #6):** COMPLETE and correct — §3
+  types and all three fixtures migrated exactly: `BatteryState.p_max_*`, `GenerationBlock`,
+  split `solar_/wind_curtailed_mw`, `c_demand_charge_yuan` + `demand_rate_yuan_per_mw_month` +
+  the two cost totals, 9-field `cost_cum`, train_metrics reward triplet (`reward_norm_mean:
+  number|null`), eval `cost_basis` + `soc_violation_mwh` + `penalty_yuan`. Golden-A arithmetic in
+  the fixture hand-verified (c_energy −53100, cost_total_real −52700, reward 0.527, conservation
+  30 / 92.5).
+- **Reviewer tests:** my 16 cases intact; added 4 more (env_step two-cost-total identities,
+  reward formula, per-source conservation) — locked-acceptance integrity guards for the golden
+  fixture. Approved suite = developer cases + 20 reviewer cases.
+
+**Non-blocking nit (clean up on merge):** Status/Spec line 4 and the `telemetry.ts` directory
+comment (line 42) still read "DRAFT — PENDING TELEMETRY LOCK"; §3 and the body are correctly
+LOCKED. Cosmetic metadata only.
+
+**Verdict: APPROVE** (stage-1 contract+tests gate). Posted as a PR comment per the verdict-marker
+convention. Implementation may proceed against these locked types; QA closes the task.
