@@ -775,3 +775,81 @@ describe("flow defensive edge cases", () => {
     expect(calcFlowWidth(-1, 945)).toBeCloseTo(0.5, 5);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// REVIEWER-ADDED CASES (frontend-reviewer, 2026-06-10) — marked // reviewer:
+// The pure-function physics tests above are solid. These add the data-binding
+// correctness the component tests miss. PENDING_LOCK cases use the PR #6
+// (now-approved) telemetry field names and must be re-verified at the LOCK.
+// ════════════════════════════════════════════════════════════════════════════
+
+// ─── Grid-line denominator: import MUST normalize by max_import_mw, not site_max ─
+
+describe("reviewer: grid line width uses the correct per-direction denominator (§8)", () => {
+  // reviewer: §8 normalizes export by max_export_mw and import by max_import_mw.
+  // For Gansu max_export_mw (945) == site_max_mw (945), so an export line that
+  // wrongly used site_max would be INVISIBLE in tests. The import denominator is
+  // 400 MW (D12) != 945, so it's the one that catches a wrong-denominator bug.
+  // A 200 MW import normalized by 400 is width 3.25; by site_max (945) it would be
+  // ~1.66 — a 2x visual error on the grid wire. Pin the function with both.
+  it("import 200 MW -> width 3.25 using max_import_mw=400 (D12)", () => {
+    // 0.5 + (200/400)*5.5 = 0.5 + 2.75 = 3.25
+    expect(calcFlowWidth(200, 400)).toBeCloseTo(3.25, 4);
+  });
+
+  it("the 400 vs 945 denominator gives materially different widths (must not confuse them)", () => {
+    // 0.5 + (200/945)*5.5 ~= 1.664  — the WRONG value if site_max is used for import
+    expect(calcFlowWidth(200, 945)).toBeCloseTo(0.5 + (200 / 945) * 5.5, 4);
+    expect(calcFlowWidth(200, 400)).not.toBeCloseTo(calcFlowWidth(200, 945), 1);
+  });
+
+  it("export at the cap (945 MW) -> width 6.0 using max_export_mw=945 (D5)", () => {
+    expect(calcFlowWidth(945, 945)).toBeCloseTo(6.0, 5);
+  });
+});
+
+// ─── Per-source conservation using PR #6 generation.gross_* + split curtailment ──
+
+describe("reviewer: per-source flow conservation (PENDING_LOCK — PR #6 field names)", () => {
+  // reviewer: PR #6 (approved, pending LOCK) added generation.gross_solar_mw /
+  // gross_wind_mw and SPLIT flows.ren_curtailed_mw -> solar_curtailed_mw +
+  // wind_curtailed_mw, making per-source conservation verifiable on the consumer
+  // side. This contract/test still references the OLD ren_curtailed_mw (§3.1, §4.3,
+  // line 470) and MUST migrate at LOCK. This golden matches PR #6 golden step A.
+  const GOLDEN = {
+    gross_solar_mw: 30.0,
+    solar_to_load_mw: 30.0, solar_to_bat_mw: 0.0, solar_to_grid_mw: 0.0, solar_curtailed_mw: 0.0,
+    gross_wind_mw: 92.5,
+    wind_to_load_mw: 12.5, wind_to_bat_mw: 0.0, wind_to_grid_mw: 80.0, wind_curtailed_mw: 0.0,
+  };
+
+  it("solar: to_load + to_bat + to_grid + curtailed == gross_solar_mw", () => {
+    const sum = GOLDEN.solar_to_load_mw + GOLDEN.solar_to_bat_mw + GOLDEN.solar_to_grid_mw + GOLDEN.solar_curtailed_mw;
+    expect(sum).toBeCloseTo(GOLDEN.gross_solar_mw, 6); // 30 == 30
+  });
+
+  it("wind: to_load + to_bat + to_grid + curtailed == gross_wind_mw", () => {
+    const sum = GOLDEN.wind_to_load_mw + GOLDEN.wind_to_bat_mw + GOLDEN.wind_to_grid_mw + GOLDEN.wind_curtailed_mw;
+    expect(sum).toBeCloseTo(GOLDEN.gross_wind_mw, 6); // 12.5 + 80 == 92.5
+  });
+});
+
+// ─── Rotor monotonicity across the ramp (no inversion / off-by-one in the curve) ─
+
+describe("reviewer: calcRotorOmega is monotonic non-decreasing across the ramp", () => {
+  // reviewer: the existing point tests pin 4/7.5/12, but nothing guards the SHAPE
+  // of the curve — a sign flip or an inverted (rated−v) numerator could still pass
+  // a symmetric midpoint. Pin strict monotonic increase on the ramp, the plateau,
+  // and v=9 (catches an inverted numerator). NOTE: the curve is LINEAR in
+  // (v−cutin); the source comments calling it the "cubic curve" are mislabeled —
+  // linear is correct for rotor RPM (cubic is for power), the tests assume linear.
+  const P = [3, 12, 25, 0.2] as const; // cutin, rated, cutout, omega_max
+  it("strictly increases from cut-in to rated, then plateaus to cut-out", () => {
+    const ramp = [3, 5, 7, 9, 11, 12].map((v) => calcRotorOmega(v, ...P));
+    for (let i = 1; i < ramp.length; i++) expect(ramp[i]).toBeGreaterThanOrEqual(ramp[i - 1]);
+    expect(calcRotorOmega(18, ...P)).toBeCloseTo(0.2, 6);
+    expect(calcRotorOmega(24, ...P)).toBeCloseTo(0.2, 6);
+    // v=9: 0.2*(6/9) = 0.13333 (catches an inverted (rated−v) numerator)
+    expect(calcRotorOmega(9, ...P)).toBeCloseTo(0.2 * (6 / 9), 5);
+  });
+});
