@@ -11,8 +11,11 @@ from __future__ import annotations
 import asyncio
 import collections
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
@@ -293,8 +296,8 @@ async def ws_training_stream(websocket: WebSocket) -> None:
                         try:
                             from energy_go.telemetry.validate import validate  # type: ignore
                             errs = validate(frame)
-                            # errs would be asserted == [] in tests
-                            _ = errs
+                            if errs:
+                                log.warning("D18 validate (training_proxy train_metrics): %s", errs)
                         except ImportError:
                             pass
 

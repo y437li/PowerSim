@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,7 @@ from typing import Any
 import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 
 # ---------------------------------------------------------------------------
@@ -423,8 +425,7 @@ async def ws_inference(websocket: WebSocket) -> None:
                 from energy_go.telemetry.validate import validate  # type: ignore
                 errs = validate(frame)
                 if errs:
-                    # Log but don't crash the stream — the tests assert this via the frame
-                    pass
+                    log.warning("D18 validate (_step_loop env_step): %s", errs)
             except ImportError:
                 pass
 
@@ -549,6 +550,14 @@ async def ws_inference(websocket: WebSocket) -> None:
                     "payload": payload,
                 }
                 s.seq += 1
+                # D18 producer obligation: validate before sending
+                try:
+                    from energy_go.telemetry.validate import validate  # type: ignore
+                    _errs = validate(frame)
+                    if _errs:
+                        log.warning("D18 validate (step cmd env_step): %s", _errs)
+                except ImportError:
+                    pass
                 await _send(json.dumps(frame))
 
             # ── stop ───────────────────────────────────────────────────────
