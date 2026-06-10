@@ -432,7 +432,7 @@ STEP 10 — Costs and reward (§3.4, §3.5, D10, D13)
   C_deg     = c_deg · (p_ch + p_dis) · dt
   C_curtail = curtail_penalty · (wind_curtailed_mw + solar_curtailed_mw + bat_curtailed_mw) · dt
   C_VOLL    = voll · load_unserved · dt
-  penalty   = 20_000 · soc_viol_mwh
+  penalty   = params.soc_penalty_yuan_per_mwh · soc_viol_mwh   # default 20 000 ¥/MWh (= VOLL rate)
 
   # 10b. Month-boundary demand charge (D10) — must be computed BEFORE cost_total_real below.
   # month_of_step is a precomputed int array shape (8760,): month_of_step[t] ∈ {0..11}
@@ -447,7 +447,11 @@ STEP 10 — Costs and reward (§3.4, §3.5, D10, D13)
       c_demand_charge_yuan = 0.0   # NOT charged mid-month (D10: no per-step accrual)
   # Anti-double-count (D10 fix): the charge is booked exactly ONCE via is_month_end.
   # No separate "terminal flush" — the is_terminal flag in is_month_end handles it.
-  # Truncated episode (< 8760 steps): partial-month charge is NOT booked.
+  # Truncated episode (< 8760 steps): c_demand_charge_yuan = 0 is CORRECT BY DESIGN (D21).
+  # Training episodes are not billing periods; the agent receives demand-charge pressure via
+  # the per-step 2·C_DC_shape term in cost_total_reward_basis every step. Real-money
+  # accounting (cost_total_real) only charges at completed calendar-month boundaries.
+  # A 7-day random-start training episode therefore correctly books c_demand_charge_yuan = 0.
 
   # 10c. D13: two separate cost totals (c_demand_charge_yuan now defined above)
   cost_total_reward_basis = C_E + 2·C_DC_shape + C_deg + C_curtail + C_VOLL  # ×2 applied here
@@ -524,11 +528,11 @@ for h_idx in range(1, 25):    # h_idx = 1..24, stride=1 (D9)
     σ_h = σ_max · h_idx / H_max   # D6: 10% at horizon 24, linear in h
     x_true = data at t_future
     x_noisy = x_true · (1 + N(0, σ_h))   # multiplicative
-    each noised feature clipped to its physical range
+    each noised feature clipped to its physical range via _noised_feature(true, noise, σ_h, lo, hi)
     obs[11 + 4*(h_idx-1) + 0] = clip(x_noisy_wind, 0, 25) / 20
     obs[11 + 4*(h_idx-1) + 1] = clip(x_noisy_irr, 0, 1000) / 1000
     obs[11 + 4*(h_idx-1) + 2] = clip(x_noisy_load_kw, 0, 200_000) / 100_000
-    obs[11 + 4*(h_idx-1) + 3] = x_noisy_price   (raw ¥/MWh; further normalized by VecNormalize)
+    obs[11 + 4*(h_idx-1) + 3] = clip(x_noisy_price, 0, ∞)   # D6: clipped ≥ 0; raw ¥/MWh; VecNormalize downstream
 
 Total: 11 + 96 = 107 dims ✓
 ```
@@ -549,7 +553,7 @@ Total: 11 + 96 = 107 dims ✓
 | Costs / reward raw      | ¥        | per step (already × Δt = 1 h)           |
 | Reward                  | unitless | ≈ O(1) after ×1e-5                      |
 | Demand rate             | ¥/MW·month | 32 000                                |
-| Violation penalty rate  | ¥/MWh    | 20 000 (same as VOLL rate)              |
+| Violation penalty rate  | ¥/MWh    | `params.soc_penalty_yuan_per_mwh` (default 20 000, = VOLL) |
 
 ---
 

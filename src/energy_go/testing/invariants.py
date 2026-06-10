@@ -112,7 +112,7 @@ def assert_cost_identities(result: Any, params: Any, *, tol: float = 1e-9,
     3.  cost_total_real ==
             c_energy + c_demand_charge + c_degradation + c_curtail + c_voll
     4.  reward == −(cost_total_reward_basis + penalty) × reward_scale
-    5.  penalty == 20 000 × soc_violation_mwh   (§3.5 formula — GAP 1 confirmed ✓)
+    5.  penalty == params.soc_penalty_yuan_per_mwh × soc_violation_mwh  (§3.5 — GAP 1 ✓)
     6.  c_curtail == (solar_curtailed + wind_curtailed + bat_curtailed)
                      × curtail_penalty × Δt                (GAP 6 rate check ✓)
     7.  c_voll == load_unserved × voll × Δt                (GAP 6 rate check ✓)
@@ -131,7 +131,8 @@ def assert_cost_identities(result: Any, params: Any, *, tol: float = 1e-9,
         ``price_buy_yuan_per_mwh`` and ``price_sell_yuan_per_mwh``.
     params:
         Parameter object providing: ``reward_scale``, ``c_deg_yuan_per_mwh``,
-        ``voll_yuan_per_mwh``, ``curtail_penalty_yuan_per_mwh``.
+        ``voll_yuan_per_mwh``, ``curtail_penalty_yuan_per_mwh``,
+        ``soc_penalty_yuan_per_mwh``.
     tol:
         Relative tolerance.  Default 1e-9 (algebraic identity, float64).
         Use 1e-6 for float32 JAX outputs.
@@ -146,6 +147,7 @@ def assert_cost_identities(result: Any, params: Any, *, tol: float = 1e-9,
     voll = _p(params, "voll_yuan_per_mwh")
     c_deg_rate = _p(params, "c_deg_yuan_per_mwh")
     curtail_rate = _p(params, "curtail_penalty_yuan_per_mwh")
+    soc_penalty_rate = _p(params, "soc_penalty_yuan_per_mwh")
 
     c_import     = _f(result, "c_import_yuan")
     r_export     = _f(result, "r_export_yuan")
@@ -191,10 +193,11 @@ def assert_cost_identities(result: Any, params: Any, *, tol: float = 1e-9,
                    f"Identity 4 (reward): {reward:.8f} ≠ "
                    f"−(cost_rb+penalty)×scale={reward_expected:.8f}")
 
-    # 5. penalty = 20_000 × soc_violation_mwh
-    penalty_expected = 20_000.0 * soc_viol
+    # 5. penalty = params.soc_penalty_yuan_per_mwh × soc_violation_mwh (§3.5)
+    penalty_expected = soc_penalty_rate * soc_viol
     _assert_approx(penalty, penalty_expected, tol,
-                   f"Identity 5 (penalty): {penalty:.4f} ≠ 20000×soc_viol={penalty_expected:.4f}")
+                   f"Identity 5 (penalty): {penalty:.4f} ≠ "
+                   f"{soc_penalty_rate}×soc_viol={penalty_expected:.4f}")
 
     # 6. c_curtail = total_curtailed × rate × dt
     total_curt = solar_curt + wind_curt + bat_curt

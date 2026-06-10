@@ -40,6 +40,7 @@ class GansuParams:
     voll_yuan_per_mwh:              float = 20_000.0    # value of lost load
     curtail_penalty_yuan_per_mwh:   float = 800.0       # curtailment penalty
     demand_rate_yuan_per_mw_month:  float = 32_000.0    # §3.7: 32 ¥/kW·month × 1000 kW/MW
+    soc_penalty_yuan_per_mwh:       float = 20_000.0    # §3.5: SOC violation penalty rate (= VOLL)
     reward_scale:                   float = 1e-5        # §3.5: scale reward to ≈ O(1)
 
     # --- Sell-price spread (D7: effective_spread = max(0, nominal + noise) ≥ 0) ---

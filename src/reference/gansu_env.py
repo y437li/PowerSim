@@ -488,7 +488,7 @@ def env_step(
         wind_curtailed_mw + solar_curtailed_mw + bat_curtailed_mw
     ) * dt
     c_voll    = params.voll_yuan_per_mwh * load_unserved * dt
-    penalty   = 20_000.0 * soc_viol
+    penalty   = params.soc_penalty_yuan_per_mwh * soc_viol
 
     # ------------------------------------------------------------------
     # STEP 10b — Month-boundary demand charge (D10)
@@ -662,6 +662,30 @@ def generate_year(seed: int, params: GansuParams) -> dict[str, np.ndarray]:
 
 
 # ---------------------------------------------------------------------------
+# Observation builder helpers
+# ---------------------------------------------------------------------------
+
+def _noised_feature(
+    true_val: float,
+    noise_draw: float,
+    sigma_h: float,
+    lo: float = 0.0,
+    hi: float = float("inf"),
+) -> float:
+    """Apply multiplicative noise to *true_val* and clip to [lo, hi].
+
+    Noise model: ``noisy = true_val × (1 + noise_draw × σ_h)``
+    (D6: horizon-scaled, applied to every forecast feature).
+
+    The clip to ≥ 0 (default *lo*) is structural per D6: "each noised feature
+    clipped to its physical range."  For forecast price this prevents negative
+    ¥/MWh observations even when spread+noise drive the noisy value below zero.
+    """
+    noisy = true_val * (1.0 + noise_draw * sigma_h)
+    return float(np.clip(noisy, lo, hi))
+
+
+# ---------------------------------------------------------------------------
 # Observation builder
 # ---------------------------------------------------------------------------
 
@@ -721,18 +745,14 @@ def get_obs(
         load_true  = float(data["load_mw"][t_future])
         price_true = float(get_price(t_future % 24, 0))
 
-        wind_noisy  = wind_true  * (1.0 + noise[0] * sigma_h)
-        irr_noisy   = irr_true   * (1.0 + noise[1] * sigma_h)
-        load_noisy  = load_true  * (1.0 + noise[2] * sigma_h)   # in MW
-        price_noisy = price_true * (1.0 + noise[3] * sigma_h)
-
-        # Clip to physical ranges and normalise (contract §get_obs)
+        # Clip to physical ranges and normalise (D6: each feature clipped via _noised_feature)
         base_idx = 11 + 4 * (h_idx - 1)
-        obs[base_idx + 0] = float(np.clip(wind_noisy, 0.0, 25.0)) / 20.0
-        obs[base_idx + 1] = float(np.clip(irr_noisy, 0.0, 1000.0)) / 1000.0
+        obs[base_idx + 0] = _noised_feature(wind_true,  noise[0], sigma_h, 0.0, 25.0) / 20.0
+        obs[base_idx + 1] = _noised_feature(irr_true,   noise[1], sigma_h, 0.0, 1000.0) / 1000.0
         # load in kW for obs normalisation (clip 0–200 000 kW, norm by 100 000)
-        load_noisy_kw = load_noisy * 1000.0
-        obs[base_idx + 2] = float(np.clip(load_noisy_kw, 0.0, 200_000.0)) / 100_000.0
-        obs[base_idx + 3] = float(price_noisy)   # raw ¥/MWh; normalised by VecNormalize
+        load_noisy_kw = _noised_feature(load_true * 1000.0, noise[2], sigma_h, 0.0, 200_000.0)
+        obs[base_idx + 2] = load_noisy_kw / 100_000.0
+        # D6: price clipped ≥ 0 (prevents negative ¥/MWh obs from large negative noise)
+        obs[base_idx + 3] = _noised_feature(price_true, noise[3], sigma_h, 0.0)  # raw ¥/MWh; normalised by VecNormalize
 
     return obs
