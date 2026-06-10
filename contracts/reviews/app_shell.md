@@ -149,3 +149,34 @@ LOCKED. Cosmetic metadata only.
 
 **Verdict: APPROVE** (stage-1 contract+tests gate). Posted as a PR comment per the verdict-marker
 convention. Implementation may proceed against these locked types; QA closes the task.
+
+---
+
+## Stage-2 implementation audit — 2026-06-10 — VERDICT: APPROVE
+
+Audited implementation commit `2c6227d` (102/102 approved tests pass per developer; QA runs the
+suite formally). Audited the code directly against the contract, focusing on what tests don't catch:
+
+- **Data-path hygiene ✓** — all WebSocket/fetch I/O is confined to `src/clients/`; no rogue
+  sockets, `JSON.parse`, or `XMLHttpRequest` elsewhere. No duplicated wire-parsing.
+- **Unit discipline ✓** — every conversion (`socToPercent`, `mwToKw/kwToMw`, `formatYuan`,
+  `formatYuanPerMwh`, `formatPower`, `formatSimTime`) lives only in `utils/units.ts`. No inline
+  conversion math in components (`NumberDisplay.toFixed` is generic display rounding, not a unit
+  conversion). `formatSimTime` uses `getUTCDay/Hours/Minutes` (TZ-invariant). `socToPercent` uses
+  `parseFloat(toFixed(10))` to kill the IEEE-754 0.55×100 artifact. `formatYuan` sign/zero/
+  separators correct; `formatYuanPerMwh` is `/MWh`, never `/kWh`.
+- **No derived-state drift ✓** — `telemetryStore` keeps `envStep` as the single source (no mirrored
+  per-field copies). §12.3 run_id reset, forward-only seqGap, 168 ring buffer, clearHistory reset
+  all correct.
+- **wsClient state machine ✓** — major>1 reject, 1.x minor forward-compat, §4.3 missing-kind/payload
+  discard, invalid-JSON/unknown-kind discard, stale + stale-recovery, exponential backoff with ±10%
+  jitter and attempt reset, clean disconnect.
+- **Prime-directive components ✓** — `NumberDisplay` finite-guard (null/NaN/Inf→nullText; negative
+  finite renders); `TouBadge.showPrice` formats the `priceYuanPerMwh` wire value via
+  `formatYuanPerMwh`, explicitly NOT a §3.7 table lookup.
+
+**Non-blocking note:** `wsClient` default `reconnectBaseMs = 1000`, but app_shell §4 documents the
+default as `50` (the value is untested). Reconcile — recommend updating the contract default to
+`1000` (the saner value) or the impl to `50`.
+
+**Verdict: APPROVE** (stage-2 code audit). Mergeable on reviewer APPROVE + QA_PASS.
