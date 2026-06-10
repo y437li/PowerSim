@@ -10,7 +10,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { Card } from "../Card";
-import { formatSteps } from "../../utils/units";
+import { formatSteps, formatYuan } from "../../utils/units";
 import type { TrainMetricsPayload } from "../../types/telemetry";
 
 interface MetricCurvesProps {
@@ -97,7 +97,7 @@ export function MetricCurves({ history }: MetricCurvesProps): JSX.Element {
                 <Tooltip
                   formatter={(value: number) =>
                     panel.key === "cost_total_real_mean_yuan"
-                      ? [`¥${value.toLocaleString()}`, panel.label]
+                      ? [formatYuan(value, 0), panel.label]
                       : [value.toFixed(4), panel.label]
                   }
                   labelFormatter={(v: number) => formatSteps(v)}
