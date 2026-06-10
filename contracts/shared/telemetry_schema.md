@@ -1,6 +1,6 @@
 # Contract: Telemetry Schema (SHARED)
 
-- **Status:** DRAFT — requires APPROVE from BOTH backend-reviewer and frontend-reviewer before it can be LOCKED. Do not implement producers/consumers against it until locked.
+- **Status:** LOCKED (PR #6, 2026-06-10) — APPROVED by backend-reviewer and frontend-reviewer. Consumers/producers implement against this; deviations require a superseding rl-architect DECISION + re-review by both reviewers (see Versioning).
 - **Spec:** REBUILD_SPEC.md §2 (MDP / obs), §3 (physics & costs), §3.4 (costs), §3.5 (reward), §3.7 (tariff), §5 (training/eval), §8.5 (per-asset growth)
 - **Owner:** rl-architect · **Reviewers:** backend-reviewer + frontend-reviewer
 - **Area:** shared (env / training / harness / serving emit → frontend dashboard + 3D scene consume)
@@ -102,7 +102,7 @@ Cadence: one per env step. With Δt = 1 h (D3), wall-clock cadence is set by the
 
   // --- prices (¥/MWh) ---
   "price_buy_yuan_per_mwh": 620.0,
-  "price_sell_yuan_per_mwh": 590.0,   // D11: spread clamped ≥0, so always ≤ price_buy
+  "price_sell_yuan_per_mwh": 590.0,   // D7: spread clamped ≥0, so always ≤ price_buy
   "tariff_tier": "peak",         // "critical_peak"|"peak"|"mid"|"valley" — PRICE LABEL for THIS step only
 
   // --- battery state ---

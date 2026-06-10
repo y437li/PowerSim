@@ -30,8 +30,8 @@ Do **not** log work milestones here — PR state is the status record. Append-on
 
 ## Locked shared contracts
 
-- none yet
+- [LOCKED] 2026-06-10 — `contracts/shared/telemetry_schema.md` v1.0.0 (PR #6). APPROVED by backend-reviewer and frontend-reviewer (VERDICT comments on PR #6; `gh pr review --approve` 422s on same-account PRs, so the VERDICT-marker comment is the durable record per task #12). The stable wire format for `env_step` / `train_metrics` / `eval_compare`. Embeds D3–D13. Consumers (dashboard, 3D scene) and producers (env harness, training loop, serving) implement against it; any field removal/rename/retype or unit change requires a superseding DECISION + re-review by both reviewers (semver: additive=minor, breaking=major).
 
 ## Open blockers
 
-- none — [B1] resolved by [D3]–[D10] (PR #2); the telemetry shared contract `contracts/shared/telemetry_schema.md` remains DRAFT pending APPROVE from BOTH backend-reviewer and frontend-reviewer (LOCKED entry to follow). [B2] resolved by [D11] (PR #2): parity reference is a from-scratch NumPy implementation under `reference/`, not vendored legacy.
+- none. [B1] resolved by [D3]–[D10] (PR #2). [B2] resolved by [D11] (PR #2): parity reference is a from-scratch NumPy implementation under `reference/`, not vendored legacy. The telemetry shared contract is now LOCKED (see above, PR #6).
