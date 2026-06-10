@@ -64,7 +64,7 @@ def check_finite(msg: dict) -> list[str]:
 def check_env_step(payload: dict) -> list[str]:
     """Return errors for D13 cost identities, reward formula, solar/wind conservation.
 
-    Checks (tolerance TOL = 1e-6 absolute + 1e-9 relative):
+    Checks (tolerance TOL = 1e-6 absolute + 1e-6 relative — float32-safe):
       1. Real-money identity:
             cost_total_real_yuan == c_energy + c_demand_charge + c_degradation + c_curtail + c_voll
       2. Reward-basis identity:
@@ -77,6 +77,9 @@ def check_env_step(payload: dict) -> list[str]:
             solar_to_load + solar_to_bat + solar_to_grid + solar_curtailed == gross_solar_mw
       6. Wind conservation:
             wind_to_load + wind_to_bat + wind_to_grid + wind_curtailed == gross_wind_mw
+
+    **Defensive:** each check is silently skipped if its required fields are absent from the
+    payload.  The function never raises; callers detect missing fields via schema errors.
     """
 
 def check_eval_compare(payload: dict) -> list[str]:
@@ -84,6 +87,9 @@ def check_eval_compare(payload: dict) -> list[str]:
 
     For each policy entry in payload["policies"]:
         total_cost_yuan == energy_cost + demand_charge + degradation + curtailment + voll
+
+    **Defensive:** skipped entirely if `payload["policies"]` is absent.  Per-policy checks
+    are skipped when any of the six required fields is absent from that policy dict.
     """
 ```
 
@@ -98,11 +104,27 @@ def check_eval_compare(payload: dict) -> list[str]:
 - Conservation errors: begin with `"solar conservation:"`, `"wind conservation:"`
 - eval_compare errors: begin with `"<policy_name>: "`
 
+## Major-version guard
+
+`validate()` returns a version-mismatch error **before** JSON-Schema validation if
+`schema_version` is present and its major component ≠ 1:
+
+```
+"version mismatch: expected major 1, got <major> (schema_version=<value>)"
+```
+
+This implements the LOCKED contract's versioning acceptance rule: minor/patch additions
+(1.x.y) are forward-compatible and accepted; a breaking major bump (2.x.y) must be
+explicitly rejected so a consumer does not silently mis-interpret a wire-format change.
+If `schema_version` is absent or not a semver string, the guard is skipped (the schema
+validator will report the missing/malformed field through the normal schema-error path).
+
 ## Validation order (guaranteed)
 
-1. JSON-Schema (Draft 2020-12) field conformance — schema errors listed first.
-2. Finiteness — all numeric fields.
-3. Kind-specific checks — only if `kind` field is present:
+1. **Major-version guard** — version-mismatch error first, if applicable.
+2. JSON-Schema (Draft 2020-12) field conformance — schema errors listed next.
+3. Finiteness — all numeric fields.
+4. Kind-specific checks — only if `kind` field is present:
    - `env_step` → `check_env_step(payload)`
    - `eval_compare` → `check_eval_compare(payload)`
    - `train_metrics` → no additional checks (no numeric identities defined)
@@ -113,12 +135,14 @@ as-is); callers interpret errors holistically.
 ## Numeric tolerance
 
 ```
-_approx(a, b)  ≡  |a − b| ≤ TOL + 1e-9 · max(|a|, |b|)
+_approx(a, b)  ≡  |a − b| ≤ TOL + 1e-6 · max(|a|, |b|)
 ```
 
-where `TOL = 1e-6`.  Both identity sides are floats after Python arithmetic; the tolerance
-absorbs float representation error from accumulating 5 addends.  It does NOT absorb large
-unit-scale errors (e.g. kW/MW confusion).
+where `TOL = 1e-6`.  The `1e-6` relative coefficient is **float32-safe**: the JAX env core
+produces float32 values; at site-scale totals (~3 × 10⁶ ¥) float32 rounding error can reach
+~0.36 ¥, which exceeds a stricter `1e-9·max` (~0.003 ¥) but is well within `1e-6·max` (~3 ¥).
+The tolerance does NOT absorb large unit-scale errors (kW/MW confusion ≈ ×1000 → ~3 × 10³ ¥
+at site scale, far above 3 ¥).
 
 ## Schema loading
 
@@ -160,6 +184,17 @@ Any test that exercises a telemetry-emitting code path MUST call `validate(messa
 
 ## Deliberate deviations from validate_telemetry.py
 
-None — the module exposes the same logic as the script's inner functions, unchanged.  The only
-difference is the module is importable and the schema is loaded from package data rather than a
-hard-coded repo path.
+1. **Float32-safe tolerance (F1):** `_approx` uses `1e-6` relative coefficient instead of the
+   script's `1e-9`.  Rationale: the JAX env core is float32; at million-¥ site-scale totals,
+   float32 reconstruction error can reach ~1 ¥, which is safe under `1e-6·rel` (~3 ¥ at 3 × 10⁶)
+   but would false-reject under the script's `1e-9·rel` (~0.003 ¥).
+
+2. **Major-version guard (F3):** `validate()` rejects messages with `schema_version` major ≠ 1.
+   The reference script has no such guard (it was authored as a one-shot tool, not a
+   producer/consumer boundary enforcer).
+
+3. **Defensive check functions (F4):** `check_env_step` and `check_eval_compare` skip individual
+   checks when required fields are absent; neither function raises.  The reference script
+   functions crash on missing fields since they are called only after the schema validator
+   confirms presence.  The module functions are callable independently (e.g. unit tests) so
+   they must be safe on partial payloads.

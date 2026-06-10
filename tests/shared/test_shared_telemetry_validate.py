@@ -5,7 +5,8 @@ Schema:   contracts/shared/telemetry_schema.json  (LOCKED v1.0.0)
 Fixtures: contracts/shared/telemetry_examples/*.json
 
 D13 identity arithmetic is shown in each test comment.
-TOL = 1e-6; _approx(a,b) := |a-b| <= 1e-6 + 1e-9*max(|a|,|b|)
+TOL = 1e-6; _approx(a,b) := |a-b| <= 1e-6 + 1e-6*max(|a|,|b|)
+(1e-6 relative coefficient is float32-safe; env JAX core is float32 — see F1 in contract)
 """
 from __future__ import annotations
 
@@ -225,6 +226,135 @@ class TestSchemaConformance:
 
 
 # ---------------------------------------------------------------------------
+# Major-version guard (F3)
+# ---------------------------------------------------------------------------
+
+
+class TestMajorVersionGuard:
+    def test_major_version_2_rejected(self):
+        """schema_version '2.0.0' must produce a version-mismatch error (major != 1)."""
+        import energy_go.telemetry.validate as tv
+        msg = _train_metrics()
+        msg["schema_version"] = "2.0.0"
+        errs = tv.validate(msg)
+        assert any("version" in e.lower() and ("2" in e or "mismatch" in e.lower()) for e in errs), (
+            f"Expected version-mismatch error for 2.0.0: {errs}"
+        )
+
+    def test_major_version_error_is_first(self):
+        """The version-mismatch error must appear before any schema errors (guaranteed order)."""
+        import energy_go.telemetry.validate as tv
+        msg = _train_metrics()
+        msg["schema_version"] = "2.0.0"
+        msg["seq"] = "also-wrong-type"  # additional schema error
+        errs = tv.validate(msg)
+        version_indices = [i for i, e in enumerate(errs) if "version" in e.lower()]
+        assert version_indices, f"No version error found: {errs}"
+        assert version_indices[0] == 0, (
+            f"Version-mismatch error must be first; got index {version_indices[0]} in: {errs}"
+        )
+
+    def test_minor_version_bump_accepted(self):
+        """schema_version '1.1.0' must pass (minor bump is forward-compatible)."""
+        import energy_go.telemetry.validate as tv
+        msg = _train_metrics()
+        msg["schema_version"] = "1.1.0"
+        errs = tv.validate(msg)
+        # No version-mismatch errors; only unknown-field additions would be ignored
+        assert not any("version mismatch" in e.lower() for e in errs), (
+            f"Minor bump 1.1.0 must not trigger version-mismatch: {errs}"
+        )
+
+    def test_patch_version_bump_accepted(self):
+        """schema_version '1.0.99' must pass (patch bump is forward-compatible)."""
+        import energy_go.telemetry.validate as tv
+        msg = _train_metrics()
+        msg["schema_version"] = "1.0.99"
+        errs = tv.validate(msg)
+        assert not any("version mismatch" in e.lower() for e in errs), (
+            f"Patch bump 1.0.99 must not trigger version-mismatch: {errs}"
+        )
+
+    def test_missing_schema_version_no_version_guard_error(self):
+        """When schema_version is absent, version guard is skipped (schema errors report it instead)."""
+        import energy_go.telemetry.validate as tv
+        msg = _train_metrics()
+        del msg["schema_version"]
+        errs = tv.validate(msg)
+        # Schema error expected but NOT a version-mismatch error (guard requires schema_version present)
+        assert not any("version mismatch" in e.lower() for e in errs), (
+            f"No version-mismatch error expected when field absent: {errs}"
+        )
+        assert any("schema_version" in e or "schema:" in e for e in errs), (
+            f"Expected schema error for missing schema_version: {errs}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Defensive check functions (F4)
+# ---------------------------------------------------------------------------
+
+
+class TestDefensiveChecks:
+    def test_check_env_step_missing_costs_does_not_raise(self):
+        """check_env_step must not raise when 'costs' key is absent — skips cost-identity checks."""
+        import energy_go.telemetry.validate as tv
+        payload = {"flows": {}, "generation": {}}  # no 'costs' key
+        result = tv.check_env_step(payload)
+        assert isinstance(result, list), "check_env_step must return a list"
+        # No D13 errors expected — checks are skipped on absent fields
+        assert not any("D13" in e for e in result), (
+            f"D13 errors must be skipped when costs absent: {result}"
+        )
+
+    def test_check_env_step_missing_generation_does_not_raise(self):
+        """check_env_step must not raise when 'generation' key is absent — skips conservation."""
+        import energy_go.telemetry.validate as tv
+        payload = {"costs": {}, "flows": {}}  # no 'generation' key
+        result = tv.check_env_step(payload)
+        assert isinstance(result, list)
+        assert not any("conservation" in e.lower() for e in result), (
+            f"Conservation errors must be skipped when generation absent: {result}"
+        )
+
+    def test_check_eval_compare_missing_policies_does_not_raise(self):
+        """check_eval_compare must not raise when 'policies' key is absent."""
+        import energy_go.telemetry.validate as tv
+        payload = {}  # no 'policies' key
+        result = tv.check_eval_compare(payload)
+        assert isinstance(result, list), "check_eval_compare must return a list"
+
+    def test_check_eval_compare_policy_missing_fields_does_not_raise(self):
+        """check_eval_compare must not raise when a policy entry lacks required cost fields."""
+        import energy_go.telemetry.validate as tv
+        payload = {"policies": {"partial_policy": {"energy_cost_yuan": 1000.0}}}
+        result = tv.check_eval_compare(payload)
+        assert isinstance(result, list)
+
+    def test_validate_empty_payload_never_raises(self):
+        """validate() on a message with an empty payload dict must return a list, not raise."""
+        import energy_go.telemetry.validate as tv
+        msg = {
+            "schema_version": "1.0.0",
+            "kind": "env_step",
+            "ts_utc": "2026-01-01T00:00:00Z",
+            "run_id": "test",
+            "seq": 0,
+            "payload": {},
+        }
+        result = tv.validate(msg)
+        assert isinstance(result, list), "validate() must return a list on empty payload"
+        assert len(result) > 0, "Empty env_step payload must have schema errors"
+
+    def test_validate_completely_empty_dict_returns_list(self):
+        """validate({}) must return a non-empty list of errors, not raise."""
+        import energy_go.telemetry.validate as tv
+        result = tv.validate({})
+        assert isinstance(result, list)
+        assert len(result) > 0
+
+
+# ---------------------------------------------------------------------------
 # Finiteness checks
 # ---------------------------------------------------------------------------
 
@@ -291,7 +421,7 @@ class TestFiniteness:
 # ---------------------------------------------------------------------------
 #
 # env_step_a golden values:
-#   c_energy_yuan          = -53100.0   (r_export - c_import: 53100 - 0)
+#   c_energy_yuan          = -53100.0   (c_import - r_export: 0 - 53100)
 #   c_demand_charge_yuan   =      0.0
 #   c_demand_shape_yuan    =      0.0
 #   c_degradation_yuan     =    400.0
@@ -580,6 +710,22 @@ class TestValidationOrder:
         assert d13_indices, f"No D13 errors found: {errs}"
         assert min(schema_indices) < min(d13_indices), (
             f"Schema errors must precede D13 errors; got indices schema={schema_indices}, d13={d13_indices}"
+        )
+
+    def test_version_guard_before_schema_errors(self):
+        """Version-mismatch error must appear before schema errors (step 1 in guaranteed order).
+
+        Inject both a version mismatch (2.0.0) and a schema error (seq wrong type).
+        Version error must be index 0.
+        """
+        import energy_go.telemetry.validate as tv
+        msg = _train_metrics()
+        msg["schema_version"] = "2.0.0"
+        msg["seq"] = "wrong-type"
+        errs = tv.validate(msg)
+        assert errs, f"Expected errors: {errs}"
+        assert "version" in errs[0].lower(), (
+            f"First error must be version-mismatch; got: {errs[0]!r}"
         )
 
 
