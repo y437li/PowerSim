@@ -1,0 +1,810 @@
+/**
+ * Live Operations Dashboard — contract + tests
+ * Contract: contracts/frontend/live_dashboard.md
+ * Telemetry schema: contracts/shared/telemetry_schema.md v1.0.0 (LOCKED)
+ * Golden fixtures:  contracts/shared/telemetry_examples/env_step_a.json
+ *                   contracts/shared/telemetry_examples/env_step_b.json
+ *
+ * ALL tests are intentionally RED — no implementation exists yet.
+ * validate-telemetry skill: tests include full-message validation against golden fixtures.
+ */
+
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen } from "@testing-library/react";
+import React from "react";
+
+// ── Golden fixtures ──────────────────────────────────────────────────────────
+import envStepAGolden from "../../contracts/shared/telemetry_examples/env_step_a.json";
+import envStepBGolden from "../../contracts/shared/telemetry_examples/env_step_b.json";
+
+// ── SUT imports (RED until implementation exists) ────────────────────────────
+import { LiveDashboard }      from "../../src/routes/LiveDashboard";
+import { CostBreakdownCard }  from "../../src/components/live/CostBreakdownCard";
+import { MonthPeakCard }      from "../../src/components/live/MonthPeakCard";
+import { AlertList }          from "../../src/components/live/AlertList";
+import { SocTimeline }        from "../../src/components/live/SocTimeline";
+import { PriceTimeline }      from "../../src/components/live/PriceTimeline";
+import { PowerFlowsTable }    from "../../src/components/live/PowerFlowsTable";
+import { getTouTier, getTouPrice, TOU_SCHEDULE } from "../../src/utils/touSchedule";
+import { deriveAlerts }       from "../../src/utils/deriveAlerts";
+import { socToPercent, formatYuan } from "../../src/utils/units";
+import type {
+  EnvStepPayload,
+  PerStepCosts,
+  CumulativeCosts,
+  PowerFlows,
+  GenerationBlock,
+  TelemetryEnvelope,
+} from "../../src/types/telemetry";
+
+// ── Store mock ───────────────────────────────────────────────────────────────
+vi.mock("../../src/stores/telemetryStore", () => ({
+  useTelemetryStore: vi.fn(),
+}));
+import { useTelemetryStore } from "../../src/stores/telemetryStore";
+
+// ── Fixtures ─────────────────────────────────────────────────────────────────
+const GOLDEN_A: EnvStepPayload = envStepAGolden.payload as EnvStepPayload;
+const GOLDEN_B: EnvStepPayload = envStepBGolden.payload as EnvStepPayload;
+
+function emptyTelemetryState() {
+  return {
+    wsStatus: "connected" as const,
+    envStep: null,
+    history: [],
+    runId: null,
+    lastSeq: null,
+    seqGap: false,
+    historyMaxLen: 168,
+    receiveEnvStep: vi.fn(),
+    setWsStatus: vi.fn(),
+    clearHistory: vi.fn(),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 1 — Golden-fixture validation (validate-telemetry skill requirement)
+// ─────────────────────────────────────────────────────────────────────────────
+describe("validate-telemetry: env_step golden fixture conformance", () => {
+  it("env_step_a envelope — required fields present with correct types", () => {
+    const msg = envStepAGolden as TelemetryEnvelope;
+    expect(msg.schema_version).toBe("1.0.0");
+    expect(msg.kind).toBe("env_step");
+    expect(typeof msg.ts_utc).toBe("string");
+    expect(typeof msg.run_id).toBe("string");
+    expect(typeof msg.seq).toBe("number");
+    expect(msg.payload).toBeDefined();
+  });
+
+  it("env_step_a payload — LOCKED numeric fields present and finite", () => {
+    const p = GOLDEN_A;
+    expect(typeof p.step).toBe("number");
+    expect(typeof p.episode).toBe("number");
+    expect(p.dt_hours).toBe(1.0);
+    expect(typeof p.sim_time_utc).toBe("string");
+    expect(Number.isFinite(p.wind_speed_mps)).toBe(true);
+    expect(Number.isFinite(p.irradiance_wm2)).toBe(true);
+    expect(Number.isFinite(p.temperature_c)).toBe(true);
+    expect(Number.isFinite(p.load_mw)).toBe(true);
+    expect(Number.isFinite(p.price_buy_yuan_per_mwh)).toBe(true);
+    expect(Number.isFinite(p.price_sell_yuan_per_mwh)).toBe(true);
+  });
+
+  it("env_step_a — sell price ≤ buy price (D7 spread clamp ≥0)", () => {
+    // D7: sell = max(0, buy − spread) — always ≤ buy; 590 ≤ 620
+    expect(GOLDEN_A.price_sell_yuan_per_mwh).toBeLessThanOrEqual(
+      GOLDEN_A.price_buy_yuan_per_mwh
+    );
+  });
+
+  it("env_step_a — SOC within D4 bounds [0.2, 0.9]", () => {
+    expect(GOLDEN_A.battery.soc).toBeGreaterThanOrEqual(0.2);
+    expect(GOLDEN_A.battery.soc).toBeLessThanOrEqual(0.9);
+  });
+
+  it("env_step_a — D13 real-money additive identity: cost_total_real == sum of 5 summands", () => {
+    // D13: cost_total_real = c_energy + c_demand_charge + c_degradation + c_curtail + c_voll
+    // Step A: −53100 + 0 + 400 + 0 + 0 = −52700
+    const { c_energy_yuan, c_demand_charge_yuan, c_degradation_yuan,
+            c_curtail_yuan, c_voll_yuan, cost_total_real_yuan } = GOLDEN_A.costs;
+    const computed = c_energy_yuan + c_demand_charge_yuan + c_degradation_yuan
+                   + c_curtail_yuan + c_voll_yuan;
+    expect(computed).toBeCloseTo(cost_total_real_yuan, 2);
+    // Hand check: −53100 + 0 + 400 + 0 + 0 = −52700
+    expect(cost_total_real_yuan).toBeCloseTo(-52700, 2);
+  });
+
+  it("env_step_a — c_energy decomposition: c_energy == c_import − r_export", () => {
+    // D13: c_energy = c_import − r_export; display-only — NOT additional summands
+    // Step A: 0 − 53100 = −53100
+    const { c_energy_yuan, c_import_yuan, r_export_yuan } = GOLDEN_A.costs;
+    expect(c_import_yuan - r_export_yuan).toBeCloseTo(c_energy_yuan, 2);
+    // Hand check: 0 − 53100 = −53100; r_export = 90 MW × 1 h × 590 ¥/MWh = 53100
+    expect(r_export_yuan).toBeCloseTo(53100, 2);
+  });
+
+  it("env_step_a — reward formula: reward == −(cost_total_reward_basis + penalty)×1e-5", () => {
+    // §3.5: reward = −(cost_total_reward_basis_yuan + penalty_yuan) × 1e-5
+    // Step A: −(−52700 + 0)×1e-5 = 0.527
+    const { cost_total_reward_basis_yuan, penalty_yuan } = GOLDEN_A.costs;
+    const expected = -(cost_total_reward_basis_yuan + penalty_yuan) * 1e-5;
+    expect(GOLDEN_A.reward).toBeCloseTo(expected, 5);
+    expect(GOLDEN_A.reward).toBeCloseTo(0.527, 3);
+  });
+
+  it("env_step_a — solar conservation: solar flows + curtailed == gross_solar_mw", () => {
+    // §3.6 row 14: per-source energy conservation
+    const { solar_to_load_mw, solar_to_bat_mw, solar_to_grid_mw, solar_curtailed_mw } = GOLDEN_A.flows;
+    const sum = solar_to_load_mw + solar_to_bat_mw + solar_to_grid_mw + solar_curtailed_mw;
+    expect(sum).toBeCloseTo(GOLDEN_A.generation.gross_solar_mw, 5);
+  });
+
+  it("env_step_a — wind conservation: wind flows + curtailed == gross_wind_mw", () => {
+    const { wind_to_load_mw, wind_to_bat_mw, wind_to_grid_mw, wind_curtailed_mw } = GOLDEN_A.flows;
+    const sum = wind_to_load_mw + wind_to_bat_mw + wind_to_grid_mw + wind_curtailed_mw;
+    expect(sum).toBeCloseTo(GOLDEN_A.generation.gross_wind_mw, 5);
+  });
+
+  it("env_step_b — month-boundary: cost_total_real includes demand charge (D10)", () => {
+    // Step B: c_energy=10000 + c_demand_charge=3040000 + c_degradation=400 = 3050400
+    // month_peak=95 MW × rate=32000 ¥/MW·month = 3040000
+    const { c_energy_yuan, c_demand_charge_yuan, c_degradation_yuan,
+            c_curtail_yuan, c_voll_yuan, cost_total_real_yuan } = GOLDEN_B.costs;
+    const computed = c_energy_yuan + c_demand_charge_yuan + c_degradation_yuan
+                   + c_curtail_yuan + c_voll_yuan;
+    expect(computed).toBeCloseTo(cost_total_real_yuan, 2);
+    expect(cost_total_real_yuan).toBeCloseTo(3050400, 2);
+  });
+
+  it("env_step_b — reward-basis excludes demand charge but includes 2× demand-shape (D13)", () => {
+    // Step B: cost_total_reward_basis = c_energy + 2×c_demand_shape + c_degradation + c_curtail + c_voll
+    //       = 10000 + 2×5000 + 400 + 0 + 0 = 20400
+    // NOTE: c_demand_charge (3040000) is NOT in reward basis
+    const { c_energy_yuan, c_demand_shape_yuan, c_degradation_yuan,
+            c_curtail_yuan, c_voll_yuan, cost_total_reward_basis_yuan } = GOLDEN_B.costs;
+    const computed = c_energy_yuan + 2.0 * c_demand_shape_yuan + c_degradation_yuan
+                   + c_curtail_yuan + c_voll_yuan;
+    expect(computed).toBeCloseTo(cost_total_reward_basis_yuan, 2);
+    expect(cost_total_reward_basis_yuan).toBeCloseTo(20400, 2);
+  });
+
+  it("env_step_b — demand charge = month_peak × demand_rate (D10)", () => {
+    // 95 MW × 32000 ¥/MW·month = 3040000
+    const { c_demand_charge_yuan, demand_rate_yuan_per_mw_month } = GOLDEN_B.costs;
+    const expected = GOLDEN_B.month_peak_mw * demand_rate_yuan_per_mw_month;
+    expect(c_demand_charge_yuan).toBeCloseTo(expected, 2);
+    expect(c_demand_charge_yuan).toBeCloseTo(3040000, 2);
+  });
+
+  it("env_step_b — reward: −(20400 + 0)×1e-5 = −0.204", () => {
+    expect(GOLDEN_B.reward).toBeCloseTo(-0.204, 3);
+  });
+
+  it("env_step_a — no NaN or Infinity in any numeric cost field", () => {
+    const costs = GOLDEN_A.costs;
+    for (const [key, val] of Object.entries(costs)) {
+      expect(Number.isFinite(val), `${key} should be finite`).toBe(true);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 2 — TOU schedule: getTouTier() boundary tests (D8, C1)
+// ALL 16 boundary points from contract §1 must be tested exactly.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("TOU_SCHEDULE and getTouTier() — minute-accurate boundaries (D8)", () => {
+  it("TOU_SCHEDULE exports 9 bands covering all 1440 minutes", () => {
+    expect(TOU_SCHEDULE).toHaveLength(9);
+    // Sum of all band durations must equal 1440 min (24 h)
+    const totalMin = TOU_SCHEDULE.reduce((s, b) => s + (b.toMinutes - b.fromMinutes), 0);
+    expect(totalMin).toBe(1440);
+  });
+
+  it("valley: 00:00 (min 0) → valley", () => {
+    expect(getTouTier(0)).toBe("valley");
+  });
+
+  it("mid: 07:00 (min 420) → mid (transition from valley)", () => {
+    // 420 min = 07:00; valley ends at 420 (exclusive), mid starts at 420 (inclusive)
+    expect(getTouTier(420)).toBe("mid");
+  });
+
+  it("mid last minute: 07:59 (min 479) → mid", () => {
+    expect(getTouTier(479)).toBe("mid");
+  });
+
+  it("peak: 08:00 (min 480) → peak (transition from mid)", () => {
+    expect(getTouTier(480)).toBe("peak");
+  });
+
+  it("peak last before critical: 10:29 (min 629) → peak", () => {
+    // 629 min = 10 h 29 min; critical-peak starts at 10:30 (630 min)
+    expect(getTouTier(629)).toBe("peak");
+  });
+
+  it("critical_peak: 10:30 (min 630) → critical_peak (exact boundary, D8)", () => {
+    // This is the KEY test — wrong boundary (660 = 11:00) would return "peak" here
+    expect(getTouTier(630)).toBe("critical_peak");
+  });
+
+  it("critical_peak: 11:29 (min 689) → critical_peak", () => {
+    expect(getTouTier(689)).toBe("critical_peak");
+  });
+
+  it("mid: 11:30 (min 690) → mid (transition from critical_peak, D8)", () => {
+    // 690 min = 11:30; critical-peak ends at 690 (exclusive), mid resumes at 690
+    expect(getTouTier(690)).toBe("mid");
+  });
+
+  it("mid: 17:59 (min 1079) → mid", () => {
+    expect(getTouTier(1079)).toBe("mid");
+  });
+
+  it("peak: 18:00 (min 1080) → peak (afternoon peak)", () => {
+    expect(getTouTier(1080)).toBe("peak");
+  });
+
+  it("peak: 18:59 (min 1139) → peak", () => {
+    expect(getTouTier(1139)).toBe("peak");
+  });
+
+  it("critical_peak: 19:00 (min 1140) → critical_peak (evening window)", () => {
+    expect(getTouTier(1140)).toBe("critical_peak");
+  });
+
+  it("critical_peak: 20:59 (min 1259) → critical_peak", () => {
+    expect(getTouTier(1259)).toBe("critical_peak");
+  });
+
+  it("peak: 21:00 (min 1260) → peak (transition from evening critical)", () => {
+    expect(getTouTier(1260)).toBe("peak");
+  });
+
+  it("peak: 22:59 (min 1379) → peak", () => {
+    expect(getTouTier(1379)).toBe("peak");
+  });
+
+  it("valley: 23:00 (min 1380) → valley (late-night)", () => {
+    expect(getTouTier(1380)).toBe("valley");
+  });
+
+  it("valley: 23:59 (min 1439) → valley", () => {
+    expect(getTouTier(1439)).toBe("valley");
+  });
+
+  it("getTouPrice returns correct static buy prices per §3.7", () => {
+    // §3.7: valley=250, mid=450, peak=620, critical_peak=780 ¥/MWh
+    expect(getTouPrice("valley")).toBe(250);
+    expect(getTouPrice("mid")).toBe(450);
+    expect(getTouPrice("peak")).toBe(620);
+    expect(getTouPrice("critical_peak")).toBe(780);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 3 — deriveAlerts() pure function
+// ─────────────────────────────────────────────────────────────────────────────
+describe("deriveAlerts() — pure alert derivation from history", () => {
+  it("clean step (golden A) → no alerts", () => {
+    // GOLDEN_A: all curtailed=0, load_unserved=0, soc_violation=0
+    const alerts = deriveAlerts([GOLDEN_A]);
+    expect(alerts).toHaveLength(0);
+  });
+
+  it("step with solar curtailment → curtailment alert with c_curtail_yuan penalty", () => {
+    const step: EnvStepPayload = {
+      ...GOLDEN_A,
+      flows: { ...GOLDEN_A.flows, solar_curtailed_mw: 12.5 },
+      costs: { ...GOLDEN_A.costs, c_curtail_yuan: 10000.0 },
+    };
+    const alerts = deriveAlerts([step]);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].kind).toBe("curtailment");
+    expect(alerts[0].penaltyYuan).toBe(10000.0);
+    // detail shows total curtailed: 12.5 MW
+    expect(alerts[0].detail).toContain("12.5");
+  });
+
+  it("step with wind curtailment → curtailment alert; detail sums all curtailed sources", () => {
+    const step: EnvStepPayload = {
+      ...GOLDEN_A,
+      flows: {
+        ...GOLDEN_A.flows,
+        solar_curtailed_mw: 5.0,
+        wind_curtailed_mw: 7.5,
+        bat_curtailed_mw: 2.0,
+      },
+      costs: { ...GOLDEN_A.costs, c_curtail_yuan: 11600.0 },
+    };
+    const alerts = deriveAlerts([step]);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].kind).toBe("curtailment");
+    // total curtailed = 5 + 7.5 + 2 = 14.5 MW; detail contains "14.5"
+    expect(alerts[0].detail).toContain("14.5");
+  });
+
+  it("step with unserved load → voll alert with c_voll_yuan penalty", () => {
+    const step: EnvStepPayload = {
+      ...GOLDEN_A,
+      flows: { ...GOLDEN_A.flows, load_unserved_mw: 3.0 },
+      costs: { ...GOLDEN_A.costs, c_voll_yuan: 9000.0 },
+    };
+    const alerts = deriveAlerts([step]);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].kind).toBe("voll");
+    expect(alerts[0].penaltyYuan).toBe(9000.0);
+    expect(alerts[0].detail).toContain("3.0");
+  });
+
+  it("step with SOC violation → soc_violation alert with penalty_yuan", () => {
+    const step: EnvStepPayload = {
+      ...GOLDEN_A,
+      battery: { ...GOLDEN_A.battery, soc_violation_mwh: 0.5 },
+      costs: { ...GOLDEN_A.costs, penalty_yuan: 10000.0 },
+    };
+    const alerts = deriveAlerts([step]);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].kind).toBe("soc_violation");
+    expect(alerts[0].penaltyYuan).toBe(10000.0);
+    // detail contains overshoot MWh
+    expect(alerts[0].detail).toContain("0.50");
+  });
+
+  it("step with multiple event types → multiple alerts", () => {
+    const step: EnvStepPayload = {
+      ...GOLDEN_A,
+      flows: {
+        ...GOLDEN_A.flows,
+        solar_curtailed_mw: 10.0,
+        load_unserved_mw: 2.0,
+      },
+      battery: { ...GOLDEN_A.battery, soc_violation_mwh: 1.0 },
+      costs: {
+        ...GOLDEN_A.costs,
+        c_curtail_yuan: 8000.0,
+        c_voll_yuan: 6000.0,
+        penalty_yuan: 20000.0,
+      },
+    };
+    const alerts = deriveAlerts([step]);
+    expect(alerts).toHaveLength(3);
+    const kinds = alerts.map((a) => a.kind);
+    expect(kinds).toContain("curtailment");
+    expect(kinds).toContain("voll");
+    expect(kinds).toContain("soc_violation");
+  });
+
+  it("multi-step history → alert per step that triggers", () => {
+    const clean = GOLDEN_A;
+    const dirty: EnvStepPayload = {
+      ...GOLDEN_A,
+      step: 200,
+      flows: { ...GOLDEN_A.flows, solar_curtailed_mw: 5.0 },
+      costs: { ...GOLDEN_A.costs, c_curtail_yuan: 4000.0 },
+    };
+    const alerts = deriveAlerts([clean, dirty, clean]);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].stepIndex).toBe(200);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 4 — CostBreakdownCard
+// ─────────────────────────────────────────────────────────────────────────────
+describe("CostBreakdownCard", () => {
+  it("renders with testid cost-breakdown-card", () => {
+    render(
+      <CostBreakdownCard costs={GOLDEN_A.costs} costCum={GOLDEN_A.cost_cum} />
+    );
+    expect(screen.getByTestId("cost-breakdown-card")).toBeInTheDocument();
+  });
+
+  it("shows cumulative real-money total (headline) from golden A", () => {
+    // cost_total_real_yuan_cum = −52700 → formatYuan → "¥-52,700"
+    render(
+      <CostBreakdownCard costs={GOLDEN_A.costs} costCum={GOLDEN_A.cost_cum} />
+    );
+    expect(screen.getByTestId("cost-breakdown-card").textContent).toContain("52,700");
+  });
+
+  it("renders c_energy row (data-field=c_energy_yuan)", () => {
+    render(
+      <CostBreakdownCard costs={GOLDEN_A.costs} costCum={GOLDEN_A.cost_cum} />
+    );
+    const row = document.querySelector('[data-field="c_energy_yuan"]');
+    expect(row).toBeInTheDocument();
+  });
+
+  it("renders c_import sub-row with data-role=decomposition", () => {
+    render(
+      <CostBreakdownCard costs={GOLDEN_A.costs} costCum={GOLDEN_A.cost_cum} />
+    );
+    const row = document.querySelector('[data-field="c_import_yuan"][data-role="decomposition"]');
+    expect(row).toBeInTheDocument();
+  });
+
+  it("renders r_export sub-row with data-role=decomposition", () => {
+    render(
+      <CostBreakdownCard costs={GOLDEN_A.costs} costCum={GOLDEN_A.cost_cum} />
+    );
+    const row = document.querySelector('[data-field="r_export_yuan"][data-role="decomposition"]');
+    expect(row).toBeInTheDocument();
+  });
+
+  it("renders c_demand_charge row (data-field=c_demand_charge_yuan)", () => {
+    render(
+      <CostBreakdownCard costs={GOLDEN_A.costs} costCum={GOLDEN_A.cost_cum} />
+    );
+    expect(document.querySelector('[data-field="c_demand_charge_yuan"]')).toBeInTheDocument();
+  });
+
+  it("renders c_degradation, c_curtail, c_voll rows", () => {
+    render(
+      <CostBreakdownCard costs={GOLDEN_A.costs} costCum={GOLDEN_A.cost_cum} />
+    );
+    expect(document.querySelector('[data-field="c_degradation_yuan"]')).toBeInTheDocument();
+    expect(document.querySelector('[data-field="c_curtail_yuan"]')).toBeInTheDocument();
+    expect(document.querySelector('[data-field="c_voll_yuan"]')).toBeInTheDocument();
+  });
+
+  it("does NOT render c_demand_shape row (reward-basis only — D13)", () => {
+    render(
+      <CostBreakdownCard costs={GOLDEN_B.costs} costCum={GOLDEN_B.cost_cum} />
+    );
+    // c_demand_shape_yuan is reward-basis only; must not appear in the real-money breakdown
+    expect(document.querySelector('[data-field="c_demand_shape_yuan"]')).not.toBeInTheDocument();
+  });
+
+  it("does NOT render penalty_yuan row (reward-shaping safety metric — D13)", () => {
+    render(
+      <CostBreakdownCard costs={GOLDEN_A.costs} costCum={GOLDEN_A.cost_cum} />
+    );
+    expect(document.querySelector('[data-field="penalty_yuan"]')).not.toBeInTheDocument();
+  });
+
+  it("step total matches cost_total_real_yuan from golden B (month-boundary step)", () => {
+    // Golden B: cost_total_real = 3050400
+    render(
+      <CostBreakdownCard costs={GOLDEN_B.costs} costCum={GOLDEN_B.cost_cum} />
+    );
+    const stepTotalRow = document.querySelector('[data-field="cost_total_real_yuan"]');
+    expect(stepTotalRow).toBeInTheDocument();
+    // 3,050,400 should appear in the row text
+    expect(stepTotalRow?.textContent).toContain("050,400");
+  });
+
+  it("additive identity: 5 summand rows sum to cost_total_real_yuan (not 6 with import/export)", () => {
+    // D13: cost_total_real = c_energy + c_demand_charge + c_degradation + c_curtail + c_voll
+    // c_import and r_export are display-only; do NOT include them in the total
+    const c = GOLDEN_B.costs;
+    const total = c.c_energy_yuan + c.c_demand_charge_yuan + c.c_degradation_yuan
+                + c.c_curtail_yuan + c.c_voll_yuan;
+    // This should equal cost_total_real_yuan (3050400), not wrongly include import/export
+    expect(total).toBeCloseTo(c.cost_total_real_yuan, 2);
+    // Guard: adding c_import again would give 3060400 — wrong
+    expect(total).not.toBeCloseTo(c.cost_total_real_yuan + c.c_import_yuan, 2);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 5 — MonthPeakCard
+// ─────────────────────────────────────────────────────────────────────────────
+describe("MonthPeakCard", () => {
+  it("renders with testid month-peak-card", () => {
+    render(
+      <MonthPeakCard
+        monthPeakMw={GOLDEN_A.month_peak_mw}
+        demandRateYuanPerMwMonth={GOLDEN_A.costs.demand_rate_yuan_per_mw_month}
+      />
+    );
+    expect(screen.getByTestId("month-peak-card")).toBeInTheDocument();
+  });
+
+  it("shows month_peak_mw value (95.0 MW from golden A)", () => {
+    render(
+      <MonthPeakCard monthPeakMw={95.0} demandRateYuanPerMwMonth={32000} />
+    );
+    expect(screen.getByTestId("month-peak-mw").textContent).toContain("95.0");
+  });
+
+  it("exposure = monthPeakMw × demandRateYuanPerMwMonth (hand-computed: 95×32000=3,040,000)", () => {
+    // 95 MW × 32000 ¥/MW·month = 3040000
+    render(
+      <MonthPeakCard monthPeakMw={95.0} demandRateYuanPerMwMonth={32000} />
+    );
+    const exposure = screen.getByTestId("demand-exposure");
+    expect(exposure.textContent).toContain("040,000");  // "3,040,000" without "¥3" prefix assumption
+  });
+
+  it("exposure uses wire rate — different rate changes exposure proportionally", () => {
+    // If rate were 64000 (double), exposure = 95 × 64000 = 6080000
+    render(
+      <MonthPeakCard monthPeakMw={95.0} demandRateYuanPerMwMonth={64000} />
+    );
+    const exposure = screen.getByTestId("demand-exposure");
+    expect(exposure.textContent).toContain("080,000");  // 6,080,000
+  });
+
+  it("peak of 0 MW → exposure is ¥0", () => {
+    render(
+      <MonthPeakCard monthPeakMw={0} demandRateYuanPerMwMonth={32000} />
+    );
+    const exposure = screen.getByTestId("demand-exposure");
+    expect(exposure.textContent).toContain("0");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 6 — AlertList
+// ─────────────────────────────────────────────────────────────────────────────
+describe("AlertList", () => {
+  it("empty alerts → renders 'No alerts'", () => {
+    render(<AlertList alerts={[]} />);
+    const list = screen.getByTestId("alert-list");
+    expect(list).toBeInTheDocument();
+    expect(list.textContent).toContain("No alerts");
+  });
+
+  it("curtailment alert → renders alert-curtailment row with penalty", () => {
+    render(
+      <AlertList
+        alerts={[{
+          kind: "curtailment",
+          stepIndex: 168,
+          penaltyYuan: 10000,
+          detail: "12.5 MW curtailed",
+        }]}
+      />
+    );
+    expect(screen.getByTestId("alert-curtailment")).toBeInTheDocument();
+    expect(screen.getByTestId("alert-list").textContent).toContain("12.5 MW curtailed");
+    expect(screen.getByTestId("alert-list").textContent).toContain("10,000");
+  });
+
+  it("VOLL alert → renders alert-voll row", () => {
+    render(
+      <AlertList
+        alerts={[{
+          kind: "voll",
+          stepIndex: 100,
+          penaltyYuan: 9000,
+          detail: "3.0 MW unserved",
+        }]}
+      />
+    );
+    expect(screen.getByTestId("alert-voll")).toBeInTheDocument();
+  });
+
+  it("SOC violation alert → renders alert-soc_violation row", () => {
+    render(
+      <AlertList
+        alerts={[{
+          kind: "soc_violation",
+          stepIndex: 50,
+          penaltyYuan: 20000,
+          detail: "0.50 MWh overshoot",
+        }]}
+      />
+    );
+    expect(screen.getByTestId("alert-soc_violation")).toBeInTheDocument();
+    expect(screen.getByTestId("alert-list").textContent).toContain("0.50 MWh");
+  });
+
+  it("multiple alerts all rendered", () => {
+    render(
+      <AlertList
+        alerts={[
+          { kind: "curtailment", stepIndex: 1, penaltyYuan: 1000, detail: "5.0 MW curtailed" },
+          { kind: "voll",        stepIndex: 2, penaltyYuan: 2000, detail: "1.0 MW unserved" },
+        ]}
+      />
+    );
+    expect(screen.getByTestId("alert-curtailment")).toBeInTheDocument();
+    expect(screen.getByTestId("alert-voll")).toBeInTheDocument();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 7 — SocTimeline
+// ─────────────────────────────────────────────────────────────────────────────
+describe("SocTimeline", () => {
+  it("empty history → data-testid=soc-timeline with data-state=empty", () => {
+    render(<SocTimeline history={[]} />);
+    const el = screen.getByTestId("soc-timeline");
+    expect(el).toBeInTheDocument();
+    expect(el).toHaveAttribute("data-state", "empty");
+  });
+
+  it("non-empty history → renders soc-timeline without empty state", () => {
+    render(<SocTimeline history={[GOLDEN_A]} />);
+    const el = screen.getByTestId("soc-timeline");
+    expect(el).toBeInTheDocument();
+    expect(el).not.toHaveAttribute("data-state", "empty");
+  });
+
+  it("SOC displayed as percent: wire 0.55 → 55.0 (socToPercent conversion)", () => {
+    // socToPercent(0.55) = 55.0; must appear in accessible chart data or aria label
+    expect(socToPercent(0.55)).toBe(55.0);
+    expect(socToPercent(0.2)).toBe(20.0);  // D4 lower bound
+    expect(socToPercent(0.9)).toBe(90.0);  // D4 upper bound
+  });
+
+  it("D4 lower bound label '20%' present in chart (accessible list or aria)", () => {
+    render(<SocTimeline history={[GOLDEN_A]} />);
+    // D4: lower bound = 0.2 = 20%; chart should have an accessible element showing "20"
+    const el = screen.getByTestId("soc-timeline");
+    expect(el.textContent).toMatch(/20/);
+  });
+
+  it("D4 upper bound label '90%' present in chart", () => {
+    render(<SocTimeline history={[GOLDEN_A]} />);
+    const el = screen.getByTestId("soc-timeline");
+    expect(el.textContent).toMatch(/90/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 8 — PriceTimeline
+// ─────────────────────────────────────────────────────────────────────────────
+describe("PriceTimeline", () => {
+  it("empty history → data-state=empty", () => {
+    render(<PriceTimeline history={[]} />);
+    expect(screen.getByTestId("price-timeline")).toHaveAttribute("data-state", "empty");
+  });
+
+  it("renders accessible TOU band list with all 4 tier names", () => {
+    render(<PriceTimeline history={[GOLDEN_A]} />);
+    const bandList = screen.getByRole("list", { name: /tou bands/i });
+    const text = bandList.textContent ?? "";
+    // All four tier names must appear (C1 — static schedule)
+    expect(text.toLowerCase()).toContain("valley");
+    expect(text.toLowerCase()).toContain("mid");
+    expect(text.toLowerCase()).toContain("peak");
+    expect(text.toLowerCase()).toContain("critical");
+  });
+
+  it("non-empty history → price-timeline rendered (not empty state)", () => {
+    render(<PriceTimeline history={[GOLDEN_A]} />);
+    expect(screen.getByTestId("price-timeline")).not.toHaveAttribute("data-state", "empty");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 9 — PowerFlowsTable
+// ─────────────────────────────────────────────────────────────────────────────
+describe("PowerFlowsTable", () => {
+  it("renders with testid power-flows-table", () => {
+    render(
+      <PowerFlowsTable flows={GOLDEN_A.flows} generation={GOLDEN_A.generation} />
+    );
+    expect(screen.getByTestId("power-flows-table")).toBeInTheDocument();
+  });
+
+  const FLOW_FIELDS = [
+    "solar_to_load_mw", "solar_to_bat_mw", "solar_to_grid_mw",
+    "wind_to_load_mw",  "wind_to_bat_mw",  "wind_to_grid_mw",
+    "bat_to_load_mw",   "bat_to_grid_mw",
+    "grid_to_load_mw",  "grid_to_bat_mw",
+    "solar_curtailed_mw", "wind_curtailed_mw", "bat_curtailed_mw",
+    "load_unserved_mw",
+  ] as const;
+
+  for (const field of FLOW_FIELDS) {
+    it(`renders row with data-field="${field}"`, () => {
+      render(
+        <PowerFlowsTable flows={GOLDEN_A.flows} generation={GOLDEN_A.generation} />
+      );
+      expect(document.querySelector(`[data-field="${field}"]`)).toBeInTheDocument();
+    });
+  }
+
+  it("renders gross_solar_mw row (from generation block)", () => {
+    render(
+      <PowerFlowsTable flows={GOLDEN_A.flows} generation={GOLDEN_A.generation} />
+    );
+    expect(document.querySelector('[data-field="gross_solar_mw"]')).toBeInTheDocument();
+  });
+
+  it("renders gross_wind_mw row (from generation block)", () => {
+    render(
+      <PowerFlowsTable flows={GOLDEN_A.flows} generation={GOLDEN_A.generation} />
+    );
+    expect(document.querySelector('[data-field="gross_wind_mw"]')).toBeInTheDocument();
+  });
+
+  it("non-zero flow values visible in table (solar_to_load = 30 MW from golden A)", () => {
+    render(
+      <PowerFlowsTable flows={GOLDEN_A.flows} generation={GOLDEN_A.generation} />
+    );
+    // solar_to_load_mw = 30 MW in golden A
+    const row = document.querySelector('[data-field="solar_to_load_mw"]');
+    expect(row?.textContent).toContain("30");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 10 — LiveDashboard integration
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveDashboard", () => {
+  beforeEach(() => {
+    vi.mocked(useTelemetryStore).mockReturnValue(emptyTelemetryState());
+  });
+
+  it("empty + connected → shows 'Waiting' spinner (not disconnected)", () => {
+    vi.mocked(useTelemetryStore).mockReturnValue({
+      ...emptyTelemetryState(),
+      wsStatus: "connected",
+      envStep: null,
+    });
+    render(<LiveDashboard />);
+    expect(screen.getByTestId("live-dashboard").textContent).toMatch(/waiting/i);
+  });
+
+  it("empty + disconnected → blank (no 'Waiting' text; banner is the signal)", () => {
+    vi.mocked(useTelemetryStore).mockReturnValue({
+      ...emptyTelemetryState(),
+      wsStatus: "disconnected",
+      envStep: null,
+    });
+    render(<LiveDashboard />);
+    const dashboard = screen.getByTestId("live-dashboard");
+    expect(dashboard.textContent).not.toMatch(/waiting/i);
+  });
+
+  it("with envStep → renders cost-breakdown-card", () => {
+    vi.mocked(useTelemetryStore).mockReturnValue({
+      ...emptyTelemetryState(),
+      envStep: GOLDEN_A,
+      history: [GOLDEN_A],
+    });
+    render(<LiveDashboard />);
+    expect(screen.getByTestId("cost-breakdown-card")).toBeInTheDocument();
+  });
+
+  it("with envStep → renders month-peak-card", () => {
+    vi.mocked(useTelemetryStore).mockReturnValue({
+      ...emptyTelemetryState(),
+      envStep: GOLDEN_A,
+      history: [GOLDEN_A],
+    });
+    render(<LiveDashboard />);
+    expect(screen.getByTestId("month-peak-card")).toBeInTheDocument();
+  });
+
+  it("with envStep → renders power-flows-table", () => {
+    vi.mocked(useTelemetryStore).mockReturnValue({
+      ...emptyTelemetryState(),
+      envStep: GOLDEN_A,
+      history: [GOLDEN_A],
+    });
+    render(<LiveDashboard />);
+    expect(screen.getByTestId("power-flows-table")).toBeInTheDocument();
+  });
+
+  it("with envStep → renders alert-list", () => {
+    vi.mocked(useTelemetryStore).mockReturnValue({
+      ...emptyTelemetryState(),
+      envStep: GOLDEN_A,
+      history: [GOLDEN_A],
+    });
+    render(<LiveDashboard />);
+    expect(screen.getByTestId("alert-list")).toBeInTheDocument();
+  });
+
+  it("golden B (month-boundary) — demand charge visible in cost breakdown", () => {
+    // Step B has c_demand_charge_yuan = 3040000; it must appear in the rendered card
+    vi.mocked(useTelemetryStore).mockReturnValue({
+      ...emptyTelemetryState(),
+      envStep: GOLDEN_B,
+      history: [GOLDEN_B],
+    });
+    render(<LiveDashboard />);
+    const card = screen.getByTestId("cost-breakdown-card");
+    // 3040000 → "3,040,000" in formatYuan
+    expect(card.textContent).toContain("040,000");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// reviewer: placeholder (frontend-reviewer will add edge-case tests here)
+// ─────────────────────────────────────────────────────────────────────────────
