@@ -15,6 +15,7 @@ Do **not** log work milestones here — PR state is the status record. Append-on
 ## Decisions
 
 - [D1] 2026-06-09 — Team, workflow (contract-first-dev / qa-verification), naming conventions, and PR-gated process established; see CLAUDE.md. (setup commits 3e9fdd8…)
+- [D2] 2026-06-09 — Composable asset library added to the spec (REBUILD_SPEC.md §8): gas combustion, PEM + alkaline electrolyzers, 6 load archetypes; obs/action derived from site YAML; Gansu config is the parity special case. Build order: §3 plant first, §8 after baseline parity.
 
 ## Locked shared contracts
 
