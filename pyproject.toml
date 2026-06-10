@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "energy-go"
+version = "0.1.0"
+description = "JAX-based RL environment for wind+solar+battery dispatch optimisation (Energy GO rebuild)"
+requires-python = ">=3.11"
+dependencies = [
+    "jax>=0.4.25",
+    "jaxlib>=0.4.25",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-xdist>=3.5",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-q"
