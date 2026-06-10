@@ -225,14 +225,25 @@ Every power flow in `flows.*` maps to a directed animated line between two node 
 
 ```
 site_max_mw = wind_capacity_mw + solar_capacity_mw    // e.g. 945 MW Gansu
-normalized  = flow_mw / site_max_mw                    // ∈ [0, 1]
+normalized  = site_max_mw > 0
+              ? clamp(flow_mw / site_max_mw, 0, 1)    // ∈ [0, 1]
+              : 0                                       // guard: degenerate config
 
 line_width (canvas units) = 0.5 + normalized × 5.5    // range [0.5, 6.0]
 particle_speed (units/s)  = 0.2 + normalized × 2.8    // range [0.2, 3.0]
 ```
 
+The clamp serves two purposes:
+- `flow_mw < 0` (physically impossible, §3.3) → clamped to 0 → line hidden.
+- `flow_mw > site_max_mw` (possible during curtailment transients) → clamped to 1 → line at maximum width/speed.
+
+**Grid connection lines use different denominators** (contract §8):
+- Export line: `normalized = clamp(pcc.export_mw / pcc.max_export_mw, 0, 1)` (945 MW Gansu)
+- Import line: `normalized = clamp(pcc.import_mw / pcc.max_import_mw, 0, 1)` (400 MW Gansu, D12)
+
+These are **not** normalized by `site_max_mw`. Using `site_max_mw` for import would be a 2× visual error at Gansu (945 vs 400 MW).
+
 - `flow_mw = 0` → line is **hidden** (not removed from scene graph; opacity=0 for instant re-show).
-- `flow_mw < 0` is physically impossible (all flow fields ≥ 0 per §3.3); treat as 0 (defensive).
 - Particle direction follows the arrow: source → target.
 
 ### 4.3 Event visuals

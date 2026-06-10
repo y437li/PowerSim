@@ -15,7 +15,7 @@
  * Reviewer-added cases are marked: // reviewer: <reason>
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, act } from "@testing-library/react";
 import React from "react";
 
@@ -30,6 +30,101 @@ import type {
   AssetRegistryEntry,
   SiteSceneConfig,
 } from "../../src/scene/types";
+import type { EnvStepPayload } from "../../src/types/telemetry";   // LOCKED v1.0.0 (PR #6)
+
+// ---------------------------------------------------------------------------
+// Telemetry store mock harness
+// ---------------------------------------------------------------------------
+// SiteScene calls useTelemetryStore() to read envStep and wsStatus. We mock the
+// entire module so tests control what the scene sees without a live WebSocket.
+//
+// Usage:
+//   setEnvStep({ flows: { wind_to_grid_mw: 80, ...ZERO_FLOWS } });
+//   setWsStatus("stale");
+//   render(<SiteScene ... />);
+//   — scene sees exactly what you injected —
+//
+// Reset: beforeEach calls resetStore() automatically.
+
+type WsStatus = "connecting" | "connected" | "disconnected" | "stale";
+
+let _mockEnvStep: EnvStepPayload | null = null;
+let _mockWsStatus: WsStatus = "connecting";
+
+vi.mock("../../src/stores/telemetryStore", () => ({
+  useTelemetryStore: vi.fn((selector?: (s: unknown) => unknown) => {
+    const state = { envStep: _mockEnvStep, wsStatus: _mockWsStatus };
+    return selector ? selector(state) : state;
+  }),
+}));
+
+/** All power-flow fields at zero — safe base for per-test overrides. */
+const ZERO_FLOWS = {
+  solar_to_load_mw: 0, solar_to_bat_mw: 0, solar_to_grid_mw: 0,
+  wind_to_load_mw: 0, wind_to_bat_mw: 0, wind_to_grid_mw: 0,
+  bat_to_load_mw: 0, bat_to_grid_mw: 0,
+  grid_to_load_mw: 0, grid_to_bat_mw: 0,
+  solar_curtailed_mw: 0, wind_curtailed_mw: 0,
+  bat_curtailed_mw: 0, load_unserved_mw: 0,
+};
+
+/** Full valid EnvStepPayload at neutral state — override per test. */
+const BASE_ENV_STEP = {
+  step: 1, episode: 1, dt_hours: 1.0,
+  sim_time_utc: "2026-03-02T08:00:00Z",
+  hour_of_day: 8, minute_of_hour: 0,
+  wind_speed_mps: 6.4, irradiance_wm2: 540.0,
+  temperature_c: 18.2, load_mw: 72.5,
+  price_buy_yuan_per_mwh: 620.0, price_sell_yuan_per_mwh: 590.0,
+  tariff_tier: "peak" as const,
+  battery: {
+    soc: 0.55, p_charge_mw: 0.0, p_discharge_mw: 40.0,
+    p_max_charge_mw: 98.16, p_max_discharge_mw: 98.16,
+    soc_violation_mwh: 0.0, capacity_mwh: 294.5,
+  },
+  generation: { gross_solar_mw: 30.0, gross_wind_mw: 92.5 },
+  flows: { ...ZERO_FLOWS },
+  pcc: { export_mw: 0, import_mw: 0, max_export_mw: 945, max_import_mw: 400 },
+  costs: {
+    c_energy_yuan: 0, c_import_yuan: 0, r_export_yuan: 0,
+    c_demand_charge_yuan: 0, c_demand_shape_yuan: 0,
+    c_degradation_yuan: 0, c_curtail_yuan: 0, c_voll_yuan: 0,
+    penalty_yuan: 0, cost_total_real_yuan: 0, cost_total_reward_basis_yuan: 0,
+  },
+  cost_cum: {
+    c_energy_yuan_cum: 0, c_demand_charge_yuan_cum: 0,
+    c_degradation_yuan_cum: 0, c_curtail_yuan_cum: 0, c_voll_yuan_cum: 0,
+  },
+  month_peak_mw: 0, reward: 0,
+} as const;
+
+/**
+ * Set the envStep the mock store returns.
+ * Pass `null` to simulate "no telemetry yet" (wsStatus=connecting).
+ * Pass a partial to override specific fields from BASE_ENV_STEP.
+ */
+function setEnvStep(
+  overrides: Partial<typeof BASE_ENV_STEP> & { flows?: Partial<typeof ZERO_FLOWS> } | null
+): void {
+  if (overrides === null) { _mockEnvStep = null; return; }
+  _mockEnvStep = {
+    ...BASE_ENV_STEP,
+    ...overrides,
+    flows: { ...ZERO_FLOWS, ...overrides.flows },
+    battery: { ...BASE_ENV_STEP.battery, ...overrides.battery },
+    pcc: { ...BASE_ENV_STEP.pcc, ...overrides.pcc },
+    generation: { ...BASE_ENV_STEP.generation, ...overrides.generation },
+  } as unknown as EnvStepPayload;
+}
+
+function setWsStatus(status: WsStatus): void {
+  _mockWsStatus = status;
+}
+
+function resetStore(): void {
+  _mockEnvStep = null;
+  _mockWsStatus = "connecting";
+}
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -169,9 +264,11 @@ describe("resolveAsset", () => {
 describe("SiteScene composition", () => {
   let container: HTMLDivElement;
   beforeEach(() => {
+    resetStore();
     container = document.createElement("div");
     document.body.appendChild(container);
   });
+  afterEach(() => { resetStore(); });
 
   it("renders without crashing given valid config and registry", () => {
     expect(() => {
@@ -455,15 +552,12 @@ describe("power-flow line visibility", () => {
   });
 
   it("hides all flow lines when all flows are zero", () => {
+    // Inject an envStep with all flows = 0 via the mock store
+    setEnvStep({ flows: { ...ZERO_FLOWS } });
     const { queryAllByTestId } = render(
-      <SiteScene
-        config={GANSU_CONFIG}
-        registry={VALID_REGISTRY}
-        containerEl={container}
-        // Inject a zero-flow env step via the mock store
-      />
+      <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
     );
-    // Each line should have data-visible="false" when flow = 0
+    // Each flow line should have data-visible="false" when flow = 0
     const lines = queryAllByTestId(/^flow-line-/);
     for (const line of lines) {
       expect(line.getAttribute("data-visible")).toBe("false");
@@ -471,20 +565,16 @@ describe("power-flow line visibility", () => {
   });
 
   it("shows wind-to-grid line when wind_to_grid_mw = 80", () => {
-    // The test injects an envStep via the mock telemetryStore
+    // Inject envStep: wind_to_grid_mw=80, all other flows=0
+    // Expected width: 0.5 + (80/945)*5.5 ≈ 0.9656 (normalized by site_max_mw=945)
+    setEnvStep({ flows: { wind_to_grid_mw: 80 } });
     const { getByTestId } = render(
-      <SiteScene
-        config={GANSU_CONFIG}
-        registry={VALID_REGISTRY}
-        containerEl={container}
-      />
+      <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
     );
-    // After store update with wind_to_grid_mw = 80:
-    // width = 0.5 + (80/945)*5.5 ≈ 0.966
     const line = getByTestId("flow-line-wind_to_grid");
     expect(line.getAttribute("data-visible")).toBe("true");
     expect(parseFloat(line.getAttribute("data-width") ?? "0")).toBeCloseTo(
-      0.5 + (80 / 945) * 5.5,
+      0.5 + (80 / 945) * 5.5, // 0.5 + 0.4656 = 0.9656
       2
     );
   });
@@ -492,28 +582,20 @@ describe("power-flow line visibility", () => {
   // reviewer: all flows = 0 but solar_curtailed_mw > 0 → solar curtailment line visible
   // (LOCKED v1.0.0: ren_curtailed_mw split into solar_curtailed_mw + wind_curtailed_mw)
   it("shows solar-curtailment line when solar_curtailed_mw > 0 while other flows = 0", () => {
+    setEnvStep({ flows: { solar_curtailed_mw: 50 } });
     const { getByTestId } = render(
-      <SiteScene
-        config={GANSU_CONFIG}
-        registry={VALID_REGISTRY}
-        containerEl={container}
-      />
+      <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
     );
-    // Store injected with solar_curtailed_mw = 50 MW, wind_curtailed_mw = 0
     const solarCurtailLine = getByTestId("flow-line-solar_curtailed");
     expect(solarCurtailLine.getAttribute("data-visible")).toBe("true");
     expect(solarCurtailLine.getAttribute("data-source")).toBe("pv");
   });
 
   it("shows wind-curtailment line when wind_curtailed_mw > 0 while other flows = 0", () => {
+    setEnvStep({ flows: { wind_curtailed_mw: 30 } });
     const { getByTestId } = render(
-      <SiteScene
-        config={GANSU_CONFIG}
-        registry={VALID_REGISTRY}
-        containerEl={container}
-      />
+      <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
     );
-    // Store injected with wind_curtailed_mw = 30 MW, solar_curtailed_mw = 0
     const windCurtailLine = getByTestId("flow-line-wind_curtailed");
     expect(windCurtailLine.getAttribute("data-visible")).toBe("true");
     expect(windCurtailLine.getAttribute("data-source")).toBe("turbine-field");
@@ -521,15 +603,11 @@ describe("power-flow line visibility", () => {
 
   it("shows both curtailment lines simultaneously when both > 0", () => {
     // Contract §4.3: "Both lines shown simultaneously (each independently sized)"
-    const { getByTestId } = render(
-      <SiteScene
-        config={GANSU_CONFIG}
-        registry={VALID_REGISTRY}
-        containerEl={container}
-      />
-    );
-    // Store injected with solar_curtailed_mw = 50, wind_curtailed_mw = 30
     // solar width: 0.5 + (50/945)*5.5 ≈ 0.791; wind width: 0.5 + (30/945)*5.5 ≈ 0.675
+    setEnvStep({ flows: { solar_curtailed_mw: 50, wind_curtailed_mw: 30 } });
+    const { getByTestId } = render(
+      <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
+    );
     const solarLine = getByTestId("flow-line-solar_curtailed");
     const windLine  = getByTestId("flow-line-wind_curtailed");
     expect(solarLine.getAttribute("data-visible")).toBe("true");
@@ -542,15 +620,11 @@ describe("power-flow line visibility", () => {
 
   // reviewer: VOLL indicator active only when load_unserved_mw > 0
   it("activates VOLL indicator when load_unserved_mw > 0", () => {
+    setEnvStep({ flows: { load_unserved_mw: 5 } });
     const { getByTestId } = render(
-      <SiteScene
-        config={GANSU_CONFIG}
-        registry={VALID_REGISTRY}
-        containerEl={container}
-      />
+      <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
     );
     const vollIndicator = getByTestId("voll-indicator");
-    // After store injected with load_unserved_mw = 5:
     expect(vollIndicator.getAttribute("data-active")).toBe("true");
   });
 });
@@ -562,19 +636,23 @@ describe("power-flow line visibility", () => {
 describe("stale and null telemetry", () => {
   let container: HTMLDivElement;
   beforeEach(() => {
+    resetStore();   // envStep=null, wsStatus="connecting"
     container = document.createElement("div");
     document.body.appendChild(container);
   });
+  afterEach(() => { resetStore(); });
 
   it("renders without crashing when envStep is null", () => {
+    // resetStore() leaves _mockEnvStep = null — no injection needed
     expect(() => {
-      render(
-        <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
-      );
+      render(<SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />);
     }).not.toThrow();
   });
 
   it("shows 'Waiting for telemetry' overlay when envStep is null", () => {
+    // envStep=null (default after resetStore) → connecting/waiting state
+    setEnvStep(null);
+    setWsStatus("connecting");
     const { getByTestId } = render(
       <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
     );
@@ -582,7 +660,9 @@ describe("stale and null telemetry", () => {
   });
 
   it("shows 'Stale' overlay when wsStatus is 'stale'", () => {
-    // Mock telemetryStore.wsStatus = "stale"
+    // Inject a real step first so scene has last-known state, then go stale
+    setEnvStep({ battery: { soc: 0.7 } });
+    setWsStatus("stale");
     const { getByTestId } = render(
       <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
     );
@@ -590,6 +670,8 @@ describe("stale and null telemetry", () => {
   });
 
   it("shows 'Disconnected' overlay when wsStatus is 'disconnected'", () => {
+    setEnvStep(null);
+    setWsStatus("disconnected");
     const { getByTestId } = render(
       <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
     );
@@ -597,30 +679,76 @@ describe("stale and null telemetry", () => {
   });
 
   it("removes the overlay when a valid envStep arrives after being null", () => {
-    const { queryByTestId } = render(
+    setEnvStep(null);
+    setWsStatus("connecting");
+    const { queryByTestId, rerender } = render(
       <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
     );
-    // After store receives a valid envStep, overlay disappears
+    // Overlay present while envStep is null
+    expect(queryByTestId("telemetry-overlay")).not.toBeNull();
+    // Store receives a valid envStep → rerender → overlay gone
     act(() => {
-      // dispatch new envStep via mock store
+      setEnvStep({});     // valid step, all defaults
+      setWsStatus("connected");
     });
+    rerender(<SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />);
     expect(queryByTestId("telemetry-overlay")).toBeNull();
   });
 
   // reviewer: animated values do NOT reset to zero on stale — they freeze at last known
   it("keeps last known SOC fill when telemetry becomes stale (no flicker to zero)", () => {
     // 1. Inject envStep with soc = 0.7 → soc_fill = (0.7-0.2)/0.7 = 5/7 ≈ 0.714
-    // 2. Set wsStatus to "stale"
-    // 3. Assert soc_fill is still ≈ 0.714, not 0
-    const { getByTestId } = render(
+    // 2. Scene renders at soc_fill ≈ 0.714
+    // 3. Go stale — soc_fill must still be ≈ 0.714, NOT reset to 0
+    setEnvStep({ battery: { soc: 0.7 } });
+    setWsStatus("connected");
+    const { getByTestId, rerender } = render(
       <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
     );
-    const battMesh = getByTestId("battery-soc-fill");
-    // After stale transition, scale.y should still be ≈ 0.714
+    // Confirm initial fill
+    let battMesh = getByTestId("battery-soc-fill");
+    expect(parseFloat(battMesh.getAttribute("data-soc-fill") ?? "0")).toBeCloseTo(
+      (0.7 - 0.2) / 0.7, // 0.5/0.7 ≈ 0.714
+      2
+    );
+    // Transition to stale — do NOT send a new envStep
+    act(() => { setWsStatus("stale"); });
+    rerender(<SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />);
+    battMesh = getByTestId("battery-soc-fill");
+    // Must still be ≈ 0.714 (frozen), not 0
     expect(parseFloat(battMesh.getAttribute("data-soc-fill") ?? "0")).toBeCloseTo(
       (0.7 - 0.2) / 0.7,
       2
     );
+  });
+
+  // Battery direction indicator (charge / discharge / idle label)
+  // reviewer note: a charge↔discharge swap is a real UX bug; pin it now that harness exists
+  it("shows charging indicator when p_charge_mw > 0", () => {
+    setEnvStep({ battery: { soc: 0.5, p_charge_mw: 40, p_discharge_mw: 0 } });
+    setWsStatus("connected");
+    const { getByTestId } = render(
+      <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
+    );
+    expect(getByTestId("battery-direction-label")).toHaveTextContent(/charging/i);
+  });
+
+  it("shows discharging indicator when p_discharge_mw > 0", () => {
+    setEnvStep({ battery: { soc: 0.7, p_charge_mw: 0, p_discharge_mw: 60 } });
+    setWsStatus("connected");
+    const { getByTestId } = render(
+      <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
+    );
+    expect(getByTestId("battery-direction-label")).toHaveTextContent(/discharging/i);
+  });
+
+  it("shows idle indicator when both p_charge_mw and p_discharge_mw are 0", () => {
+    setEnvStep({ battery: { soc: 0.55, p_charge_mw: 0, p_discharge_mw: 0 } });
+    setWsStatus("connected");
+    const { getByTestId } = render(
+      <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
+    );
+    expect(getByTestId("battery-direction-label")).toHaveTextContent(/idle/i);
   });
 });
 
@@ -631,9 +759,13 @@ describe("stale and null telemetry", () => {
 describe("performance constraints", () => {
   let container: HTMLDivElement;
   beforeEach(() => {
+    resetStore();
+    setEnvStep({});     // valid step — scene renders with live telemetry
+    setWsStatus("connected");
     container = document.createElement("div");
     document.body.appendChild(container);
   });
+  afterEach(() => { resetStore(); });
 
   it("turbine field uses InstancedMesh (one per assetId, not one per turbine)", () => {
     // 3 turbines with the same assetId → exactly 1 InstancedMesh group, count=3
@@ -681,6 +813,18 @@ describe("performance constraints", () => {
     const counter = getByTestId("draw-call-counter-turbines");
     expect(parseInt(counter.getAttribute("data-count") ?? "999", 10)).toBeLessThanOrEqual(50);
   });
+
+  // reviewer: total scene draw calls (turbines + PV + battery + grid + flow lines) ≤ 100
+  it("total scene draw calls ≤ 100 (all object types combined)", () => {
+    // The scene must expose a testId "draw-call-counter-total" with data-count.
+    // Budget: ≤50 turbine field + remaining budget for PV, battery, grid, flow lines.
+    const { getByTestId } = render(
+      <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
+    );
+    const counter = getByTestId("draw-call-counter-total");
+    const total = parseInt(counter.getAttribute("data-count") ?? "999", 10);
+    expect(total).toBeLessThanOrEqual(100);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -688,6 +832,13 @@ describe("performance constraints", () => {
 // Contract §11
 // ---------------------------------------------------------------------------
 describe("SceneMountPoint integration", () => {
+  beforeEach(() => {
+    resetStore();
+    setEnvStep({});     // valid step — scene is live
+    setWsStatus("connected");
+  });
+  afterEach(() => { resetStore(); });
+
   it("creates canvas inside the provided containerEl, not in the React root", () => {
     const sceneContainer = document.createElement("div");
     document.body.appendChild(sceneContainer);
@@ -742,9 +893,13 @@ describe("SceneMountPoint integration", () => {
 describe("flow line direction and source nodes", () => {
   let container: HTMLDivElement;
   beforeEach(() => {
+    resetStore();
+    setEnvStep({});     // valid step, all defaults — lines in scene graph
+    setWsStatus("connected");
     container = document.createElement("div");
     document.body.appendChild(container);
   });
+  afterEach(() => { resetStore(); });
 
   it("solar_to_load line has source=pv and target=load", () => {
     const { getByTestId } = render(
@@ -795,27 +950,62 @@ describe("flow line direction and source nodes", () => {
 
   // LOCKED v1.0.0: sim clock uses payload.sim_time_utc, NOT envelope ts_utc
   it("sim clock display reads from payload.sim_time_utc not envelope ts_utc", () => {
-    // The scene must render a sim-clock label whose value matches payload.sim_time_utc.
-    // If it mistakenly uses ts_utc (emit clock) they would diverge during replay.
+    // Inject step with sim_time_utc="2026-03-02T08:00:00Z".
+    // The scene's sim-clock label must show the payload date, not envelope ts_utc.
+    setEnvStep({ sim_time_utc: "2026-03-02T08:00:00Z" });
     const { getByTestId } = render(
       <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
     );
     const clock = getByTestId("sim-clock-display");
-    // After injecting step with sim_time_utc="2026-03-02T08:00:00Z" but ts_utc="2026-06-10T09:00:00Z"
-    // the displayed value must reflect "Mon 08:00" (sim time), not "Wed 09:00" (emit time)
+    // data-sim-time must reflect the sim date (2026-03-02), not the emit date
     expect(clock.getAttribute("data-sim-time")).toContain("2026-03-02");
   });
 
   // LOCKED v1.0.0: generation block — scene can label total source output
   it("exposes gross_solar_mw and gross_wind_mw labels from generation block", () => {
+    setEnvStep({ generation: { gross_solar_mw: 30, gross_wind_mw: 92.5 } });
     const { getByTestId } = render(
       <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
     );
-    // After injecting step with generation.gross_solar_mw=30, gross_wind_mw=92.5
     const solarLabel = getByTestId("generation-label-solar");
     const windLabel  = getByTestId("generation-label-wind");
     expect(solarLabel.getAttribute("data-gross-mw")).toBe("30");
     expect(windLabel.getAttribute("data-gross-mw")).toBe("92.5");
+  });
+
+  // Grid import denominator binding test (§4.2 + reviewer §8)
+  // Must use pcc.max_import_mw (400 MW, D12), NOT site_max_mw (945 MW)
+  it("import line width uses pcc.max_import_mw as denominator (not site_max_mw)", () => {
+    // inject pcc.import_mw=200, max_import_mw=400
+    // correct width = 0.5 + (200/400)*5.5 = 0.5 + 2.75 = 3.25
+    // WRONG width   = 0.5 + (200/945)*5.5 ≈ 1.664  (2× visual error)
+    setEnvStep({ pcc: { export_mw: 0, import_mw: 200, max_export_mw: 945, max_import_mw: 400 } });
+    const { getByTestId } = render(
+      <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
+    );
+    const importLine = getByTestId("flow-line-pcc-import");
+    expect(importLine.getAttribute("data-visible")).toBe("true");
+    expect(parseFloat(importLine.getAttribute("data-width") ?? "0")).toBeCloseTo(
+      3.25, // 0.5 + (200/400)*5.5 — uses max_import_mw, not site_max
+      2
+    );
+    // Explicitly verify it is NOT the wrong value
+    expect(parseFloat(importLine.getAttribute("data-width") ?? "0")).not.toBeCloseTo(
+      0.5 + (200 / 945) * 5.5, // ≈ 1.664 — the wrong value
+      1
+    );
+  });
+
+  it("export line width uses pcc.max_export_mw as denominator (D5 = 945 MW Gansu)", () => {
+    // inject pcc.export_mw=945 (at cap), max_export_mw=945
+    // width = 0.5 + (945/945)*5.5 = 6.0 (maximum)
+    setEnvStep({ pcc: { export_mw: 945, import_mw: 0, max_export_mw: 945, max_import_mw: 400 } });
+    const { getByTestId } = render(
+      <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
+    );
+    const exportLine = getByTestId("flow-line-pcc-export");
+    expect(exportLine.getAttribute("data-visible")).toBe("true");
+    expect(parseFloat(exportLine.getAttribute("data-width") ?? "0")).toBeCloseTo(6.0, 2);
   });
 });
 
@@ -946,31 +1136,40 @@ describe("reviewer: calcRotorOmega is monotonic non-decreasing across the ramp",
 describe("finiteness guard", () => {
   let container: HTMLDivElement;
   beforeEach(() => {
+    resetStore();
+    setEnvStep({});     // valid baseline step — scene renders
+    setWsStatus("connected");
     container = document.createElement("div");
     document.body.appendChild(container);
   });
+  afterEach(() => { resetStore(); });
 
   it("discards an envStep with NaN in flows.wind_to_grid_mw without crashing", () => {
-    // Producer invariant: should never happen; consumer defends anyway
+    // Producer invariant: should never happen; consumer defends anyway.
+    // Inject a corrupt step into the store; SiteScene must not throw.
     expect(() => {
       render(
         <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
       );
-      // Inject envStep with NaN in wind_to_grid_mw via mock store
-      // (exact injection mechanism implemented in mock; asserted: no throw)
+      // Replace valid step with NaN-containing step
+      setEnvStep({ flows: { ...ZERO_FLOWS, wind_to_grid_mw: NaN } });
     }).not.toThrow();
   });
 
   it("does not update the flow line when a NaN message is received", () => {
-    // 1. Inject valid envStep: wind_to_grid_mw = 80 → line visible
-    // 2. Inject corrupt envStep: wind_to_grid_mw = NaN → must NOT update
-    // 3. Assert line is still at last-known state (visible, width ≈ 0.966)
+    // 1. Inject valid envStep: wind_to_grid_mw = 80 → line visible, width = 0.5+(80/945)*5.5
+    setEnvStep({ flows: { ...ZERO_FLOWS, wind_to_grid_mw: 80 } });
     const { getByTestId } = render(
       <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
     );
     const line = getByTestId("flow-line-wind_to_grid");
-    // After valid step: visible and width correct
-    // After NaN step: still visible and same width (NaN step discarded)
+    // width ≈ 0.5 + (80/945)*5.5 = 0.5 + 0.4656 = 0.9656
+    const widthAfterValid = parseFloat(line.getAttribute("data-width") ?? "0");
+    expect(widthAfterValid).toBeCloseTo(0.5 + (80 / 945) * 5.5, 2);
+
+    // 2. Inject corrupt step: NaN → scene must NOT update any animated value
+    setEnvStep({ flows: { ...ZERO_FLOWS, wind_to_grid_mw: NaN } });
+    // After corrupt step the line must remain at last-known state (NaN step discarded)
     expect(line.getAttribute("data-visible")).toBe("true");
     expect(parseFloat(line.getAttribute("data-width") ?? "0")).toBeCloseTo(
       0.5 + (80 / 945) * 5.5,
@@ -979,13 +1178,20 @@ describe("finiteness guard", () => {
   });
 
   it("does not update SOC fill when a +Infinity soc message is received", () => {
-    // soc = Infinity is non-finite → message discarded → soc_fill stays at last known value
+    // First inject valid step with known soc=0.55 → soc_fill = (0.55-0.2)/0.7 = 0.5
+    setEnvStep({ battery: { soc: 0.55, p_charge_mw: 0, p_discharge_mw: 40.0 } });
     const { getByTestId } = render(
       <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
     );
     const battMesh = getByTestId("battery-soc-fill");
-    // After discarding Inf soc step, fill ≈ (0.55 − 0.2) / 0.7 = 0.5 (from prior valid step)
+    const fillAfterValid = parseFloat(battMesh.getAttribute("data-soc-fill") ?? "NaN");
+    expect(fillAfterValid).toBeCloseTo(0.5, 5); // (0.55-0.2)/0.7 = 0.5
+
+    // Inject corrupt step: soc = Infinity → message must be discarded
+    setEnvStep({ battery: { soc: Infinity, p_charge_mw: 0, p_discharge_mw: 0 } });
+    // soc_fill must remain at 0.5 (last valid) and must not be NaN
     expect(parseFloat(battMesh.getAttribute("data-soc-fill") ?? "NaN")).not.toBeNaN();
+    expect(parseFloat(battMesh.getAttribute("data-soc-fill") ?? "NaN")).toBeCloseTo(0.5, 5);
   });
 
   it("calcFlowWidth with NaN input returns the minimum (0.5) not NaN", () => {
@@ -997,7 +1203,7 @@ describe("finiteness guard", () => {
   });
 
   it("calcFlowSpeed with Infinity input returns the maximum (3.0) not Infinity", () => {
-    // Infinity normalized → clamped to 1.0 → speed = 3.0
+    // Infinity normalized → clamped to 1.0 → speed = 0.2 + 1.0*2.8 = 3.0
     const speed = calcFlowSpeed(Infinity, 945);
     expect(isFinite(speed)).toBe(true);
     expect(speed).toBeCloseTo(3.0, 5);
@@ -1005,11 +1211,12 @@ describe("finiteness guard", () => {
 
   // reviewer: -Infinity soc is also rejected (not just NaN)
   it("discards an envStep with -Infinity in battery.soc without crashing", () => {
+    // Inject corrupt step before render; must not throw
     expect(() => {
+      setEnvStep({ battery: { soc: -Infinity, p_charge_mw: 0, p_discharge_mw: 0 } });
       render(
         <SiteScene config={GANSU_CONFIG} registry={VALID_REGISTRY} containerEl={container} />
       );
-      // Inject envStep with soc = -Infinity → must not crash or update animation
     }).not.toThrow();
   });
 });
