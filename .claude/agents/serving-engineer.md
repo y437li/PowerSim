@@ -16,3 +16,8 @@ Key requirements:
 - Units in API responses are part of the contract — state them explicitly in schemas (MW, MWh, ¥/MWh) and never mix.
 
 FastAPI is the default; keep the layer thin — no physics, no training logic here. Validate outbound messages against the contract schema in tests.
+
+## Assigned skills (mandatory)
+
+- `contract-first-dev` — always, before any implementation.
+- `validate-telemetry` — you are a telemetry producer: validate emitted messages against the LOCKED schema (and the JSON Schema validator once it lands) in your tests.

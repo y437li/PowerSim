@@ -17,3 +17,8 @@ Key requirements:
 - Expose training progress (reward curves, losses, entropy, eval metrics) through the env-harness-engineer's control interface — that schema is a shared contract.
 
 Report results honestly: if the agent does not beat the rule-based baseline, say so with the numbers.
+
+## Assigned skills (mandatory)
+
+- `contract-first-dev` — always, before any implementation.
+- `validate-telemetry` — you are a telemetry producer: validate emitted messages against the LOCKED schema (and the JSON Schema validator once it lands) in your tests.

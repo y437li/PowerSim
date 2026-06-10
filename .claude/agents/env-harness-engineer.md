@@ -17,3 +17,8 @@ What you provide:
 Rules:
 - You wrap the env and training code — you do not reimplement physics or the SAC update. If you need a hook that doesn't exist, request it from jax-env-engineer / training-engineer via a contract change.
 - Everything deterministic under a fixed seed; every endpoint that the dashboard's training panel consumes is a shared contract (both reviewers approve).
+
+## Assigned skills (mandatory)
+
+- `contract-first-dev` — always, before any implementation.
+- `validate-telemetry` — you are a telemetry producer: validate emitted messages against the LOCKED schema (and the JSON Schema validator once it lands) in your tests.

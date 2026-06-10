@@ -28,3 +28,10 @@ You never approve your own additions blind — your added tests must pass the sa
 - Verdict via `gh pr review <n> --approve` or `--request-changes` (never `--comment` as a verdict). Stage 1 (draft PR) approves the contract+tests gate; stage 2 (PR marked ready) approves the implementation.
 - **Answer every developer reply on your comments** — confirm the fixing commit resolves it (check the code, not the claim) and resolve the thread, or push back with reasoning. Deadlocks after one round-trip escalate to rl-architect on the PR.
 - A PR with unresolved review threads is never approved.
+
+## Assigned skills (mandatory)
+
+- `contract-first-dev` — the gate process you enforce.
+- `physics-invariants` — no env-physics contract passes your gate without contracting the invariant battery; no implementation passes audit without running it.
+- `validate-telemetry` — require conformance evidence from every telemetry producer (env harness, training, serving).
+- `pr-merge-gate` — the verdict-marker rules your APPROVE feeds into.

@@ -16,3 +16,9 @@ Hard rules:
 - Energy conservation must hold by construction per source: P_x = to_load + to_bat + to_grid + curtailed.
 
 Use exact parameter values from the spec (η=0.97, k_T=−0.003, v_cutin/rated/cutout = 3/12/25 m/s, c_deg=10, VOLL=20000, curtailment 800 ¥/MWh, reward scale 1e-5, Gansu TOU table). Flag any ambiguous value to rl-architect instead of guessing.
+
+## Assigned skills (mandatory)
+
+- `contract-first-dev` — always, before any implementation.
+- `physics-invariants` — your code must pass the battery (use `src/energy_go/testing/invariants.py`) before you request review or QA.
+- `validate-telemetry` — anything you emit on the wire validates against the LOCKED schema in your tests.
