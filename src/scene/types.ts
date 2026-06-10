@@ -2,9 +2,9 @@
  * 3D scene type definitions.
  * Contract: contracts/frontend3d/site_scene.md §1, §2
  *
- * NOTE: AssetRegistryEntry schema here is the test-approved shape.
- * The full registry.json shared contract is pending rl-architect LOCK;
- * scene code accesses all asset paths exclusively via resolveAsset().
+ * AssetRegistry shape conforms to the LOCKED assets/3d/registry.json v1.0.0
+ * (PR #24, rl-architect authority). Map key = asset ID; no redundant id field
+ * inside AssetRegistryEntry. resolveAsset(reg, id) = reg.assets[id] ?? null.
  */
 
 // ─── Asset registry ───────────────────────────────────────────────────────────
@@ -35,10 +35,12 @@ export interface AnimationHooks {
   irradiance_material?: string;
 }
 
-/** Single entry in the asset registry. */
+/**
+ * Single entry in the asset registry.
+ * LOCKED v1.0.0: no `id` field — the map key in AssetRegistry.assets IS the id.
+ * Consumers that need the id string receive it as the resolveAsset() argument.
+ */
 export interface AssetRegistryEntry {
-  /** Verbatim key used in SiteSceneConfig; must match config YAML IDs. */
-  id: string;
   /** Path relative to assets/3d/ root. */
   path: string;
   type: AssetType;
@@ -49,10 +51,13 @@ export interface AssetRegistryEntry {
   animation_hooks?: AnimationHooks;
 }
 
-/** The full registry object loaded from assets/3d/registry.json. */
+/**
+ * The full registry object — shape of assets/3d/registry.json LOCKED v1.0.0.
+ * Keyed by asset ID (verbatim config YAML key). resolveAsset = reg.assets[id] ?? null.
+ */
 export interface AssetRegistry {
   schema_version: string;
-  entries: AssetRegistryEntry[];
+  assets: Record<string, AssetRegistryEntry>;
 }
 
 // ─── Site scene configuration ─────────────────────────────────────────────────

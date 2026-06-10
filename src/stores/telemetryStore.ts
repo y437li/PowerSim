@@ -1,75 +1,88 @@
-/**
- * Telemetry Zustand store — live env_step state.
- * Contract: contracts/frontend/app_shell.md §6.1
- *
- * This store is the single source of truth for live telemetry.
- * The 3D scene (and dashboard) subscribe here; they NEVER open their own socket.
- *
- * In test environments this module is mocked via vi.mock in each test file:
- *   vi.mock("../../src/stores/telemetryStore", () => ({
- *     useTelemetryStore: vi.fn(...),
- *   }));
- */
-
 import { create } from "zustand";
-import type { EnvStepPayload, WsStatus } from "../types/telemetry";
+import type { EnvStepPayload, TelemetryEnvelope, WsStatus } from "../types/telemetry";
 
-interface TelemetryState {
-  // Connection meta
+const HISTORY_MAX_LEN = 168; // D3: max episode length = 168 steps at Δt=1h
+
+export interface TelemetryState {
+  // Latest env_step payload (null until first message)
+  envStep: EnvStepPayload | null;
+  // Ring buffer: up to HISTORY_MAX_LEN most-recent env_step payloads
+  history: EnvStepPayload[];
+  // WebSocket connection status
   wsStatus: WsStatus;
+  // Current run_id (null until first message)
   runId: string | null;
+  // Sequence gap detection
   lastSeq: number | null;
   seqGap: boolean;
 
-  // Latest env_step (null until first message)
-  envStep: EnvStepPayload | null;
-
-  // History ring buffer: last N steps for timeline charts
-  history: EnvStepPayload[];
-  historyMaxLen: number;         // default 168 (one training episode, D3)
-
   // Actions
-  receiveEnvStep(payload: EnvStepPayload, runId: string, seq: number): void;
-  setWsStatus(status: WsStatus): void;
-  clearHistory(): void;
+  receiveEnvStep: (msg: TelemetryEnvelope) => void;
+  clearHistory: () => void;
+  setWsStatus: (status: WsStatus) => void;
 }
 
 export const useTelemetryStore = create<TelemetryState>((set, get) => ({
-  wsStatus: "connecting",
+  envStep: null,
+  history: [],
+  wsStatus: "disconnected",
   runId: null,
   lastSeq: null,
   seqGap: false,
-  envStep: null,
-  history: [],
-  historyMaxLen: 168,
 
-  receiveEnvStep(payload, runId, seq) {
+  receiveEnvStep(msg: TelemetryEnvelope) {
+    const payload = msg.payload as EnvStepPayload;
+    const incomingRunId = msg.run_id;
+    const incomingSeq = msg.seq;
     const state = get();
 
-    // run_id change → reset before appending (§6.1 store-internal)
-    const resetNeeded = state.runId !== null && state.runId !== runId;
+    // §12.3: run_id change → store-internal reset (clears prior-run history).
+    // The first message after a new run must NOT false-flag a seq gap.
+    const isNewRun = state.runId !== null && incomingRunId !== state.runId;
 
-    const prevSeq = resetNeeded ? null : state.lastSeq;
-    const seqGap = prevSeq !== null && seq > prevSeq + 1;
+    if (isNewRun) {
+      // Reset all history for the new run
+      set({
+        envStep: payload,
+        history: [payload],
+        runId: incomingRunId,
+        lastSeq: incomingSeq,
+        seqGap: false,
+      });
+      return;
+    }
 
-    const newHistory = resetNeeded
-      ? [payload]
-      : [...state.history.slice(-(state.historyMaxLen - 1)), payload];
+    // Seq gap detection: only flag a gap for forward jumps (seq > lastSeq + 1).
+    // Out-of-order / duplicate messages (seq ≤ lastSeq) are silently accepted.
+    // First message (lastSeq === null) is never a gap — any seq is valid.
+    const isGap = state.lastSeq !== null && incomingSeq > state.lastSeq + 1;
+
+    // Ring buffer: append, then drop oldest if over capacity
+    const newHistory = [...state.history, payload];
+    if (newHistory.length > HISTORY_MAX_LEN) {
+      newHistory.splice(0, newHistory.length - HISTORY_MAX_LEN);
+    }
 
     set({
-      runId,
-      lastSeq: seq,
-      seqGap,
       envStep: payload,
       history: newHistory,
+      runId: incomingRunId,
+      lastSeq: incomingSeq,
+      seqGap: isGap,
     });
   },
 
-  setWsStatus(status) {
-    set({ wsStatus: status });
+  clearHistory() {
+    set({
+      envStep: null,
+      history: [],
+      runId: null,
+      lastSeq: null,
+      seqGap: false,
+    });
   },
 
-  clearHistory() {
-    set({ history: [], envStep: null, lastSeq: null, seqGap: false });
+  setWsStatus(status: WsStatus) {
+    set({ wsStatus: status });
   },
 }));

@@ -130,8 +130,9 @@ function resetStore(): void {
 // Shared fixtures
 // ---------------------------------------------------------------------------
 
+// LOCKED v1.0.0: AssetRegistryEntry has no `id` field — map key IS the id.
+// Fixture update approved by frontend-reviewer (sanctioned conform-to-LOCK change).
 const ENTRY_TURBINE: AssetRegistryEntry = {
-  id: "vestas-v150-4.2",
   path: "turbines/vestas-v150-4.2.glb",
   type: "turbine",
   dims_m: { x: 150, y: 166, z: 150 },
@@ -140,7 +141,6 @@ const ENTRY_TURBINE: AssetRegistryEntry = {
 };
 
 const ENTRY_PV: AssetRegistryEntry = {
-  id: "trina-vertex-n-670w",
   path: "pv/trina-vertex-n-670w.glb",
   type: "pv_array",
   dims_m: { x: 40, y: 3, z: 20 },
@@ -149,7 +149,6 @@ const ENTRY_PV: AssetRegistryEntry = {
 };
 
 const ENTRY_BATTERY: AssetRegistryEntry = {
-  id: "catl-lmp-300mwh",
   path: "batteries/catl-lmp-300mwh.glb",
   type: "battery",
   dims_m: { x: 20, y: 5, z: 60 },
@@ -180,7 +179,6 @@ const SAMPLE_BATTERY_STATE = {
 };
 
 const ENTRY_PCC: AssetRegistryEntry = {
-  id: "pcc-substation-945mw",
   path: "grid/pcc-substation-945mw.glb",
   type: "grid_pcc",
   dims_m: { x: 50, y: 15, z: 30 },
@@ -188,9 +186,15 @@ const ENTRY_PCC: AssetRegistryEntry = {
   animation_hooks: {},
 };
 
+// LOCKED v1.0.0: keyed-object format — assets["<id>"] = entry (no id inside entry).
 const VALID_REGISTRY: AssetRegistry = {
   schema_version: "1.0.0",
-  entries: [ENTRY_TURBINE, ENTRY_PV, ENTRY_BATTERY, ENTRY_PCC],
+  assets: {
+    "vestas-v150-4.2": ENTRY_TURBINE,
+    "trina-vertex-n-670w": ENTRY_PV,
+    "catl-lmp-300mwh": ENTRY_BATTERY,
+    "pcc-substation-945mw": ENTRY_PCC,
+  },
 };
 
 /** Minimal Gansu-style scene config (3 turbine instances) */
@@ -241,7 +245,7 @@ describe("resolveAsset", () => {
   });
 
   it("returns null for empty registry", () => {
-    const emptyRegistry: AssetRegistry = { schema_version: "1.0.0", entries: [] };
+    const emptyRegistry: AssetRegistry = { schema_version: "1.0.0", assets: {} };
     expect(resolveAsset(emptyRegistry, "vestas-v150-4.2")).toBeNull();
   });
 
