@@ -13,7 +13,7 @@
 ## 1. Scope
 
 This contract specifies:
-1. `energy_go.env.jax_env` — `EnvState`, `EnvParams`, `EnvInfo`, `step()`, `reset()`
+1. `energy_go.env.jax_env` — `EnvState`, `EnvParams`, `EnvInfo`, `step()`, `reset()`, `get_obs()`, `PRICE_TABLE_YPW`, `MONTH_OF_STEP`
 2. `energy_go.generators.synthetic` — `generate_year()`
 
 The JAX core is a **fresh implementation from §3/§4 spec + decisions**, not a line-by-line port of the NumPy reference (D11 parity strategy: two independent implementations of the same spec so the parity test is a real cross-check).
@@ -506,6 +506,12 @@ obs[base+3] = jnp.clip(data[t_fc,4_price_column]*(1+ε[3]), 0.0)         # price
 
 > VecNormalize (running mean/std, clip ±10) is applied by the training loop, not inside `step`. The obs returned by `step` are raw/lightly-normalized.
 
+### 5.5 `get_obs(state: EnvState, params: EnvParams, data: SyntheticYear) -> jax.Array`
+
+Computes the 107-dim observation for `state` **without stepping** (pure read of `data[state.t]`). Called internally by `step()` (obs of the INPUT state) and `reset()`. Also exported so parity tests and serving can compute obs for any state independently of the action.
+
+Returns a float32 array of shape `(107,)` per §5.4 above. Jittable and vmappable.
+
 ---
 
 ## 6. Deliberate deviations from §6
@@ -534,6 +540,42 @@ These match the reference implementation (D11 parity). Both impls apply the same
 - VecNormalize / running-stat normalization — training layer
 - Ramp-rate limits, reactive power, voltage, calendar aging — §3.6 fidelity boundary
 - ONNX export — serving layer
+
+---
+
+## 9. JAX–NumPy parity bridge (D11)
+
+`TestJaxReferenceParity` in `tests/env/test_env_parity_gansu.py` aligns both implementations on identical per-step physical inputs by constructing the JAX `data` array from the reference `year_data` dict:
+
+```python
+data_jax = jnp.array(np.stack([
+    ref_year_data["wind_mps"],
+    ref_year_data["irradiance_wm2"],
+    ref_year_data["temperature_c"],
+    ref_year_data["load_mw"],
+], axis=1).astype(np.float32))   # shape (8760, 4)
+```
+
+**RNG neutralization:** The NumPy reference uses `numpy.random` and the JAX env uses `jax.random`; these are incompatible PRNGs so even the same seed produces different draws. Parity tests neutralize this by using `price_spread_sigma=0` **and** `forecast_sigma_max=0` in both param structs:
+- `GansuParams(price_spread_sigma=0.0)` / `EnvParams(price_spread_sigma=0.0)` — sell price is deterministic: `max(0, price_buy − 30)`
+- `GansuParams(forecast_sigma_max=0.0)` / `EnvParams(forecast_sigma_max=0.0)` — forecast noise = 0, so forecast obs = true values (normalized)
+
+Stochastic behavior (spread noise, forecast noise) is tested independently in `tests/env/test_env_jax_env_core.py`.
+
+**EnvInfo field mapping** (JAX → reference `StepResult`):
+
+| `EnvInfo` field | Reference `StepResult` field |
+|---|---|
+| `p_pv_mw` | `p_solar_mw` |
+| `p_bat_ch_mw` | `p_bat_charge_mw` |
+| `p_bat_dis_mw` | `p_bat_discharge_mw` |
+| `p_load_served_mw` | `wind_to_load_mw + solar_to_load_mw + bat_to_load_mw + grid_to_load_mw` |
+| `p_load_unserved_mw` | `load_unserved_mw` |
+| `p_curtailed_mw` | `wind_curtailed_mw + solar_curtailed_mw` |
+| `new_state.month_peak` | `new_state.month_peak_mw` |
+| `reward` (from `step()` return) | `reward` |
+
+**Parity tolerance:** `rel=1e-4` (float32 JAX vs float64 NumPy). Cumulative 8760-step test uses `rel=1e-3`.
 
 ---
 

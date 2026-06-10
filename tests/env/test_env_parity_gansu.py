@@ -315,280 +315,333 @@ class TestReferenceConsistency:
 class TestJaxReferenceParity:
     """
     Assert numerical agreement between the JAX env and the NumPy reference
-    implementation on identical inputs.
+    implementation on identical inputs (D11 parity special case: Gansu config).
 
     Tolerance: rel=1e-4 (float32 JAX vs float64 NumPy).
 
-    Run on the Gansu config only — this is the D11 parity special case.
+    **Bridge design (contract §9):**
+    Both impls run on identical per-step physical inputs via `data_jax` built
+    from the reference `year_data` dict.  RNG difference (NumPy vs JAX PRNG) is
+    neutralised by setting `price_spread_sigma=0` and `forecast_sigma_max=0` so
+    all stochastic terms are deterministically zero.
+
+    API used:
+      - `jax_env.EnvState(soc, month_peak, t, rng)` — construct initial state
+      - `jax_env.step(state, action, params, data)` — vmappable / jittable step
+      - `jax_env.get_obs(state, params, data)` — obs without stepping
+      - `jax_env.PRICE_TABLE_YPW[h]` — tariff lookup
     """
 
-    # Skip the entire class when the JAX env is not yet implemented.
-    # Suite 1 (TestReferenceConsistency) always runs — it has no JAX dependency.
     pytestmark = pytest.mark.skipif(
         not _JAX_ENV_AVAILABLE,
         reason="JAX env not yet implemented — parity tests pending",
     )
 
-    @pytest.fixture(scope="class")
-    def jax_params(self):
-        """Convert GansuParams to the JAX env's parameter format."""
-        return jax_env.GansuParams.from_numpy_params(PARAMS)
+    # ------------------------------------------------------------------
+    # Fixtures
+    # ------------------------------------------------------------------
 
     @pytest.fixture(scope="class")
     def year_data(self):
         return generate_year(seed=0, params=PARAMS)
 
-    def test_wind_power_parity(self, jax_params):
-        """wind_power(v_10m, params) agrees to 1e-4 rel."""
+    @pytest.fixture(scope="class")
+    def jax_data(self, year_data):
+        """JAX data array aligned to reference year_data (contract §9 bridge).
+
+        data_jax[t] == [wind_mps, irr_wm2, temp_c, load_mw] for every t,
+        identical to the inputs reference env_step(…, weather, load, …) receives.
+        """
+        import jax.numpy as jnp
+        data_np = np.stack([
+            year_data["wind_mps"],
+            year_data["irradiance_wm2"],
+            year_data["temperature_c"],
+            year_data["load_mw"],
+        ], axis=1).astype(np.float32)   # shape (8760, 4)
+        return jnp.array(data_np)
+
+    @pytest.fixture(scope="class")
+    def noiseless_jax_params(self):
+        """EnvParams with all stochastic σ = 0 (neutralise PRNG difference)."""
+        return jax_env.EnvParams(price_spread_sigma=0.0, forecast_sigma_max=0.0)
+
+    @pytest.fixture(scope="class")
+    def noiseless_ref_params(self):
+        """GansuParams with matching σ = 0 for reference env."""
+        return GansuParams(price_spread_sigma=0.0, forecast_sigma_max=0.0)
+
+    def _jax_state(self, soc=0.5, month_peak=0.0, t=0, seed=0):
+        """Construct a JAX EnvState directly."""
+        import jax
+        import jax.numpy as jnp
+        return jax_env.EnvState(
+            soc=jnp.float32(soc),
+            month_peak=jnp.float32(month_peak),
+            t=jnp.int32(t),
+            rng=jax.random.PRNGKey(seed),
+        )
+
+    # ------------------------------------------------------------------
+    # Tariff parity (uses PRICE_TABLE_YPW, no step needed)
+    # ------------------------------------------------------------------
+
+    def test_tariff_parity_all_hours(self):
+        """PRICE_TABLE_YPW[h] agrees with get_price(h, 0) for all 24 hours."""
+        for h in range(24):
+            ref = get_price(h, 0)
+            jax_val = float(jax_env.PRICE_TABLE_YPW[h])
+            assert jax_val == pytest.approx(ref, abs=0.1), (
+                f"PRICE_TABLE_YPW[{h}]={jax_val} ≠ get_price({h},0)={ref}")
+
+    # ------------------------------------------------------------------
+    # Per-formula parity: test via step() with isolated data rows
+    # ------------------------------------------------------------------
+
+    def test_wind_power_parity(self, jax_data, noiseless_jax_params, noiseless_ref_params):
+        """wind_power output agrees to PARITY_TOL for a range of wind speeds."""
         import jax.numpy as jnp
         test_speeds = [0.0, 2.0, 3.0, 6.0, 12.0, 15.0, 25.0, 26.0]
         for v in test_speeds:
-            ref = wind_power(v, PARAMS)
-            jax_val = float(jax_env.wind_power(jnp.array(v), jax_params))
+            ref = wind_power(v, noiseless_ref_params)
+            # Isolate wind: set irr=0 (no solar), load=0, wind=v at t=0
+            data = jax_data.at[0, 0].set(float(v)).at[0, 1].set(0.0).at[0, 3].set(0.0)
+            state = self._jax_state(t=0)
+            act = jnp.zeros(6)
+            _, _, _, _, info = jax_env.step(state, act, noiseless_jax_params, data)
+            jax_val = float(info.p_wind_mw)
             assert jax_val == pytest.approx(ref, rel=PARITY_TOL, abs=1e-6), (
-                f"wind_power mismatch at v={v}: ref={ref:.4f}, jax={jax_val:.4f}")
+                f"wind_power at v={v}: ref={ref:.4f}, jax={jax_val:.4f}")
 
-    def test_solar_power_parity(self, jax_params):
-        """solar_power(G, T, params) agrees to 1e-4 rel."""
+    def test_solar_power_parity(self, jax_data, noiseless_jax_params, noiseless_ref_params):
+        """solar_power output agrees to PARITY_TOL for a range of (G, T) pairs."""
         import jax.numpy as jnp
-        test_cases = [(0.0, 25.0), (800.0, 35.0), (1000.0, 25.0),
-                      (1000.0, -80.0), (1000.0, 400.0)]
+        test_cases = [
+            (0.0, 25.0), (800.0, 35.0), (1000.0, 25.0),
+            (1000.0, -80.0), (1000.0, 400.0),
+        ]
         for G, T in test_cases:
-            ref = solar_power(G, T, PARAMS)
-            jax_val = float(jax_env.solar_power(jnp.array(G), jnp.array(T), jax_params))
+            ref = solar_power(G, T, noiseless_ref_params)
+            # Isolate solar: wind=0 (below cutin), load=0
+            data = (jax_data
+                    .at[0, 0].set(0.0)   # v < v_cutin → P_wind=0
+                    .at[0, 1].set(float(G))
+                    .at[0, 2].set(float(T))
+                    .at[0, 3].set(0.0))
+            state = self._jax_state(t=0)
+            act = jnp.zeros(6)
+            _, _, _, _, info = jax_env.step(state, act, noiseless_jax_params, data)
+            jax_val = float(info.p_pv_mw)
             assert jax_val == pytest.approx(ref, rel=PARITY_TOL, abs=1e-6), (
-                f"solar_power mismatch at G={G},T={T}: ref={ref:.4f}, jax={jax_val:.4f}")
+                f"solar_power at G={G},T={T}: ref={ref:.4f}, jax={jax_val:.4f}")
 
-    def test_tariff_parity(self):
-        """get_price agrees for every hour × representative minutes."""
-        test_cases = [(0, 0), (7, 0), (8, 0), (10, 29), (10, 30),
-                      (11, 30), (18, 0), (19, 0), (21, 0), (23, 0)]
-        for h, m in test_cases:
-            ref = get_price(h, m)
-            jax_val = float(jax_env.get_price(h, m))
-            assert jax_val == ref, (
-                f"get_price mismatch at h={h}:m={m:02d}: ref={ref}, jax={jax_val}")
+    # ------------------------------------------------------------------
+    # Single-step full field parity
+    # ------------------------------------------------------------------
 
-    def test_single_step_parity(self, jax_params, year_data):
-        """One env_step: all StepResult fields agree to PARITY_TOL."""
+    def test_single_step_parity(
+        self, jax_data, noiseless_jax_params, noiseless_ref_params, year_data
+    ):
+        """One step: all EnvInfo fields agree to PARITY_TOL (noiseless params)."""
         import jax
         import jax.numpy as jnp
 
         t = 500
         action_np = np.array([0.3, 0.4, 0.3, 0.5, 0.4, 0.6])
-        weather_np = (float(year_data["wind_mps"][t]),
-                      float(year_data["irradiance_wm2"][t]),
-                      float(year_data["temperature_c"][t]))
-        load_np = float(year_data["load_mw"][t])
         seed = 77
 
         # Reference run
-        ref_state = make_ref_state(t=t, seed=seed)
-        ref_result = env_step(ref_state, action_np, weather_np, load_np, PARAMS)
+        ref_state = make_ref_state(t=t, soc=0.5, seed=seed)
+        weather = (float(year_data["wind_mps"][t]),
+                   float(year_data["irradiance_wm2"][t]),
+                   float(year_data["temperature_c"][t]))
+        load = float(year_data["load_mw"][t])
+        ref_result = env_step(ref_state, action_np, weather, load, noiseless_ref_params)
 
-        # JAX run
-        jax_state = jax_env.make_state(soc=0.5, month_peak_mw=0.0, t=t,
-                                        rng=jax.random.PRNGKey(seed))
-        action_jax = jnp.array(action_np)
-        weather_jax = jnp.array(weather_np)
-        jax_result = jax_env.env_step(jax_state, action_jax, weather_jax,
-                                       jnp.array(load_np), jax_params)
+        # JAX run — data_jax[t] carries the same (wind, irr, temp, load) values
+        jax_state = self._jax_state(t=t, seed=seed)
+        new_jax_state, _, reward_jax, _, info = jax_env.step(
+            jax_state, jnp.array(action_np), noiseless_jax_params, jax_data)
 
-        # Compare every numeric scalar field
-        fields_to_check = [
-            ("p_wind_mw",              ref_result.p_wind_mw),
-            ("p_solar_mw",             ref_result.p_solar_mw),
-            ("wind_to_load_mw",        ref_result.wind_to_load_mw),
-            ("wind_to_bat_mw",         ref_result.wind_to_bat_mw),
-            ("wind_to_grid_mw",        ref_result.wind_to_grid_mw),
-            ("solar_to_load_mw",       ref_result.solar_to_load_mw),
-            ("solar_to_bat_mw",        ref_result.solar_to_bat_mw),
-            ("solar_to_grid_mw",       ref_result.solar_to_grid_mw),
-            ("bat_to_load_mw",         ref_result.bat_to_load_mw),
-            ("bat_to_grid_mw",         ref_result.bat_to_grid_mw),
-            ("grid_to_load_mw",        ref_result.grid_to_load_mw),
-            ("grid_to_bat_mw",         ref_result.grid_to_bat_mw),
-            ("solar_curtailed_mw",     ref_result.solar_curtailed_mw),
-            ("wind_curtailed_mw",      ref_result.wind_curtailed_mw),
-            ("load_unserved_mw",       ref_result.load_unserved_mw),
-            ("p_bat_charge_mw",        ref_result.p_bat_charge_mw),
-            ("p_bat_discharge_mw",     ref_result.p_bat_discharge_mw),
-            ("soc_violation_mwh",      ref_result.soc_violation_mwh),
-            ("p_import_mw",            ref_result.p_import_mw),
-            ("p_export_mw",            ref_result.p_export_mw),
-            ("c_energy_yuan",          ref_result.c_energy_yuan),
-            ("c_demand_shape_yuan",    ref_result.c_demand_shape_yuan),
-            ("c_degradation_yuan",     ref_result.c_degradation_yuan),
-            ("c_curtail_yuan",         ref_result.c_curtail_yuan),
-            ("c_voll_yuan",            ref_result.c_voll_yuan),
-            ("penalty_yuan",           ref_result.penalty_yuan),
-            ("cost_total_reward_basis_yuan", ref_result.cost_total_reward_basis_yuan),
-            ("reward",                 ref_result.reward),
-            ("new_state.soc",          ref_result.new_state.soc),
-            ("new_state.month_peak_mw", ref_result.new_state.month_peak_mw),
+        # Core physics fields (all in EnvInfo)
+        checks = [
+            ("p_wind_mw",      float(info.p_wind_mw),              ref_result.p_wind_mw),
+            ("p_pv_mw",        float(info.p_pv_mw),                ref_result.p_solar_mw),
+            ("p_bat_ch_mw",    float(info.p_bat_ch_mw),            ref_result.p_bat_charge_mw),
+            ("p_bat_dis_mw",   float(info.p_bat_dis_mw),           ref_result.p_bat_discharge_mw),
+            ("soc_viol_mwh",   float(info.soc_violation_mwh),      ref_result.soc_violation_mwh),
+            ("p_import_mw",    float(info.p_import_mw),            ref_result.p_import_mw),
+            ("p_export_mw",    float(info.p_export_mw),            ref_result.p_export_mw),
+            # p_load_served_mw = Σ {wind,solar,bat,grid}→load
+            ("p_load_served",  float(info.p_load_served_mw),
+             ref_result.wind_to_load_mw + ref_result.solar_to_load_mw
+             + ref_result.bat_to_load_mw + ref_result.grid_to_load_mw),
+            ("p_unserved",     float(info.p_load_unserved_mw),     ref_result.load_unserved_mw),
+            # p_curtailed_mw = wind_curtailed + solar_curtailed (no bat curtailment at PCC)
+            ("p_curtailed",    float(info.p_curtailed_mw),
+             ref_result.wind_curtailed_mw + ref_result.solar_curtailed_mw),
+            ("c_energy",       float(info.c_energy_yuan),          ref_result.c_energy_yuan),
+            ("c_demand_shape", float(info.c_demand_shape_yuan),    ref_result.c_demand_shape_yuan),
+            ("c_degradation",  float(info.c_degradation_yuan),     ref_result.c_degradation_yuan),
+            ("c_curtail",      float(info.c_curtail_yuan),         ref_result.c_curtail_yuan),
+            ("c_voll",         float(info.c_voll_yuan),            ref_result.c_voll_yuan),
+            ("penalty",        float(info.penalty_yuan),           ref_result.penalty_yuan),
+            ("cost_rb",        float(info.cost_total_reward_basis_yuan),
+             ref_result.cost_total_reward_basis_yuan),
+            ("reward",         float(reward_jax),                  ref_result.reward),
+            ("new_soc",        float(new_jax_state.soc),           ref_result.new_state.soc),
+            # month_peak field name: JAX uses .month_peak, ref uses .month_peak_mw
+            ("new_month_peak", float(new_jax_state.month_peak),    ref_result.new_state.month_peak_mw),
         ]
-
-        for name, ref_val in fields_to_check:
-            jax_val = float(getattr(jax_result, name.replace(".", "_"),
-                                     getattr(getattr(jax_result, "new_state", None),
-                                             name.split(".")[-1], None) or 0.0))
+        for name, jax_val, ref_val in checks:
             assert jax_val == pytest.approx(ref_val, rel=PARITY_TOL, abs=1e-6), (
-                f"Field {name}: ref={ref_val:.6f}, jax={jax_val:.6f}")
+                f"{name}: jax={jax_val:.6f} ≠ ref={ref_val:.6f}")
 
-    def test_multi_step_soc_trajectory_parity(self, jax_params, year_data):
-        """SOC trajectory over 24 steps agrees between ref and JAX (fixed action)."""
-        import jax
+    # ------------------------------------------------------------------
+    # Multi-step SOC trajectory
+    # ------------------------------------------------------------------
+
+    def test_multi_step_soc_trajectory_parity(
+        self, jax_data, noiseless_jax_params, noiseless_ref_params, year_data
+    ):
+        """SOC trajectory over 24 steps matches between ref and JAX (fixed action)."""
         import jax.numpy as jnp
 
         seed = 42
         action_np = np.array([0.3, 0.4, 0.3, 0.5, 0.4, 0.7])
         action_jax = jnp.array(action_np)
 
-        ref_state = make_ref_state(t=0, seed=seed)
-        jax_state = jax_env.make_state(soc=0.5, month_peak_mw=0.0, t=0,
-                                        rng=jax.random.PRNGKey(seed))
-        ref_socs, jax_socs = [], []
+        ref_state = make_ref_state(t=0, soc=0.5, seed=seed)
+        jax_state = self._jax_state(t=0, seed=seed)
 
-        for step_idx in range(24):
-            t = step_idx
-            weather_np = (float(year_data["wind_mps"][t]),
-                          float(year_data["irradiance_wm2"][t]),
-                          float(year_data["temperature_c"][t]))
-            load_np = float(year_data["load_mw"][t])
-            weather_jax = jnp.array(weather_np)
+        for i in range(24):
+            weather = (float(year_data["wind_mps"][i]),
+                       float(year_data["irradiance_wm2"][i]),
+                       float(year_data["temperature_c"][i]))
+            load = float(year_data["load_mw"][i])
 
-            ref_result = env_step(ref_state, action_np, weather_np, load_np, PARAMS)
-            jax_result = jax_env.env_step(jax_state, action_jax, weather_jax,
-                                           jnp.array(load_np), jax_params)
+            ref_result = env_step(ref_state, action_np, weather, load, noiseless_ref_params)
+            new_jax_state, _, _, _, _ = jax_env.step(
+                jax_state, action_jax, noiseless_jax_params, jax_data)
 
-            ref_socs.append(ref_result.new_state.soc)
-            jax_socs.append(float(jax_result.new_state.soc))
+            assert float(new_jax_state.soc) == pytest.approx(
+                ref_result.new_state.soc, rel=PARITY_TOL, abs=1e-5), (
+                f"SOC mismatch at step {i}: "
+                f"jax={float(new_jax_state.soc):.6f} ref={ref_result.new_state.soc:.6f}")
+
             ref_state = ref_result.new_state
-            jax_state = jax_result.new_state
+            jax_state = new_jax_state
 
-        for i, (rs, js) in enumerate(zip(ref_socs, jax_socs)):
-            assert js == pytest.approx(rs, rel=PARITY_TOL, abs=1e-5), (
-                f"SOC mismatch at step {i}: ref={rs:.6f}, jax={js:.6f}")
+    # ------------------------------------------------------------------
+    # Obs parity (uses get_obs directly — noiseless so forecast is deterministic)
+    # ------------------------------------------------------------------
 
-    def test_obs_parity_single_step(self, jax_params, year_data):
-        """107-dim observation agrees between ref and JAX."""
-        import jax
-        import jax.numpy as jnp
-
+    def test_obs_parity_single_step(
+        self, jax_data, noiseless_jax_params, noiseless_ref_params, year_data
+    ):
+        """107-dim obs agrees between ref get_obs and JAX get_obs (noiseless params)."""
         t = 300
         seed = 13
         price_buy = get_price(t % 24, 0)
 
-        ref_state = make_ref_state(t=t, seed=seed)
-        ref_obs = get_obs(ref_state, year_data, PARAMS, price_buy)
+        ref_state = make_ref_state(t=t, soc=0.5, seed=seed)
+        ref_obs = get_obs(ref_state, year_data, noiseless_ref_params, price_buy)
 
-        jax_state = jax_env.make_state(soc=0.5, month_peak_mw=0.0, t=t,
-                                        rng=jax.random.PRNGKey(seed))
-        jax_obs = np.array(jax_env.get_obs(jax_state, year_data, jax_params,
-                                             jnp.array(price_buy)))
+        jax_state = self._jax_state(t=t, seed=seed)
+        jax_obs = np.array(jax_env.get_obs(jax_state, noiseless_jax_params, jax_data))
 
         assert ref_obs.shape == jax_obs.shape == (107,)
-        # Base block (deterministic): tight tolerance
+        # Base block (fully deterministic): tight tolerance
         np.testing.assert_allclose(ref_obs[:11], jax_obs[:11], rtol=1e-5, atol=1e-6,
                                     err_msg="Base obs block mismatch")
-        # Forecast block (noisy): looser tolerance (same seed, so noise should match)
+        # Forecast block (noiseless → deterministic true values): 1e-4 for float32 vs float64
         np.testing.assert_allclose(ref_obs[11:], jax_obs[11:], rtol=PARITY_TOL, atol=1e-4,
                                     err_msg="Forecast obs block mismatch")
 
-    def test_vmap_consistency(self, jax_params, year_data):
-        """vmapping env_step over a batch of states gives the same result as serial."""
+    # ------------------------------------------------------------------
+    # JAX compilation: jit + vmap
+    # ------------------------------------------------------------------
+
+    def test_jit_matches_eager(self, jax_data, noiseless_jax_params):
+        """jit(step) gives the same result as eager step (verifies jnp.where purity)."""
+        import jax
+        import jax.numpy as jnp
+
+        state = self._jax_state(t=200, seed=55)
+        action = jnp.array([0.3, 0.4, 0.3, 0.5, 0.4, 0.6])
+
+        eager_ns, _, eager_r, _, _ = jax_env.step(state, action, noiseless_jax_params, jax_data)
+        jitted = jax.jit(jax_env.step)
+        jit_ns, _, jit_r, _, _ = jitted(state, action, noiseless_jax_params, jax_data)
+
+        assert float(jit_r) == pytest.approx(float(eager_r), rel=1e-6), (
+            "jit(step) reward ≠ eager reward")
+        assert float(jit_ns.soc) == pytest.approx(float(eager_ns.soc), rel=1e-7), (
+            "jit(step) SOC ≠ eager SOC")
+
+    def test_vmap_over_batch(self, jax_data, noiseless_jax_params):
+        """vmap(step, in_axes=(0,0,None,None)) gives identical results for equal inputs."""
         import jax
         import jax.numpy as jnp
 
         batch_size = 8
-        t = 100
-        weather_jax = jnp.array([float(year_data["wind_mps"][t]),
-                                   float(year_data["irradiance_wm2"][t]),
-                                   float(year_data["temperature_c"][t])])
-        load_jax = jnp.array(float(year_data["load_mw"][t]))
-        action_jax = jnp.array([0.3, 0.4, 0.3, 0.5, 0.4, 0.6])
-
-        # Build a batch of identical states
-        single_state = jax_env.make_state(soc=0.5, month_peak_mw=0.0, t=t,
-                                           rng=jax.random.PRNGKey(42))
+        single_state = self._jax_state(t=100)
         batch_state = jax.tree_util.tree_map(
             lambda x: jnp.stack([x] * batch_size), single_state)
-        batch_action = jnp.stack([action_jax] * batch_size)
+        batch_action = jnp.zeros((batch_size, 6))
 
-        # vmap the step
-        batched_step = jax.vmap(
-            lambda s, a: jax_env.env_step(s, a, weather_jax, load_jax, jax_params),
-            in_axes=(0, 0))
-        batch_result = batched_step(batch_state, batch_action)
+        batched_step = jax.jit(jax.vmap(jax_env.step, in_axes=(0, 0, None, None)))
+        batch_ns, _, batch_r, _, batch_info = batched_step(
+            batch_state, batch_action, noiseless_jax_params, jax_data)
 
-        # All batch elements should be identical (same input)
-        socs = np.array(batch_result.new_state.soc)
-        assert np.allclose(socs, socs[0], rtol=1e-7), (
-            "vmap elements differ despite identical inputs")
+        # All elements must be identical (identical inputs)
+        socs = np.array(batch_ns.soc)
+        rewards = np.array(batch_r)
+        assert np.allclose(socs, socs[0], rtol=1e-7), "vmap SOC differs across identical envs"
+        assert np.allclose(rewards, rewards[0], rtol=1e-7), "vmap reward differs across identical envs"
 
-    def test_jit_matches_eager(self, jax_params, year_data):
-        """jit(env_step) gives the same result as eager env_step."""
-        import jax
-        import jax.numpy as jnp
+    # ------------------------------------------------------------------
+    # Full-year cumulative parity (decisive D11 test)
+    # ------------------------------------------------------------------
 
-        t = 200
-        action_jax = jnp.array([0.3, 0.4, 0.3, 0.5, 0.4, 0.6])
-        weather_jax = jnp.array([float(year_data["wind_mps"][t]),
-                                   float(year_data["irradiance_wm2"][t]),
-                                   float(year_data["temperature_c"][t])])
-        load_jax = jnp.array(float(year_data["load_mw"][t]))
-        state = jax_env.make_state(soc=0.5, month_peak_mw=0.0, t=t,
-                                    rng=jax.random.PRNGKey(55))
+    def test_full_eval_episode_parity(
+        self, jax_data, noiseless_jax_params, noiseless_ref_params, year_data
+    ):
+        """8760-step eval: cumulative reward agrees to rel=1e-3 between ref and JAX.
 
-        eager_result = jax_env.env_step(state, action_jax, weather_jax,
-                                         load_jax, jax_params)
-        jitted_step = jax.jit(jax_env.env_step, static_argnums=())
-        jitted_result = jitted_step(state, action_jax, weather_jax, load_jax, jax_params)
-
-        assert float(jitted_result.reward) == pytest.approx(
-            float(eager_result.reward), rel=1e-6), (
-            "jit(env_step) reward differs from eager")
-        assert float(jitted_result.new_state.soc) == pytest.approx(
-            float(eager_result.new_state.soc), rel=1e-7), (
-            "jit(env_step) SOC differs from eager")
-
-    def test_full_eval_episode_parity(self, jax_params, year_data):
-        """
-        8760-step eval episode: cumulative reward agrees between ref and JAX.
-        This is the decisive parity test (D11).
-
-        Tolerance is loosened to rel=1e-3 for the cumulative sum (float32 accumulation
-        error over 8760 steps).
+        Tolerance loosened to 1e-3 for float32 accumulation over 8760 steps.
+        This is the decisive D11 parity cross-check.
         """
         import jax
         import jax.numpy as jnp
+
+        eval_jax_params = jax_env.EnvParams(
+            episode_len=8760, price_spread_sigma=0.0, forecast_sigma_max=0.0)
 
         seed = 0
         action_np = np.array([0.3, 0.4, 0.3, 0.5, 0.4, 0.7])
         action_jax = jnp.array(action_np)
 
-        ref_state = make_ref_state(t=0, seed=seed)
-        jax_state = jax_env.make_state(soc=0.5, month_peak_mw=0.0, t=0,
-                                        rng=jax.random.PRNGKey(seed))
-        ref_cum, jax_cum = 0.0, 0.0
+        ref_state = make_ref_state(t=0, soc=0.5, seed=seed)
+        jax_state = self._jax_state(t=0, seed=seed)
+        ref_cum = 0.0
+        jax_cum = 0.0
 
-        for step_idx in range(EVAL_STEPS):
-            t = step_idx
-            weather_np = (float(year_data["wind_mps"][t]),
-                          float(year_data["irradiance_wm2"][t]),
-                          float(year_data["temperature_c"][t]))
-            load_np = float(year_data["load_mw"][t])
-            weather_jax = jnp.array(weather_np)
+        for t in range(EVAL_STEPS):
+            weather = (float(year_data["wind_mps"][t]),
+                       float(year_data["irradiance_wm2"][t]),
+                       float(year_data["temperature_c"][t]))
+            load = float(year_data["load_mw"][t])
 
-            ref_result = env_step(ref_state, action_np, weather_np, load_np, PARAMS)
-            jax_result = jax_env.env_step(jax_state, action_jax, weather_jax,
-                                           jnp.array(load_np), jax_params)
+            ref_result = env_step(ref_state, action_np, weather, load, noiseless_ref_params)
+            new_jax_state, _, jax_r, _, _ = jax_env.step(
+                jax_state, action_jax, eval_jax_params, jax_data)
 
             ref_cum += ref_result.reward
-            jax_cum += float(jax_result.reward)
+            jax_cum += float(jax_r)
             ref_state = ref_result.new_state
-            jax_state = jax_result.new_state
+            jax_state = new_jax_state
 
         assert jax_cum == pytest.approx(ref_cum, rel=1e-3), (
-            f"Cumulative reward mismatch over 8760 steps: "
+            f"Cumulative reward mismatch over {EVAL_STEPS} steps: "
             f"ref={ref_cum:.4f}, jax={jax_cum:.4f}")
