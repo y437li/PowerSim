@@ -74,7 +74,7 @@ returns `{ ok: false, errors, warnings }`. Steps that produce only warnings accu
 | 4.1 | `msg` is a non-null object | `ok: false`, error `"not_object"` |
 | 4.2 | `schema_version` present and matches semver pattern `^[0-9]+\.[0-9]+\.[0-9]+$` | `ok: false`, error `"bad_schema_version"` |
 | 4.3 | Parse major from `schema_version`; if `major > 1` → reject | `ok: false`, error `"version_rejected:<schema_version>"` |
-| 4.4 | If `major === 1` and `minor > 0` → add warning `"version_forward_compat:<schema_version>"`, continue | warning only, pipeline continues |
+| 4.4 | If `major === 1` and `minor > 0` → add warning `"version_forward_compat:<schema_version>"`, continue. **Patch-only change (`minor === 0`, `patch > 0`) emits no warning.** | warning only, pipeline continues |
 | 4.5 | Required envelope fields present: `kind`, `ts_utc`, `run_id`, `seq`, `payload` | `ok: false`, error `"missing_field:<fieldname>"` per absent field |
 | 4.6 | `kind` is one of `"env_step"`, `"train_metrics"`, `"eval_compare"` | `ok: false`, error `"unknown_kind:<kind>"` |
 | 4.7 | `payload` is a non-null object | `ok: false`, error `"bad_payload"` |
@@ -83,6 +83,7 @@ returns `{ ok: false, errors, warnings }`. Steps that produce only warnings accu
 | 4.10 | Finiteness: `checkFiniteness(payload)` — all number-typed fields must be finite | `ok: false`, errors `"non_finite:<path>"` per non-finite field |
 | 4.11 | **env_step only:** D13 identities: `checkD13Identities(payload.costs)` | `ok: false`, errors from `checkD13Identities` |
 | 4.12 | **env_step only:** Per-source conservation: `checkConservation(payload.generation, payload.flows)` | `ok: false`, errors from `checkConservation` |
+| 4.13 | **eval_compare only:** Per-policy additive identity: for each key in `payload.policies`, verify `total_cost_yuan = energy_cost_yuan + demand_charge_yuan + degradation_yuan + curtailment_yuan + voll_yuan` (tol ≤ 1.0 ¥) | `ok: false`, error `"eval_total:<policy_key>:<delta>"` per violating policy |
 
 Unknown fields in the envelope or payload are **silently ignored** (forward-compat rule — §3.7 / Versioning section of the locked schema).
 
@@ -109,6 +110,7 @@ All error strings are stable tokens for machine-checking in tests:
 | `d13_reward_formula:<delta>` | `reward = −(cost_total_reward_basis + penalty)×1e-5` violated |
 | `conservation_solar:<delta>` | Solar source conservation violated |
 | `conservation_wind:<delta>` | Wind source conservation violated |
+| `eval_total:<policy>:<delta>` | Per-policy cost total identity violated in eval_compare; `policy` is the key (e.g. `rl`, `no_battery`); `delta` = computed − stored |
 
 **Warning codes:**
 
@@ -143,6 +145,22 @@ reward:
   |computed − reward| ≤ 1e-6
 ```
 
+### eval_compare per-policy identity (§4.13)
+
+Monetary tolerance: **`|computed − stored| ≤ 1.0` ¥** (absolute).
+
+Applied to every key in `payload.policies` (current schema: `rl`, `no_battery`,
+`rule_based_tou`; forward-compat: unknown policy keys are also checked if they
+have all five addend fields):
+
+```
+per-policy identity:
+  computed = energy_cost_yuan + demand_charge_yuan + degradation_yuan
+             + curtailment_yuan + voll_yuan
+  |computed − total_cost_yuan| ≤ 1.0
+  error: eval_total:<policy_key>:<delta>
+```
+
 ---
 
 ## §7 Per-source conservation tolerances
@@ -163,8 +181,15 @@ wind conservation:
 
 `checkFiniteness` recursively traverses the payload object. Any JSON `number` value that
 is `NaN`, `Infinity`, or `-Infinity` at any depth is reported with its dotted path.
-Non-number values (strings, booleans, null, arrays, nested objects) are not checked for
-finiteness — only primitive numbers.
+
+Traversal rules:
+- **Plain object** — recurse into each value; key appended to path.
+- **Array** — recurse into each element; index appended as `[i]` (e.g. `assets_ext.gas[0].capacity_mwh`).
+- **Primitive `number`** — checked for finiteness; non-finite → path reported.
+- **Strings, booleans, `null`** — not number-typed, skipped.
+
+This ensures numeric fields inside future `assets_ext.gas[]` / `electrolyzer[]` arrays
+(§8 composable-asset extensions) are covered by the same check without a schema update.
 
 Note: standard JSON does not permit NaN/Infinity literals, but the JS runtime may produce
 them through arithmetic and `JSON.parse` does not guard against hand-constructed objects.
@@ -183,6 +208,7 @@ them through arithmetic and `JSON.parse` does not guard against hand-constructed
 - `payload.reward` is NaN → `non_finite:reward`
 - `payload.battery.soc` is Infinity → `non_finite:battery.soc`
 - `payload.generation.gross_solar_mw` off by 5 MW → `conservation_solar:…`
+- eval_compare `policies.rl.total_cost_yuan` off by 1000 → `eval_total:rl:…`, `ok: false`
 
 ---
 

@@ -131,6 +131,14 @@ describe("validate — §4.4 minor forward compat (1.x)", () => {
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.warnings.filter(w => w.startsWith("version_"))).toHaveLength(0);
   });
+
+  it("schema_version '1.0.5' (patch only, minor=0) → ok:true, no version warnings", async () => {
+    // §4.4 nit: patch-only bump emits NO forward-compat warning — only minor > 0 warns.
+    const { validate } = await import("../../src/validators/telemetryValidator");
+    const r = validate({ ...ENV_STEP_A, schema_version: "1.0.5" });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.warnings.filter(w => w.startsWith("version_"))).toHaveLength(0);
+  });
 });
 
 // ─── §4.5–4.8: Required envelope fields ──────────────────────────────────────
@@ -376,6 +384,15 @@ describe("checkFiniteness — exported helper", () => {
     const bad = { ...ENV_STEP_A.payload, load_mw: Infinity };
     const errors = checkFiniteness(bad);
     expect(errors.some(e => e === "load_mw")).toBe(true);
+  });
+
+  it("§8 — NaN inside array element is reported with indexed path", async () => {
+    // §8: arrays are traversed; numeric fields inside array elements are checked.
+    const { checkFiniteness } = await import("../../src/validators/telemetryValidator");
+    const payloadWithArray = { assets_ext: [{ capacity_mwh: NaN }, { capacity_mwh: 10 }] };
+    const errors = checkFiniteness(payloadWithArray);
+    expect(errors.some(e => e === "assets_ext[0].capacity_mwh")).toBe(true);
+    expect(errors.some(e => e === "assets_ext[1].capacity_mwh")).toBe(false);
   });
 });
 
