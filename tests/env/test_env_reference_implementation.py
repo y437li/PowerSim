@@ -10,12 +10,27 @@ Import: from reference.gansu_env import ...
 
 These will raise ImportError until the implementation exists — that is intentional for
 the contract-first gate stage.  Reviewer evaluates the *logic*, not whether the tests run.
+
+The invariant helpers from energy_go.testing.invariants are used in sections 18 and 19
+below.  They are *also* importable without the reference implementation, so that part of
+the test suite can run at gate stage.
 """
 
 import math
 
 import numpy as np
 import pytest
+
+# Invariant helpers are always importable (no reference implementation dependency).
+from energy_go.testing.invariants import (
+    assert_cost_identities,
+    assert_energy_conserved,
+    assert_episode_invariants,
+    assert_physical_bounds,
+    assert_soc_dynamics,
+    run_determinism_check,
+    run_episode,
+)
 
 from reference.gansu_env import (
     battery_step,
@@ -513,7 +528,9 @@ class TestExportLimit:
         state = make_state(t=0)
         weather = (0.0, 0.0, 0.0)   # zero generation
         result = env_step(state, action, weather, 0.0, PARAMS)
-        assert result.ren_curtailed_mw == pytest.approx(0.0, abs=1e-9)
+        # LOCKED schema uses split curtailment fields (not single ren_curtailed_mw)
+        assert result.solar_curtailed_mw == pytest.approx(0.0, abs=1e-9)
+        assert result.wind_curtailed_mw == pytest.approx(0.0, abs=1e-9)
         assert result.bat_curtailed_mw == pytest.approx(0.0, abs=1e-9)
 
     def test_proportional_curtailment_arithmetic(self):
@@ -590,13 +607,14 @@ class TestEnergyConservation:
             f"Solar over-allocated: {solar_sum:.6f} > {p_solar:.6f}")
 
         # Total generation = total consumption (load served + bat charged + exported + curtailed)
+        # Note: LOCKED schema uses split curtailment: solar_curtailed_mw + wind_curtailed_mw
         total_gen = p_wind + p_solar + result.p_bat_discharge_mw
         total_consumption = (
             result.wind_to_load_mw + result.solar_to_load_mw + result.bat_to_load_mw
             + result.grid_to_load_mw
             + result.wind_to_bat_mw + result.solar_to_bat_mw + result.grid_to_bat_mw
             + result.p_export_mw
-            + result.ren_curtailed_mw + result.bat_curtailed_mw
+            + result.solar_curtailed_mw + result.wind_curtailed_mw + result.bat_curtailed_mw
         )
         # Note: import adds to the "available" side
         # The full balance: generation + import = load + (bat charge change) + export + curtailed
@@ -947,3 +965,192 @@ class TestDeterminism:
         r1, r2 = run(), run()
         assert r1.reward == pytest.approx(r2.reward, rel=1e-9)
         assert r1.new_state.soc == pytest.approx(r2.new_state.soc, rel=1e-9)
+
+
+# ===========================================================================
+# 18. Invariant helpers — single-step spot checks (task #21)
+# These tests import from energy_go.testing.invariants; they do NOT depend on
+# the reference implementation and can run even before task #8 is done.
+# They demonstrate the helper API and constitute the "self-test" for task #21.
+# ===========================================================================
+
+class TestInvariantHelpersAPI:
+    """Smoke-test that the invariant helpers accept a well-formed result object."""
+
+    def _make_good_result(self):
+        """Return a hand-crafted StepResult that satisfies every invariant."""
+        # Step values chosen to satisfy all identities analytically:
+        # t=100, hour=4 → valley price=250 ¥/MWh
+        # P_wind=128.396, P_solar=0, P_import=50, P_export=78.396
+        # load=50, no battery, no curtailment, no SOC violation
+        # C_import = 250×50×1 = 12500
+        # R_export = 220×78.396×1 = 17247.12  (sell=250-30=220)
+        # C_energy = 12500-17247.12 = -4747.12
+        # C_DC_shape = 0 (p_import=50 ≤ month_peak=100)
+        # C_deg = 0 (no bat)
+        # C_curtail = 0; C_VOLL = 0; penalty = 0
+        # cost_rb = -4747.12; cost_real = -4747.12
+        # reward = -(-4747.12+0)×1e-5 = 0.047471
+        soc_new = 0.5
+        p_wind = 128.396
+        p_solar = 0.0
+        p_export = 78.396   # all wind excess goes to grid
+        p_import = 50.0
+        c_import = 250.0 * p_import * 1.0       # = 12500
+        r_export = 220.0 * p_export * 1.0       # = 17247.12
+        c_energy = c_import - r_export           # = -4747.12
+        c_deg = 10.0 * (0.0 + 0.0) * 1.0       # = 0
+        c_curtail = 800.0 * (0.0 + 0.0 + 0.0) * 1.0  # = 0
+        c_voll = 20000.0 * 0.0 * 1.0            # = 0
+        c_ds = 32000.0 * max(0.0, p_import - 100.0)  # = 0 (below peak)
+        c_dc = 0.0
+        penalty = 20000.0 * 0.0                 # = 0
+        cost_rb = c_energy + 2.0 * c_ds + c_deg + c_curtail + c_voll
+        cost_real = c_energy + c_dc + c_deg + c_curtail + c_voll
+        reward = -(cost_rb + penalty) * 1e-5
+
+        new_state = EnvState(soc=soc_new, month_peak_mw=100.0, t=101,
+                             rng=np.random.default_rng(42))
+        return StepResult(
+            p_wind_mw=p_wind, p_solar_mw=p_solar,
+            wind_to_load_mw=50.0, wind_to_bat_mw=0.0,
+            wind_to_grid_mw=78.396, wind_curtailed_mw=0.0,
+            solar_to_load_mw=0.0, solar_to_bat_mw=0.0,
+            solar_to_grid_mw=0.0, solar_curtailed_mw=0.0,
+            bat_to_load_mw=0.0, bat_to_grid_mw=0.0,
+            grid_to_load_mw=0.0, grid_to_bat_mw=0.0,
+            bat_curtailed_mw=0.0,
+            load_unserved_mw=0.0,
+            p_bat_charge_mw=0.0, p_bat_discharge_mw=0.0,
+            soc_violation_mwh=0.0,
+            p_import_mw=p_import, p_export_mw=p_export,
+            c_import_yuan=c_import, r_export_yuan=r_export,
+            c_energy_yuan=c_energy,
+            c_demand_shape_yuan=c_ds,
+            c_degradation_yuan=c_deg,
+            c_curtail_yuan=c_curtail,
+            c_voll_yuan=c_voll,
+            penalty_yuan=penalty,
+            c_demand_charge_yuan=c_dc,
+            cost_total_real_yuan=cost_real,
+            cost_total_reward_basis_yuan=cost_rb,
+            reward=reward,
+            new_state=new_state,
+        )
+
+    def test_assert_energy_conserved_passes_on_good_result(self):
+        # A hand-crafted result where all flows balance must pass without error.
+        result = self._make_good_result()
+        assert_energy_conserved(result, tol=1e-5)  # must not raise
+
+    def test_assert_cost_identities_passes_on_good_result(self):
+        result = self._make_good_result()
+        assert_cost_identities(result, PARAMS, tol=1e-9)  # must not raise
+
+    def test_assert_physical_bounds_passes_on_good_result(self):
+        result = self._make_good_result()
+        assert_physical_bounds(result, PARAMS)  # must not raise
+
+    def test_assert_soc_dynamics_passes_on_good_result(self):
+        # No violation: soc_new = soc_old (no battery action)
+        result = self._make_good_result()
+        assert_soc_dynamics(old_soc=0.5, result=result, params=PARAMS, tol=1e-5)
+
+    def test_assert_energy_conserved_fails_on_bad_conservation(self):
+        # Modify wind flow to break conservation → helper must raise AssertionError
+        result = self._make_good_result()
+        # Over-report wind_to_load by 1 MW: sum > p_wind_mw
+        bad = StepResult(
+            **{k: getattr(result, k) for k in result.__dataclass_fields__
+               if k != "wind_to_load_mw"},
+            wind_to_load_mw=result.wind_to_load_mw + 1.0,  # breaks conservation
+        )
+        with pytest.raises(AssertionError, match="Wind conservation"):
+            assert_energy_conserved(bad, tol=1e-5)
+
+    def test_assert_cost_identities_fails_on_wrong_reward(self):
+        # Corrupt the reward field → identity 4 must raise
+        result = self._make_good_result()
+        bad_reward = result.reward + 999.0
+        bad = StepResult(
+            **{k: getattr(result, k) for k in result.__dataclass_fields__
+               if k != "reward"},
+            reward=bad_reward,
+        )
+        with pytest.raises(AssertionError, match="Identity 4"):
+            assert_cost_identities(bad, PARAMS, tol=1e-9)
+
+    def test_assert_physical_bounds_fails_on_soc_out_of_range(self):
+        # SOC above soc_max → helper must raise
+        result = self._make_good_result()
+        bad_state = EnvState(soc=0.95, month_peak_mw=100.0, t=101,
+                             rng=np.random.default_rng(42))
+        bad = StepResult(
+            **{k: getattr(result, k) for k in result.__dataclass_fields__
+               if k != "new_state"},
+            new_state=bad_state,
+        )
+        with pytest.raises(AssertionError, match="soc_max"):
+            assert_physical_bounds(bad, PARAMS)
+
+
+# ===========================================================================
+# 19. Invariant helpers — episode-level integration (task #21)
+# Uses run_episode + assert_episode_invariants on a reference implementation run.
+# (Only runs if the reference implementation is importable; same guard as suite 1.)
+# ===========================================================================
+
+class TestInvariantHelpersEpisode:
+
+    def test_run_episode_returns_n_steps(self):
+        # run_episode must return exactly n_steps results
+        data = generate_year(seed=0, params=PARAMS)
+        state = make_state(t=0, seed=0)
+        action = np.zeros(6)
+        results = run_episode(
+            step_fn=lambda s, a, w, l, p: env_step(s, a, w, l, p),
+            initial_state=state,
+            action_or_actions=action,
+            data=data,
+            params=PARAMS,
+            n_steps=10,
+        )
+        assert len(results) == 10
+
+    def test_episode_invariants_hold_over_168_steps(self):
+        # Run a full week (168 steps) and verify all invariants pass every step.
+        # This is the comprehensive integration check — it calls assert_energy_conserved,
+        # assert_cost_identities, and assert_physical_bounds on each result.
+        data = generate_year(seed=0, params=PARAMS)
+        state = make_state(t=0, seed=0)
+        action = np.array([0.3, 0.4, 0.3, 0.5, 0.2, 0.8])  # mixed, non-trivial
+        results = run_episode(
+            step_fn=lambda s, a, w, l, p: env_step(s, a, w, l, p),
+            initial_state=state,
+            action_or_actions=action,
+            data=data,
+            params=PARAMS,
+            n_steps=168,
+        )
+        # Must not raise — all physics invariants must hold for all 168 steps
+        assert_episode_invariants(results, PARAMS, energy_tol=1e-5, cost_tol=1e-9)
+
+    def test_run_determinism_check_passes(self):
+        # run_determinism_check with n_runs=3 must pass for a pure function
+        data = generate_year(seed=0, params=PARAMS)
+        action = np.array([0.5, 0.4, 0.3, 0.5, 0.4, 0.6])
+        weather = (6.0, 500.0, 20.0)
+
+        def step_fn(state, action, weather, load, params):
+            return env_step(state, action, weather, load, params)
+
+        run_determinism_check(
+            step_fn=step_fn,
+            make_state_fn=lambda: make_state(t=500, seed=77),
+            action=action,
+            weather=weather,
+            load=75.0,
+            params=PARAMS,
+            n_runs=3,
+            tol=1e-12,
+        )

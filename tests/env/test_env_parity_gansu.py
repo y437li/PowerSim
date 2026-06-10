@@ -22,6 +22,18 @@ import numpy as np
 import pytest
 
 # ---------------------------------------------------------------------------
+# Invariant helpers (always importable; no reference implementation required)
+# ---------------------------------------------------------------------------
+from energy_go.testing.invariants import (
+    assert_cost_identities,
+    assert_energy_conserved,
+    assert_episode_invariants,
+    assert_physical_bounds,
+    assert_soc_dynamics,
+    run_determinism_check,
+)
+
+# ---------------------------------------------------------------------------
 # Reference implementation imports (required)
 # ---------------------------------------------------------------------------
 from reference.gansu_env import (
@@ -266,6 +278,31 @@ class TestReferenceConsistency:
         # 11:29 = Critical peak (780), 11:30 = Mid (450)
         assert get_price(11, 29) == 780.0
         assert get_price(11, 30) == 450.0
+
+    def test_all_invariants_via_helpers(self, episode_rollout):
+        """
+        Run all physics invariants (energy conservation, cost identities,
+        physical bounds) using assert_episode_invariants on the 168-step rollout.
+
+        This is the canonical integration check that qa-engineer also runs
+        via the qa-verification skill.  If any invariant is violated, the helper
+        reports the step index and which invariant failed.
+        """
+        assert_episode_invariants(
+            episode_rollout, PARAMS, energy_tol=1e-5, cost_tol=1e-9)
+
+    def test_soc_dynamics_per_step(self, episode_rollout):
+        """
+        Verify SOC update formula (§3.2) for every step in the episode rollout
+        using assert_soc_dynamics.
+        """
+        soc = 0.5   # initial SOC of the episode fixture
+        for i, r in enumerate(episode_rollout):
+            try:
+                assert_soc_dynamics(old_soc=soc, result=r, params=PARAMS, tol=1e-5)
+            except AssertionError as exc:
+                raise AssertionError(f"Step {i}: SOC dynamics check failed\n{exc}") from exc
+            soc = r.new_state.soc
 
 
 # ===========================================================================

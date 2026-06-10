@@ -574,3 +574,89 @@ Total: 11 + 96 = 107 dims ✓
 - Ramp-rate limits, transformer/line losses, reactive power, grid-frequency services.
 - VecNormalize running stats (those live in the training loop, not this reference env).
 - §8 composable asset library (gas, electrolyzer) — Gansu config is §3 only.
+
+---
+
+## Invariant helpers (task #21)
+
+Reusable pytest assertions under `src/energy_go/testing/invariants.py`.  These helpers
+are framework-agnostic (duck typing, attribute access) — they work with the NumPy
+reference `StepResult` and the future JAX `StepResult` NamedTuple as long as field names
+match this contract.  They are the second consumer after the reference implementation
+tests (qa-engineer uses them in the `qa-verification` skill).
+
+### `assert_energy_conserved(result, *, tol=1e-5)`
+
+Asserts per-source power balance (§3.6 row 14):
+
+| Source | Identity |
+|--------|----------|
+| Wind   | `wind_to_load + wind_to_bat + wind_to_grid + wind_curtailed == p_wind_mw` |
+| Solar  | `solar_to_load + solar_to_bat + solar_to_grid + solar_curtailed == p_solar_mw` |
+| Battery discharge | `bat_to_load + bat_to_grid + bat_curtailed == p_bat_discharge_mw` |
+| Grid import | `grid_to_load + grid_to_bat == p_import_mw` |
+
+All flow fields must be ≥ −1e-9 (physical non-negativity).
+
+Use `tol=1e-5` for float64 NumPy reference; `tol=1e-4` for float32 JAX.
+
+### `assert_cost_identities(result, params, *, tol=1e-9)`
+
+Asserts all D13 algebraic cost identities for one step:
+
+1. `c_energy == c_import − r_export`
+2. `cost_total_reward_basis == c_energy + 2·c_demand_shape + c_degradation + c_curtail + c_voll`
+3. `cost_total_real == c_energy + c_demand_charge + c_degradation + c_curtail + c_voll`
+4. `reward == −(cost_total_reward_basis + penalty) × reward_scale`
+5. `penalty == 20_000 × soc_violation_mwh`
+6. `c_curtail == (solar_curtailed + wind_curtailed + bat_curtailed) × curtail_penalty × Δt`
+7. `c_voll == load_unserved × voll × Δt`
+8. `r_export ≥ 0` (D7 sell-price clamp)
+9. `c_degradation == c_deg_rate × (p_bat_charge + p_bat_discharge) × Δt`
+
+Use `tol=1e-9` for float64 (algebraic identity); `tol=1e-6` for float32 JAX.
+
+### `assert_physical_bounds(result, params)`
+
+Asserts hard physical constraints:
+
+| Constraint | Value | Decision |
+|-----------|-------|----------|
+| SOC ∈ [soc_min, soc_max] | [0.2, 0.9] | D4 |
+| p_bat_charge_mw ∈ [0, bat_power_mw] | [0, 98.16] MW | §3.2 |
+| p_bat_discharge_mw ∈ [0, bat_power_mw] | [0, 98.16] MW | §3.2 |
+| charge XOR discharge | not both > 0 | §3.6 row 4 |
+| p_export_mw ≤ grid_max_export_mw | ≤ 945 MW | D5 |
+| p_import_mw ≤ grid_max_import_mw | ≤ 400 MW | D12 |
+
+### `assert_soc_dynamics(old_soc, result, params, *, tol=1e-5)`
+
+Verifies the SOC update formula (§3.2) and, when `soc_violation_mwh > 0`,
+that the new SOC is exactly at the clipped bound and the violation magnitude
+is consistent with `|ΔSOC_excess| × bat_capacity_mwh`.
+
+### `run_determinism_check(step_fn, make_state_fn, action, weather, load, params, *, n_runs=3, tol=1e-12)`
+
+Calls `step_fn(make_state_fn(), action, weather, load, params)` n_runs times and
+asserts all numeric fields in `StepResult` are identical across runs (to tolerance `tol`).
+A determinism failure means either the function has hidden mutable state or the RNG seeding
+is not reproducible.
+
+### `run_episode(step_fn, initial_state, action_or_actions, data, params, *, n_steps, start_t=0) → list`
+
+Runs n_steps of `step_fn` chaining `new_state`, returns list of `StepResult`.
+`action_or_actions` may be a single action (broadcast) or a list of per-step actions.
+
+### `assert_episode_invariants(results, params, *, energy_tol=1e-5, cost_tol=1e-9)`
+
+Calls `assert_energy_conserved`, `assert_cost_identities`, and `assert_physical_bounds`
+on every element of `results`.  Fails immediately on the first violation, reporting
+the step index.
+
+### Tolerance guide
+
+| Scenario | energy_tol | cost_tol |
+|----------|-----------|---------|
+| NumPy reference (float64) | 1e-5 | 1e-9 |
+| JAX float32 | 1e-4 | 1e-6 |
+| JAX parity vs NumPy | 1e-4 | 1e-6 |
