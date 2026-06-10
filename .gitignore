@@ -7,3 +7,9 @@ dist/
 *.ckpt
 checkpoints/
 .DS_Store
+# local dev venv and build artefacts
+.venv/
+*.egg-info/
+# local-only symlink: energy_go.telemetry → powersim-wt-telemetry-validate
+# (PR #23 must merge first; symlink provides it during local dev)
+src/energy_go/telemetry
