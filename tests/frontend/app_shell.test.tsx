@@ -215,14 +215,11 @@ describe("units.ts — formatPower", () => {
 });
 
 describe("units.ts — formatSimTime", () => {
-  it("formats Monday 08:00 UTC correctly", async () => {
-    // "2026-03-10T08:00:00Z" is a Tuesday; function formats day-of-week + HH:MM
+  it("formats Tuesday 08:00 UTC correctly ('Tue 08:00')", async () => {
+    // "2026-03-10T08:00:00Z" is a Tuesday (UTC). Implementation must use
+    // getUTCDay/getUTCHours so the result is timezone-invariant on any runner.
     const { formatSimTime } = await import("../../src/utils/units");
-    const result = formatSimTime("2026-03-10T08:00:00Z");
-    // Must include HH:MM part
-    expect(result).toMatch(/08:00/);
-    expect(typeof result).toBe("string");
-    expect(result.length).toBeGreaterThan(4);
+    expect(formatSimTime("2026-03-10T08:00:00Z")).toBe("Tue 08:00");
   });
 });
 
@@ -327,6 +324,31 @@ describe("TouBadge — all four tiers", () => {
     const { TouBadge } = await import("../../src/components/TouBadge");
     const { container } = render(<TouBadge tier="valley" />);
     expect(container.querySelector(".tou-valley")).toBeTruthy();
+  });
+});
+
+describe("TouBadge — showPrice renders wire value via formatYuanPerMwh", () => {
+  it("showPrice=true with priceYuanPerMwh renders formatted price string", async () => {
+    // Source of price: wire value price_buy_yuan_per_mwh from telemetryStore,
+    // formatted via formatYuanPerMwh() — never a hardcoded §3.7 table.
+    // 620 ¥/MWh is the peak tier price (§3.7 / D8); the component must render
+    // whatever is passed in, formatted as "¥620/MWh".
+    const { TouBadge } = await import("../../src/components/TouBadge");
+    const { container } = render(<TouBadge tier="peak" showPrice priceYuanPerMwh={620} />);
+    expect(container.textContent).toContain("¥620/MWh");
+  });
+
+  it("showPrice=true without priceYuanPerMwh does not crash and shows no price", async () => {
+    // When no price is supplied (WS not yet connected), showPrice must be a no-op.
+    const { TouBadge } = await import("../../src/components/TouBadge");
+    const { container } = render(<TouBadge tier="peak" showPrice />);
+    expect(container.textContent).not.toMatch(/¥\d/);
+  });
+
+  it("showPrice=false does not render price even when priceYuanPerMwh is supplied", async () => {
+    const { TouBadge } = await import("../../src/components/TouBadge");
+    const { container } = render(<TouBadge tier="peak" showPrice={false} priceYuanPerMwh={620} />);
+    expect(container.textContent).not.toContain("¥620/MWh");
   });
 });
 
@@ -577,7 +599,10 @@ describe("evalStore — receiveEvalCompare", () => {
   });
 
   it("stores all three policy entries", async () => {
+    // Dispatch own fixture — do not rely on prior-test store state
     const { useEvalStore } = await import("../../src/stores/evalStore");
+    useEvalStore.getState().clear();
+    act(() => { useEvalStore.getState().receiveEvalCompare(FIXTURE_EVAL_COMPARE as any); });
     const latest = useEvalStore.getState().latest;
     expect(latest?.policies.rl).toBeDefined();
     expect(latest?.policies.no_battery).toBeDefined();
