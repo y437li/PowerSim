@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0.0",
+  "kind": "train_metrics",
+  "ts_utc": "2026-06-10T08:10:00Z",
+  "run_id": "golden-train",
+  "seq": 250,
+  "payload": {
+    "global_step": 250000,
+    "wall_seconds": 184.2,
+    "env_steps_per_sec": 1350000.0,
+    "actor_loss": 0.42,
+    "critic_loss": 1.31,
+    "ent_coef": 0.18,
+    "reward_scaled_mean": 0.61,
+    "reward_norm_mean": 0.83,
+    "cost_total_real_mean_yuan": -61000.0,
+    "is_eval_checkpoint": false,
+    "checkpoint_id": null
+  }
+}

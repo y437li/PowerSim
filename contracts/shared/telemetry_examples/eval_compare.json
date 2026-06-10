@@ -1,0 +1,47 @@
+{
+  "schema_version": "1.0.0",
+  "kind": "eval_compare",
+  "ts_utc": "2026-06-10T08:20:00Z",
+  "run_id": "golden-eval",
+  "seq": 1,
+  "payload": {
+    "eval_horizon_steps": 8760,
+    "checkpoint_id": "ckpt-000250000",
+    "cost_basis": "real_money",
+    "policies": {
+      "rl": {
+        "energy_cost_yuan": 12000000.0,
+        "demand_charge_yuan": 9000000.0,
+        "degradation_yuan": 1500000.0,
+        "curtailment_yuan": 300000.0,
+        "voll_yuan": 0.0,
+        "total_cost_yuan": 22800000.0,
+        "soc_violations_count": 0,
+        "soc_violation_mwh": 0.0,
+        "penalty_yuan": 0.0
+      },
+      "no_battery": {
+        "energy_cost_yuan": 18000000.0,
+        "demand_charge_yuan": 14000000.0,
+        "degradation_yuan": 0.0,
+        "curtailment_yuan": 900000.0,
+        "voll_yuan": 0.0,
+        "total_cost_yuan": 32900000.0,
+        "soc_violations_count": 0,
+        "soc_violation_mwh": 0.0,
+        "penalty_yuan": 0.0
+      },
+      "rule_based_tou": {
+        "energy_cost_yuan": 15000000.0,
+        "demand_charge_yuan": 11000000.0,
+        "degradation_yuan": 2000000.0,
+        "curtailment_yuan": 500000.0,
+        "voll_yuan": 0.0,
+        "total_cost_yuan": 28500000.0,
+        "soc_violations_count": 2,
+        "soc_violation_mwh": 1.5,
+        "penalty_yuan": 30000.0
+      }
+    }
+  }
+}

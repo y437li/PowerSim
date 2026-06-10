@@ -18,6 +18,12 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Telemetry schema validation (golden examples)
+        shell: bash
+        run: |
+          pip install "jsonschema>=4.21"
+          python scripts/validate_telemetry.py --examples
+
       - name: Python tests
         shell: bash
         run: |

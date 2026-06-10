@@ -275,6 +275,16 @@ Cadence: once per full 365-day eval (§5). One message carries all policies. **B
 - Additive identity (per policy): `total_cost_yuan = energy_cost_yuan + demand_charge_yuan + degradation_yuan + curtailment_yuan + voll_yuan`. The SOC penalty/violations are reward-shaping safety metrics and are **excluded** from `total_cost_yuan` (so the comparison is real money); they are reported alongside so a policy that "wins" on cost while violating SOC is visible.
 - Acceptance: RL `total_cost_yuan` must be ≤ both baselines or the run is flagged (§5 "must beat these"). The frontend renders this as the headline comparison.
 
+## Machine-readable schema (v1.0.0, task #20)
+
+This prose contract has a machine-readable companion derived from it — **additive, no field change** (the wire format and `schema_version` stay `1.0.0`):
+
+- **`telemetry_schema.json`** (this directory) — JSON Schema (draft 2020-12) for the envelope + all three payload kinds: field names, types, enums, required lists, and bounds (SOC `[0.2,0.9]`, non-negative flows/prices, `cost_basis` const). `additionalProperties` is `true` everywhere to honor the minor-forward-compat rule above, so a higher-minor message still validates; the required lists guarantee no LOCKED field is dropped or renamed.
+- **`telemetry_examples/`** — the canonical golden fixtures (`env_step_a`, `env_step_b`, `train_metrics`, `eval_compare`). The single source of golden truth; see its `readme.md`.
+- **`scripts/validate_telemetry.py`** — reference validator: JSON-Schema conformance **plus** the checks JSON Schema can't express — the D13 cost identities, per-source energy conservation, and finiteness. CI validates the golden examples on every PR.
+
+**Producer/consumer obligation:** every producer (env harness, training loop, serving) and consumer (dashboard, 3D scene) MUST validate its emitted/consumed messages against `telemetry_schema.json` in its tests (reuse the `telemetry_examples/` fixtures), and cite the validator output as evidence (per the `validate-telemetry` skill). The importable validator utilities — Python `energy_go.telemetry.validate` and the frontend TS module — are delegated implementation tasks that wrap this same schema + examples.
+
 ## Versioning
 
 - `schema_version` is **semver on this contract**:
