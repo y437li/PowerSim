@@ -565,3 +565,101 @@ RL and MPC share an information set, so **MPC is the baseline RL must beat to ju
 2. DP oracle: augmented-state (SOC × running-peak) formulation, or the cheaper per-month peak-sweep approximation? Default proposed: augmented state, sweep as documented fallback.
 3. SOC discretization for the oracle — Δsoc = 0.01 (71 states) a good speed/tightness default, or coarser?
 4. Confirm baselines run in the JAX eval env (not a separate solver env) so cost accounting is identical to RL — proposed yes.
+
+### 11.7 Metaheuristic schedule optimizers — SA + ACO (proposal — user approval)
+
+**Status: PROPOSAL for user approval.** Extends the §11.0 ladder with two **perfect-foresight metaheuristics** that optimize the **full episode/year dispatch schedule offline against realized data**. They sit **between MPC and the exact DP oracle**:
+
+```
+greedy  <  rule-based  <  MPC (causal)  <  [ SA, ACO ]  ≤  DP oracle (exact bound)
+                                            approximate oracles (acausal, heuristic)
+```
+
+**Honesty point (the reason they're not redundant with the DP oracle):** SA and ACO are **acausal** (perfect foresight, like the oracle) but **heuristic** — they may be suboptimal, so they are **not** bounds. Each is reported with its **gap to the exact DP oracle**, `(metaheuristic_cost − oracle_cost)/oracle_cost ≥ 0`, which doubles as a check that the metaheuristic is implemented correctly (a negative gap means a bug — nothing beats the exact oracle within its discretization). Their **real value is scalability**: when the §8 composable asset library grows the state (multi-battery, gas, electrolyzer + H₂ tank), exact DP's state space explodes and these approximate oracles remain tractable. For the single-battery Gansu plant the exact DP oracle is feasible, so SA/ACO are primarily a **scalability hedge + cross-check** there.
+
+Both optimize the **D13 real-money total including the monthly demand charge**, evaluated by **rolling the candidate schedule through the same JAX eval env** (identical cost accounting to RL/oracle). The demand-charge non-separability is handled **for free**: both score a *complete* schedule, so the monthly peak enters the objective directly — no state augmentation needed (their advantage over DP's augmented state).
+
+**Simulated Annealing (SA)**
+- **Decision encoding:** the continuous battery action schedule `a_bat,t ∈ [−1,1]`, t = 1…T (T = episode length; renewable/curtailment flows follow structurally from §3.3 given `a_bat`). Continuous — no discretization.
+- **Neighborhood:** perturb a random step or temporal block by Gaussian Δ (clipped to [−1,1]); optionally anneal the perturbation scale with temperature.
+- **Objective:** `cost_total_real` of the full rolled-out schedule (incl. demand charge). Minimize.
+- **Schedule:** T0 initial temperature, geometric cooling α ≈ 0.95 (configurable; log-cooling noted), N iterations, M random restarts → report best-of-M. Accept worse moves with prob `exp(−Δcost/T)`.
+- **Compute:** O(iterations × env-rollout); each rollout is one vmappable eval pass. Report iteration budget + wall-time.
+- **Determinism:** seeded RNG → reproducible; report best-of-restarts and the seed.
+
+**Ant Colony Optimization (ACO)**
+- **Construction graph:** a layered DAG over **discretized SOC** (reuse the DP oracle's Δsoc = 0.01 → 71 states, §11.2) × time steps. A node = (SOC bin, t); an edge (SOC_t → SOC_{t+1}) = the feasible battery action realizing that SOC transition under §3.2. A complete path = an SOC trajectory = a dispatch schedule.
+- **Pheromone model:** τ on edges; each ant builds a path choosing the next edge with prob ∝ `τ^α · η^β` where heuristic `η` = inverse step cost. After all ants finish, deposit `Q / total_schedule_cost` (the **complete-tour** real-money cost incl. demand charge — so peak-friendly tours are reinforced) and evaporate `τ ← (1−ρ)τ`.
+- **Objective:** same D13 real-money total via env rollout of the constructed schedule.
+- **Hyperparameters:** #ants, #iterations, α/β (pheromone/heuristic), ρ evaporation, Q deposit. **Compute:** O(iterations × ants × T × SOC-branching) — heaviest of the metaheuristics; report budget. **Determinism:** seeded.
+
+**Eval integration:** add `eval_compare` policy keys **`sa`** and **`aco`** (additive/minor, same as the §11.5 ruling — `policies` is `additionalProperties: true`, reuse the `policy_costs` shape). The headline panel shows them on the ladder with their oracle gaps.
+
+#### 11.7 Open questions for the user
+1. Given the **exact DP oracle is already greenlit** (and dominates these), do you still want SA + ACO? Their distinct value is as **scalable approximate oracles for the §8 compositions** where exact DP is intractable — recommend **yes, but sequence them after §8** (for single-battery Gansu they're a cross-check, not a necessity).
+2. SA continuous-schedule encoding + ACO reusing the Δsoc = 0.01 SOC graph — acceptable, or prefer a different encoding?
+3. OK to report each as an **oracle gap** (never as a bound)?
+
+---
+
+## 12. Real-weather data pipeline (proposal — user approval)
+
+**Status: PROPOSAL for user approval.** Feeds the simulation with **real hour-level weather** allocated by **site latitude/longitude**, as an alternative to the §4 synthetic generators. The pure-JAX env is unchanged: the pipeline is an **offline build step** that produces the **same device-array episode format §4 emits** — no network or I/O ever enters the jitted `step`.
+
+### 12.1 Data source
+
+**Primary: Open-Meteo** (historical + forecast archive). Rationale: free, **no API key** (fits a research rebuild), **native hourly** (matches Δt = 1 h, D3), global coverage by lat/lon, single API for both historical reanalysis (ERA5-backed) and forecast. Variables fetched:
+
+| Need | Open-Meteo variable | Used by |
+|---|---|---|
+| Wind speed | `wind_speed_10m` (m/s) | §3.1 wind power curve, via the §3.1 power-law shear to hub height — keeps the §3.1 model intact and comparable to synthetic. (`wind_speed_100m` fetched as a cross-check only.) |
+| Solar irradiance | `shortwave_radiation` (GHI, W/m²) | §3.1 PV `G` |
+| Temperature | `temperature_2m` (°C) | §3.1 PV derate `k_T` + §4.2 load CDD/HDD |
+
+- **Fallbacks (noted, not v1 primary):** **NASA POWER** for solar-irradiance validation/cross-check; **ERA5** (CDS API) is research-grade reanalysis but needs auth + heavier access/latency — out of scope for v1, revisitable.
+- All incoming units pass through the **one named conversion utility** (§ engineering rules) before becoming canonical MW/°C/W·m⁻² arrays.
+
+### 12.2 Config schema change
+
+Site YAML gains a `location` block:
+```yaml
+location:
+  latitude: 38.5        # decimal degrees
+  longitude: 99.9
+  elevation_m: 1500     # optional; refines pressure/air-density if modeled
+weather:
+  mode: synthetic       # "synthetic" (§4) | "real"
+  source: open_meteo    # when mode=real
+  year: 2023            # historical year to pull
+```
+This is a **config schema change** (the asset-config/site contract must add `location` + `weather`).
+
+### 12.3 Pipeline shape
+
+`fetch → cache → transform → device array`, all offline:
+1. **Fetch** hourly variables for `(latitude, longitude, year)` from the source.
+2. **Cache** locally under `data/weather_cache/<source>_<lat>_<lon>_<year>.parquet` (or `.npz`) — deterministic, network hit once; re-runs read cache. Cache key includes source + rounded lat/lon + year.
+3. **Transform** to the exact 8760×features device-array episode format that §4 emits (same column order, same units, same dtype) — so the env and the §4 synthetic path are byte-compatible consumers.
+4. The env indexes this array with `lax.dynamic_slice` exactly as for synthetic data (§7). **No network in `step`.**
+
+### 12.4 Mode switch, parity, and forecast noise
+
+- **Mode switch:** `weather.mode: synthetic | real`, default **synthetic**. The **Gansu parity case (D11) stays synthetic-only** — real-weather is a toggle that never disturbs the synthetic parity year (same discipline as the §10 enhancements; the parity test asserts `mode == synthetic`).
+- **Forecast noise (D6):** mode-agnostic. D6's horizon-scaled multiplicative noise (`x̂_h = x_true_h·(1+ε_h)`) is applied in `_get_obs` to whatever the episode array holds — synthetic or real. So in real mode the agent still faces the D6 forecast-error structure over realized weather (train/eval consistency). Using Open-Meteo's *actual forecast product* as the forecast (instead of D6 noise over realized data) is a **future option**, flagged — kept out of v1 so forecast-error structure is identical across modes.
+
+### 12.5 Location & contract area
+
+- **Code:** new package **`energy_go/data/`** (data acquisition + caching + transform) — kept separate from `energy_go/generators/` (the pure synthetic models) precisely because it does network I/O. It emits the §4-format array the env consumes; the env stays pure and mode-agnostic.
+- **Contract area:** **harness** — `contracts/harness/weather_pipeline.md` (offline data-prep/orchestration feeding the env, not the jitted step). It depends on the §4 episode-array format (env area) as its output contract.
+
+### 12.6 Acceptance criteria (for the implementation task)
+- Fetching Gansu `(lat, lon, year)` produces a cached file and an 8760×features array matching §4's shape, column order, and units exactly (asserted).
+- `mode: synthetic` reproduces the §4 path bit-for-bit (no behavior change when real-weather is off); `mode: real` swaps the array with no change to the env step.
+- The Gansu parity config (D11) asserts `weather.mode == synthetic`.
+- D6 forecast noise applies identically in both modes (a fixed seed gives the documented noised obs over the chosen base array).
+- No network call occurs inside the jitted `step` (the device array is fully materialized at episode setup).
+
+### 12.7 Open questions for the user
+1. Open-Meteo as primary (free/no-key/hourly) — agree, or prefer NASA POWER (solar focus) or ERA5 (research-grade, heavier) as primary?
+2. Fetch `wind_speed_10m` + apply §3.1 shear (keeps the synthetic-comparable model), or fetch `wind_speed_100m` directly when available?
+3. Keep D6 synthetic forecast noise over realized data (train/eval consistency), or use Open-Meteo's real forecast product in real mode?
