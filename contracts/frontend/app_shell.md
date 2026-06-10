@@ -1,7 +1,7 @@
 # Contract: Frontend App Shell
 
-- **Status:** ADDRESSING REVIEW — must-fix items resolved; PENDING_LOCK sections updated to telemetry_schema.md v1.0.0 LOCK (PR #6, 98beee0); awaiting VERDICT: APPROVE from frontend-reviewer
-- **Spec:** REBUILD_SPEC.md §2 (MDP/obs), §3 (physics & costs), §3.7 (tariff/TOU), §5 (training/eval), telemetry schema `contracts/shared/telemetry_schema.md` (DRAFT — wire-format-dependent sections marked **⚠ PENDING TELEMETRY LOCK**)
+- **Status:** APPROVED — gate passed (frontend-reviewer VERDICT: APPROVE, PR #5); implementation in progress
+- **Spec:** REBUILD_SPEC.md §2 (MDP/obs), §3 (physics & costs), §3.7 (tariff/TOU), §5 (training/eval), telemetry schema `contracts/shared/telemetry_schema.md` v1.0.0 (LOCKED, PR #6)
 - **Owner:** frontend-engineer · **Reviewer:** frontend-reviewer
 - **Area:** frontend
 - **Depends on DECISIONS:** D3 (Δt=1h, ep 168/8760), D4 (SOC 0.2–0.9), D5 (export 945 MW), D7 (spread clamp ≥0), D8 (minute-aware tariff)
@@ -39,7 +39,7 @@ src/
     wsClient.ts         # WebSocket; demuxes by kind → stores
     restClient.ts       # fetch-based; typed request/response
   types/
-    telemetry.ts        # TypeScript types from telemetry_schema.md ⚠ PENDING TELEMETRY LOCK
+    telemetry.ts        # TypeScript types from telemetry_schema.md v1.0.0 (LOCKED)
   components/
     Layout.tsx          # Top nav, sidebar skeleton, <Outlet />
     ErrorBoundary.tsx   # React ErrorBoundary wrapper
