@@ -790,3 +790,22 @@ class TestSchemaBundling:
         assert tv.SCHEMA_VERSION in schema.get("title", ""), (
             f"SCHEMA_VERSION {tv.SCHEMA_VERSION!r} not found in schema title {schema.get('title')!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# reviewer (backend-reviewer): F2 forward-compat — unknown fields ignored
+# ---------------------------------------------------------------------------
+
+
+def test_forward_compat_unknown_field_accepted():
+    # reviewer: LOCKED schema sets additionalProperties:true everywhere to honor the
+    # reviewer: minor-forward-compat rule (consumers MUST ignore unknown fields). A 1.0.0
+    # reviewer: validator must accept a message carrying unknown fields at envelope AND
+    # reviewer: payload level. Uses the valid env_step_a golden so only the unknown-field
+    # reviewer: tolerance is under test.
+    import energy_go.telemetry.validate as tv
+    msg = _env_step_a()
+    msg["x_future_envelope_field"] = "ignore-me"
+    msg["payload"]["x_future_payload_field"] = {"nested": [1, 2, 3]}
+    errs = tv.validate(msg)
+    assert errs == [], f"Unknown fields must be ignored (forward-compat), got: {errs}"
