@@ -382,10 +382,19 @@ STEP 7 — PCC export limit (§3.3 step 3, §3.6 row 8)
   total_export = p_wind_to_grid + p_solar_to_grid + p_bat_to_grid
   if total_export > grid_max_export_mw:
       scale_exp = grid_max_export_mw / total_export
+      # Per-source curtailment: proportional to each source's pre-curtailment grid flow.
+      # Computed BEFORE scaling so values are derived from the un-clipped flows.
+      wind_curtailed_mw  = p_wind_to_grid  · (1 − scale_exp)
+      solar_curtailed_mw = p_solar_to_grid · (1 − scale_exp)
+      bat_curtailed_mw   = p_bat_to_grid   · (1 − scale_exp)
+      # Then scale each flow down to the export limit
       p_wind_to_grid  *= scale_exp
       p_solar_to_grid *= scale_exp
       p_bat_to_grid   *= scale_exp
-      ren_curtailed_mw = total_export · (1 − scale_exp)
+  else:
+      wind_curtailed_mw  = 0.0
+      solar_curtailed_mw = 0.0
+      bat_curtailed_mw   = 0.0
 
 STEP 8 — Grid import (§3.3 step 4, §3.6 row 9)
   load_deficit  = load − p_wind_to_load − p_solar_to_load − p_bat_to_load
@@ -420,7 +429,7 @@ STEP 10 — Costs and reward (§3.4, §3.5, D10, D13)
   C_DC_shape = demand_rate · max(0, p_import − state.month_peak_mw)  # RAW, stored without ×2 (D13)
   new_month_peak = max(state.month_peak_mw, p_import)
   C_deg     = c_deg · (p_ch + p_dis) · dt
-  C_curtail = curtail_penalty · ren_curtailed_mw · dt
+  C_curtail = curtail_penalty · (wind_curtailed_mw + solar_curtailed_mw + bat_curtailed_mw) · dt
   C_VOLL    = voll · load_unserved · dt
   penalty   = 20_000 · soc_viol_mwh
 
@@ -480,15 +489,13 @@ irradiance[t] = max(0, base[t] · seasonal[d] · cloud[t])
 temp[t] = 20 + 8·sin(2π(h−9)/24) + 15·cos(2π(d−200)/365) + N(0,2)
 ```
 
-**Load (§4.2):**
+**Load (§4.2 — ×100 scaling per D19):**
 
-> ⚠️ **FLAG for rl-architect (resolution needed before implementation):** The spec lists
-> `base=750 kW, α=45 kW/°C, β=37.5 kW/°C, σ_AR1=50 kW`. With these values, the
-> generated load is ~1,500–2,000 kW ≈ 1.5–2 MW, far below the stated 50–100 MW site range
-> and inconsistent with the `load_kw/100000` obs normalization (which implies 50,000–100,000 kW).
-> The reference implementation tentatively multiplies all §4.2 kW parameters by **100** to
-> produce site-scale load. Awaiting rl-architect confirmation of the correct scale factor
-> before the test gate closes. Contracted values below assume ×100 scaling.
+> **D19 (rl-architect, binding, merged to main):** The §4.2 kW parameters are scaled by ×100
+> to produce site-scale load: base **75,000 kW (75 MW)**, α **4,500 kW/°C**,
+> β **3,750 kW/°C**, σ\_AR1 **5,000 kW**. This is consistent with the `load_kw/100000`
+> obs normalization and the stated 50–100 MW site range. Both the NumPy reference and
+> the JAX core must apply D19 parameters.
 
 ```
 φ[0] = 0, φ[t] = 0.8·φ[t−1] + sqrt(1−0.8²)·N(0,1)   # AR1, ρ=0.8

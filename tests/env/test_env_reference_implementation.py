@@ -731,6 +731,22 @@ class TestExportLimit:
         assert result.solar_curtailed_mw > 0.0, "M4: expected solar curtailment"
         assert result.bat_curtailed_mw > 0.0, "M4: expected bat curtailment"
 
+        # Proportional split (B3-minor): each source curtailed proportionally to its
+        # pre-curtailment grid flow.  With load=0 all generated power goes to grid,
+        # so pre_export = p_wind + p_solar + p_bat_discharge.
+        pre_export = result.p_wind_mw + result.p_solar_mw + result.p_bat_discharge_mw
+        scale = PARAMS.grid_max_export_mw / pre_export
+        assert scale < 1.0, "M4: expected scale < 1 (curtailment active)"
+        expected_wind_curt  = result.p_wind_mw           * (1.0 - scale)
+        expected_solar_curt = result.p_solar_mw          * (1.0 - scale)
+        expected_bat_curt   = result.p_bat_discharge_mw  * (1.0 - scale)
+        assert result.wind_curtailed_mw == pytest.approx(expected_wind_curt, rel=1e-5), (
+            f"M4 proportional wind: {result.wind_curtailed_mw:.6f} ≠ {expected_wind_curt:.6f}")
+        assert result.solar_curtailed_mw == pytest.approx(expected_solar_curt, rel=1e-5), (
+            f"M4 proportional solar: {result.solar_curtailed_mw:.6f} ≠ {expected_solar_curt:.6f}")
+        assert result.bat_curtailed_mw == pytest.approx(expected_bat_curt, rel=1e-5), (
+            f"M4 proportional bat: {result.bat_curtailed_mw:.6f} ≠ {expected_bat_curt:.6f}")
+
 
 # ===========================================================================
 # 9. Constraint enforcement — import limit and VOLL (§3.3 step 4, §3.6 row 9)
@@ -1203,27 +1219,32 @@ class TestInvariantHelpersAPI:
     """Smoke-test that the invariant helpers accept a well-formed result object."""
 
     def _make_good_result(self):
-        """Return a hand-crafted StepResult that satisfies every invariant."""
+        """Return a hand-crafted StepResult that satisfies every invariant.
+
+        C1 fix: p_import=0 so grid_to_load+grid_to_bat=0+0=0 == p_import=0 ✓.
+        The old fixture had p_import=50 while grid_to_load=grid_to_bat=0 —
+        that violated the grid-import decomp check in assert_energy_conserved.
+        """
         # Step values chosen to satisfy all identities analytically:
         # t=100, hour=4 → valley price=250 ¥/MWh
-        # P_wind=128.396, P_solar=0, P_import=50, P_export=78.396
-        # load=50, no battery, no curtailment, no SOC violation
-        # C_import = 250×50×1 = 12500
+        # P_wind=128.396, P_solar=0, P_import=0, P_export=78.396
+        # load=50 served entirely from wind; no grid import (pure export scenario)
+        # C_import = 250×0×1 = 0
         # R_export = 220×78.396×1 = 17247.12  (sell=250-30=220)
-        # C_energy = 12500-17247.12 = -4747.12
-        # C_DC_shape = 0 (p_import=50 ≤ month_peak=100)
+        # C_energy = 0-17247.12 = -17247.12
+        # C_DC_shape = 0 (p_import=0 ≤ month_peak=100)
         # C_deg = 0 (no bat)
         # C_curtail = 0; C_VOLL = 0; penalty = 0
-        # cost_rb = -4747.12; cost_real = -4747.12
-        # reward = -(-4747.12+0)×1e-5 = 0.047471
+        # cost_rb = -17247.12; cost_real = -17247.12
+        # reward = -(-17247.12+0)×1e-5 = 0.1724712
         soc_new = 0.5
         p_wind = 128.396
         p_solar = 0.0
         p_export = 78.396   # all wind excess goes to grid
-        p_import = 50.0
-        c_import = 250.0 * p_import * 1.0       # = 12500
+        p_import = 0.0      # C1 fix: pure export step, no grid import
+        c_import = 250.0 * p_import * 1.0       # = 0
         r_export = 220.0 * p_export * 1.0       # = 17247.12
-        c_energy = c_import - r_export           # = -4747.12
+        c_energy = c_import - r_export           # = -17247.12
         c_deg = 10.0 * (0.0 + 0.0) * 1.0       # = 0
         c_curtail = 800.0 * (0.0 + 0.0 + 0.0) * 1.0  # = 0
         c_voll = 20000.0 * 0.0 * 1.0            # = 0
