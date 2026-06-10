@@ -14,11 +14,12 @@ export interface TrainingState {
    */
   trainSeqGap: boolean;
   /**
-   * ISO-8601 UTC ts_utc from the most recent train_metrics envelope.
-   * Used by TrainingPanel StreamStatusBanner for local data-stale check.
-   * null before first message; reset to null on clear().
+   * ISO-8601 UTC timestamp from the envelope of the most recent train_metrics
+   * message (msg.ts_utc). Used by TrainingPanel's StreamStatusBanner to detect
+   * data-stale scenarios (no message received in >30 s while WS is connected).
+   * Optional so test emptyTrainingState() mocks don't need it — undefined → null.
    */
-  latestTsUtc: string | null;
+  latestTsUtc?: string | null;
 
   receiveTrainMetrics: (msg: TelemetryEnvelope) => void;
   clear: () => void;
@@ -42,7 +43,7 @@ export const useTrainingStore = create<TrainingState>((set) => ({
         history: [...state.history, payload],
         lastTrainSeq: incomingSeq,
         trainSeqGap: gap,
-        latestTsUtc: msg.ts_utc ?? null,
+        latestTsUtc: msg.ts_utc,
       };
     });
   },
