@@ -7,11 +7,11 @@ description: Mandatory development workflow for all Energy GO implementation wor
 
 No implementation code is written until steps 1–3 are complete. This is a hard gate, not a guideline.
 
-## Step 0 — Read the lineage
+## Step 0 — Read the sources of record
 
-Read `LINEAGE.md` (project root) before anything else: pick up binding DECISION entries, locked shared contracts, and open blockers that affect your feature. If a prior entry contradicts what you were asked to do, raise it (BLOCKED entry + escalate to rl-architect) instead of silently picking a side.
+Before anything else: `git log --oneline -15` (what has merged), `gh pr list --state open` (what's in flight — don't duplicate or collide with an open PR), and `LINEAGE.md` (binding DECISION entries, locked shared contracts, open blockers). If a binding decision contradicts what you were asked to do, raise it (BLOCKED entry in LINEAGE.md + escalate to rl-architect) instead of silently picking a side.
 
-**Throughout this workflow, append a LINEAGE.md entry at every milestone** (format defined in that file): CONTRACT_DRAFTED after step 1, TESTS_WRITTEN after step 2, REVIEW_APPROVED/REJECTED after step 3 (the reviewer appends this one), IMPLEMENTED after step 4, and the handoff entry at step 5. Append-only — never rewrite history.
+Work status lives in the PR itself (draft = contract+tests stage, ready = implementation stage, reviews/QA verdicts on the thread) — do not log milestones in LINEAGE.md. Append there only for DECISION, LOCKED, or BLOCKED events.
 
 ## Step 1 — Branch, then write the contract
 
@@ -88,4 +88,4 @@ Write code on the same branch until the approved tests pass, then mark the PR re
 
 After the reviewer approves the implementation, request **qa-engineer** (`qa-verification` skill) on the PR with: contract path, review record path, test suite location, and how to run it. QA posts its structured verdict as a PR comment. QA's verdict — not your own test run — is what marks the task done.
 
-Merge only when all three are true: reviewer APPROVE on the code, QA verdict QA_PASS (or QA_PASS_WITH_ISSUES with rl-architect sign-off recorded on the PR), and the LINEAGE.md entries are on the branch. Squash-merge; the branch is deleted after merge.
+Merge only when all three are true: reviewer APPROVE on the code, QA verdict QA_PASS (or QA_PASS_WITH_ISSUES with rl-architect sign-off recorded on the PR), and CI is green. Squash-merge; the branch is deleted after merge.

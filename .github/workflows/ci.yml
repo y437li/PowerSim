@@ -1,0 +1,43 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Convention checks
+        run: bash scripts/check_conventions.sh
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Python tests
+        shell: bash
+        run: |
+          if [ -d tests ] && find tests -name 'test_*.py' | grep -q .; then
+            if [ -f pyproject.toml ]; then
+              pip install -e ".[dev]"
+            else
+              pip install pytest jax
+            fi
+            pytest tests/ -q
+          else
+            echo "No Python tests yet — skipping"
+          fi
+
+      - name: Frontend tests
+        shell: bash
+        run: |
+          if [ -f package.json ] && find tests -name '*.test.ts*' 2>/dev/null | grep -q .; then
+            npm ci
+            npm test
+          else
+            echo "No frontend tests yet — skipping"
+          fi

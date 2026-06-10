@@ -6,7 +6,7 @@ These rules apply to every agent working in this repo. They are non-negotiable.
 - `REBUILD_SPEC.md` defines the system: formulas (§3), generators (§4), training (§5), known bugs to fix (§6), JAX architecture (§7). When code and spec disagree, the spec wins; when the spec is ambiguous, escalate to rl-architect — never guess.
 
 ## Before any work
-- **Read `LINEAGE.md` first.** It holds binding DECISION entries, locked shared contracts, and open blockers. Append an entry at every milestone of your work (format defined in the file). Append-only — never edit past entries.
+- **Check the three sources of record:** `git log --oneline -15` (what merged), `gh pr list --state open` (what's in flight and its gate status), and `LINEAGE.md` (binding decisions, locked contracts, open blockers — the things git can't tell you). PR state is the status record; LINEAGE.md gets entries only for DECISION / LOCKED / BLOCKED events, append-only.
 
 ## Workflow
 - All implementation work follows the `contract-first-dev` skill: contract → test cases → reviewer approval → implement → QA. **No implementation before reviewer approval of the tests.**

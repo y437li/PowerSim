@@ -51,6 +51,6 @@ Issues: <numbered, with reproduction steps>
 
 FAIL goes back to the implementing agent. PASS-WITH-ISSUES requires rl-architect sign-off. You never fix code yourself — you verify.
 
-## Step 5 — Record the verdict in the lineage
+## Step 5 — Post the verdict on the PR
 
-Append the verdict to `LINEAGE.md` (QA_PASS / QA_PASS_WITH_ISSUES / QA_FAIL, with issue numbers and the handoff target). Also read `LINEAGE.md` at the start of every verification — a deliverable whose lineage chain is missing entries (no CONTRACT_DRAFTED → TESTS_WRITTEN → REVIEW_APPROVED sequence) fails Step 0 preconditions.
+The verdict is delivered as a PR comment (`gh pr comment`), which is the durable record — do not log it in LINEAGE.md. Verify the gate history on the PR itself: a PR with no stage-1 (contract+tests) APPROVE review in its timeline fails Step 0 preconditions. If verification surfaces a binding-decision conflict or leaves work blocked, append a DECISION-request or BLOCKED entry to LINEAGE.md.

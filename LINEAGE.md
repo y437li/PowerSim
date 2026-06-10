@@ -1,53 +1,26 @@
-# Agent Lineage — Energy GO Rebuild
+# LINEAGE — Decisions, Locked Contracts, Open Blockers
 
-Append-only ledger shared by all agents. This is the team's memory: every agent **reads it before starting work** (to pick up prior decisions, locked contracts, and open blockers) and **appends an entry** whenever it starts, hands off, gets a review verdict, or closes work.
+This file holds ONLY what git and GitHub cannot tell you. For everything else, read the source of record at the start of every session:
 
-Rules:
-- Append-only. Never edit or delete a past entry — corrections get a new entry referencing the old one by seq number.
-- One entry per event, newest at the bottom of the Ledger.
-- Every handoff names the receiving agent; every status change names the entry it follows.
-- rl-architect decisions are recorded here with status DECISION — they are binding until superseded by a later DECISION entry.
+- `git log --oneline -15` — what has merged recently
+- `gh pr list --state open` — what's in flight and its gate status (draft = contract+tests stage; ready = implementation stage; reviews and QA verdicts are on the PR)
+- This file — binding decisions, locked shared contracts, open blockers
 
-## Entry format
+Do **not** log work milestones here — PR state is the status record. Append-only, three entry kinds:
 
-```
-### [seq] YYYY-MM-DD — <agent> — <feature>
-- Status: DECISION | CONTRACT_DRAFTED | TESTS_WRITTEN | REVIEW_APPROVED | REVIEW_REJECTED |
-          IMPLEMENTED | QA_PASS | QA_PASS_WITH_ISSUES | QA_FAIL | BLOCKED | SUPERSEDES [seq]
-- Contract: contracts/<area>/<feature>.md (or "n/a" for decisions)
-- Artifacts: <files created/changed>
-- Follows: [seq] (the entry this continues; "none" if new thread)
-- Handoff: <agent name> | none
-- Notes: 1–3 lines — what was decided/found and why. For REVIEW_APPROVED, count of reviewer-added
-  cases. For QA_FAIL, the issue numbers. For BLOCKED, exactly what input is needed and from whom.
-```
+- **DECISION** — binding choice by rl-architect: one line + the PR/commit where it was made. Supersede with a new entry referencing the old ID; never edit.
+- **LOCKED** — a shared contract is locked: path + PR ref. Consumers may not deviate without a superseding DECISION.
+- **BLOCKED** — work stuck on input: who/what is needed. Remove when resolved, citing the resolving PR.
 
-## Open blockers & pending decisions
+## Decisions
 
-(Running list. Add items here when raising them; remove when resolved, citing the resolving entry seq.)
-
-- none
+- [D1] 2026-06-09 — Team, workflow (contract-first-dev / qa-verification), naming conventions, and PR-gated process established; see CLAUDE.md. (setup commits 3e9fdd8…)
 
 ## Locked shared contracts
 
-(Listed when rl-architect locks one; consumers may not deviate without a new DECISION entry.)
-
 - none yet
 
-## Ledger
+## Open blockers
 
-### [1] 2026-06-09 — (setup) — project scaffolding
-- Status: DECISION
-- Contract: n/a
-- Artifacts: .claude/agents/ (11 agents), .claude/skills/contract-first-dev/, .claude/skills/qa-verification/, LINEAGE.md
-- Follows: none
-- Handoff: rl-architect
-- Notes: Team, workflow skills, and conventions established. First task: rl-architect makes the binding Δt / SOC-bounds / export-limit decisions (REBUILD_SPEC.md §6) and drafts the telemetry shared contract.
-
-### [2] 2026-06-09 — (setup) — project rules & worked example
-- Status: DECISION
-- Contract: n/a
-- Artifacts: CLAUDE.md, contracts/_example/ (wind_power_curve.md, test_env_wind_power_curve.py, review_record_wind_power_curve.md)
-- Follows: [1]
-- Handoff: rl-architect
-- Notes: CLAUDE.md carries the non-negotiable rules loaded by every agent. contracts/_example/ is the reference standard for contract + test + review-record quality — copy its structure for real features.
+- [B1] 2026-06-09 — rl-architect must make the binding REBUILD_SPEC.md §6 decisions (Δt 15 min vs 1 h, SOC bounds, export limit 945 vs 200 MW) and draft the telemetry shared contract before env work can start.
+- [B2] 2026-06-09 — Legacy Python env (`python/env/power_env.py` + gym_energy_router) is not in this repo; QA parity testing is impossible until it is vendored under `legacy/` (read-only) or otherwise made available. Needs the old project's path from the user.
