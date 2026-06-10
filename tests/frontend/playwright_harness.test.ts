@@ -64,4 +64,18 @@ describe("playwright.config.ts shape (contract: playwright_harness.md §4)", () 
     // Contract: machine-readable output path for QA automation
     expect(jsonEntry?.[1]?.outputFile).toBe("playwright-report/results.json");
   });
+
+  // reviewer: trace must be retained on failure — QA needs the trace to diagnose a
+  // failed route load (it's named as a QA evidence artifact in §7).
+  it("use.trace is 'retain-on-failure'", async () => {
+    const config = await loadConfig();
+    expect(config.use?.trace).toBe("retain-on-failure");
+  });
+
+  // reviewer: testMatch must scope to *.spec.ts so the Vitest config-shape file
+  // (tests/frontend/*.test.ts) is never picked up by the Playwright runner.
+  it("testMatch is '**/*.spec.ts' (does not collide with Vitest *.test.ts)", async () => {
+    const config = await loadConfig();
+    expect(config.testMatch).toBe("**/*.spec.ts");
+  });
 });
