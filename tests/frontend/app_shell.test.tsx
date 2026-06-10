@@ -1011,3 +1011,322 @@ describe("type guard: TariffTier exhaustiveness", () => {
     }
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// REVIEWER-ADDED EDGE CASES (frontend-reviewer, 2026-06-10)
+// Each case below is marked `// reviewer: <reason>`. These are part of the
+// approved suite and must be green before implementation passes QA.
+// PENDING_LOCK markers carry the same meaning as in the developer suite: the
+// wire-format fixtures are conditional on the telemetry_schema.md LOCK.
+// ════════════════════════════════════════════════════════════════════════════
+
+// ─── units.ts — formatSimTime: exact day-of-week + UTC extraction ─────────────
+
+describe("reviewer: formatSimTime — UTC clock, exact day + minutes", () => {
+  // reviewer: §8 says "formats the UTC clock as-is, no timezone conversions". The
+  // developer test only matched /08:00/ and never pinned the day-of-week, so an
+  // off-by-one day, a wrong locale, or a getHours()/getDay() (local-time) impl
+  // would slip through and display the wrong sim clock. These pin exact UTC output.
+  it("2026-03-10T08:00:00Z renders 'Tue 08:00' (2026-03-10 is a Tuesday in UTC)", async () => {
+    const { formatSimTime } = await import("../../src/utils/units");
+    expect(formatSimTime("2026-03-10T08:00:00Z")).toBe("Tue 08:00");
+  });
+
+  it("2026-03-09T23:30:00Z renders 'Mon 23:30' — UTC-based; a local-time impl shifts day/hour", async () => {
+    // reviewer: 23:30Z near the day boundary catches a getHours()/getDay() impl:
+    // in any tz ahead of UTC a local-time impl rolls into Tue and a different hour.
+    // A correct getUTC*-based impl returns this value regardless of runner tz.
+    const { formatSimTime } = await import("../../src/utils/units");
+    expect(formatSimTime("2026-03-09T23:30:00Z")).toBe("Mon 23:30");
+  });
+});
+
+// ─── units.ts — formatYuanPerMwh: ¥/MWh unit guard (NOT ¥/kWh) ────────────────
+
+describe("reviewer: formatYuanPerMwh — price unit is ¥/MWh, never ¥/kWh", () => {
+  // reviewer: prime-directive unit guard. Prices on the wire are ¥/MWh
+  // (telemetry_schema Units table). A ÷1000 (per-kWh) slip is exactly the kind of
+  // critical unit bug this gate exists to catch.
+  it("formats the sell price 590 as '¥590/MWh' with no /kWh anywhere", async () => {
+    const { formatYuanPerMwh } = await import("../../src/utils/units");
+    expect(formatYuanPerMwh(590)).toBe("¥590/MWh");
+    expect(formatYuanPerMwh(590)).not.toMatch(/kWh/);
+  });
+});
+
+// ─── units.ts — formatPower: zero-flow rendering is defined ───────────────────
+
+describe("reviewer: formatPower — zero flow has defined output", () => {
+  // reviewer: zero-flow rendering is a contracted §12.6 concern and the 3D scene
+  // reads many flows that are 0.0. The <1 MW rule (§8) makes 0 fall in the kW
+  // branch → "0 kW". Pin it so 0 never renders as "NaN", "" or "0.0 MW".
+  it("formatPower(0) renders '0 kW' (0 < 1 MW → kW branch)", async () => {
+    const { formatPower } = await import("../../src/utils/units");
+    expect(formatPower(0)).toBe("0 kW");
+  });
+});
+
+// ─── NumberDisplay — negative finite values must pass the guard ───────────────
+
+describe("reviewer: NumberDisplay — negative finite value renders", () => {
+  // reviewer: §12.7's guard rejects NaN/Infinity, but cost/net values are legitimately
+  // negative (cost_total_yuan = -52700 in the fixture = net revenue). A guard that
+  // accepts only value > 0 would wrongly blank a real reading. Pin that -52.7 renders.
+  it("renders a negative finite value, not nullText", async () => {
+    const { NumberDisplay } = await import("../../src/components/NumberDisplay");
+    const { container } = render(<NumberDisplay value={-52.7} unit="MW" />);
+    expect(container.textContent).toContain("-52.7");
+    expect(container.textContent).not.toContain("—");
+  });
+});
+
+// ─── telemetryStore — clearHistory fully resets seq tracking ──────────────────
+
+describe("reviewer: telemetryStore — clearHistory resets seq tracking", () => {
+  // reviewer: the developer clearHistory test checks history+envStep only. If
+  // clearHistory does not also reset lastSeq/seqGap, the FIRST message after a
+  // reconnect is compared against a stale lastSeq and false-flags a gap.
+  it("clearHistory resets lastSeq to null and seqGap to false", async () => {
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+    act(() => {
+      useTelemetryStore.getState().receiveEnvStep({ ...FIXTURE_ENV_STEP, seq: 10 } as any);
+      useTelemetryStore.getState().receiveEnvStep({ ...FIXTURE_ENV_STEP, seq: 20 } as any); // gap → seqGap true
+    });
+    expect(useTelemetryStore.getState().seqGap).toBe(true);
+    act(() => { useTelemetryStore.getState().clearHistory(); });
+    expect(useTelemetryStore.getState().lastSeq).toBeNull();
+    expect(useTelemetryStore.getState().seqGap).toBe(false);
+  });
+});
+
+// ─── telemetryStore — first message is never a seq gap (PENDING_LOCK) ─────────
+
+describe("reviewer: telemetryStore — first message is not a gap", () => {
+  // reviewer: with lastSeq=null there is no prior seq to diff against. The first
+  // env_step (which may have any seq, e.g. mid-episode reconnect) must NOT set seqGap.
+  it("first receiveEnvStep with seq=5 leaves seqGap false", async () => {
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+    useTelemetryStore.getState().clearHistory();
+    act(() => {
+      useTelemetryStore.getState().receiveEnvStep({ ...FIXTURE_ENV_STEP, seq: 5 } as any);
+    });
+    expect(useTelemetryStore.getState().seqGap).toBe(false);
+  });
+});
+
+// ─── telemetryStore — §12.3 reconnect with new run_id (PENDING_LOCK) ──────────
+
+describe("reviewer: telemetryStore — §12.3 new run_id resets state", () => {
+  // reviewer: §12.3 ("Reconnect with new run_id → clearHistory; old run not merged")
+  // is a contracted commitment with NO developer test. This pins the observable
+  // outcome: a message whose run_id differs from the current run must NOT merge into
+  // the prior run's history and must NOT false-flag a seq gap when the new run's seq
+  // resets low. NOTE TO DEV/ARCHITECT: the contract must state which layer enforces
+  // this (store-internal on run_id change vs wsClient calling clearHistory) — this
+  // test encodes the end state regardless of layer.
+  it("a new run_id drops prior-run history and does not flag a seq gap", async () => {
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+    useTelemetryStore.getState().clearHistory();
+    act(() => {
+      useTelemetryStore.getState().receiveEnvStep({ ...FIXTURE_ENV_STEP, run_id: "run_A", seq: 167 } as any);
+    });
+    act(() => {
+      useTelemetryStore.getState().receiveEnvStep({ ...FIXTURE_ENV_STEP, run_id: "run_B", seq: 0 } as any);
+    });
+    const state = useTelemetryStore.getState();
+    expect(state.runId).toBe("run_B");
+    expect(state.history).toHaveLength(1);      // only the new run's step, not merged
+    expect(state.history[0].step).toBe(FIXTURE_ENV_STEP.payload.step);
+    expect(state.seqGap).toBe(false);           // seq reset on new run is not a gap
+  });
+});
+
+// ─── wsClient — missing required envelope fields (§4.3) (PENDING_LOCK) ─────────
+
+describe("reviewer: wsClient — missing envelope fields discarded", () => {
+  let server: any;
+  beforeEach(() => {
+    vi.stubGlobal("WebSocket", vi.fn().mockImplementation((url: string) => {
+      server = { url, readyState: WebSocket.CONNECTING, send: vi.fn(), close: vi.fn(),
+        onopen: null, onmessage: null, onerror: null, onclose: null };
+      return server;
+    }) as any);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("§4.3 — message missing `kind` is discarded without throwing or dispatching", async () => {
+    // reviewer: §4.3 "Missing required envelope fields → log warning, discard" was
+    // untested. A malformed message must never crash the socket or reach a callback.
+    const { createWsClient } = await import("../../src/clients/wsClient");
+    const onEnvStep = vi.fn();
+    const client = createWsClient({
+      url: "ws://localhost:8000/ws",
+      onEnvStep, onTrainMetrics: vi.fn(), onEvalCompare: vi.fn(), onStatusChange: vi.fn(),
+    });
+    client.connect();
+    act(() => { server.onopen?.(new Event("open")); });
+    const { kind, ...noKind } = FIXTURE_ENV_STEP as any;
+    expect(() => {
+      act(() => { server.onmessage?.({ data: JSON.stringify(noKind) } as MessageEvent); });
+    }).not.toThrow();
+    expect(onEnvStep).not.toHaveBeenCalled();
+  });
+
+  it("§4.3 — message missing `payload` is discarded without dispatching", async () => {
+    // reviewer: a kind present but payload absent must not reach the typed callback.
+    const { createWsClient } = await import("../../src/clients/wsClient");
+    const onEnvStep = vi.fn();
+    const client = createWsClient({
+      url: "ws://localhost:8000/ws",
+      onEnvStep, onTrainMetrics: vi.fn(), onEvalCompare: vi.fn(), onStatusChange: vi.fn(),
+    });
+    client.connect();
+    act(() => { server.onopen?.(new Event("open")); });
+    const { payload, ...noPayload } = FIXTURE_ENV_STEP as any;
+    expect(() => {
+      act(() => { server.onmessage?.({ data: JSON.stringify(noPayload) } as MessageEvent); });
+    }).not.toThrow();
+    expect(onEnvStep).not.toHaveBeenCalled();
+  });
+});
+
+// ─── wsClient — minor-version forward compatibility (PENDING_LOCK) ────────────
+
+describe("reviewer: wsClient — minor-forward-compat", () => {
+  let server: any;
+  beforeEach(() => {
+    vi.stubGlobal("WebSocket", vi.fn().mockImplementation((url: string) => {
+      server = { url, readyState: WebSocket.CONNECTING, send: vi.fn(), close: vi.fn(),
+        onopen: null, onmessage: null, onerror: null, onclose: null };
+      return server;
+    }) as any);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("a 1.x message carrying an unknown extra field is still dispatched (ignore unknown fields)", async () => {
+    // reviewer: telemetry_schema Versioning — "Consumers MUST ignore unknown fields
+    // and SHOULD warn-and-continue on a higher minor." The dev suite tests reject-2.0.0
+    // but never the forward-compat half, so a consumer that hard-rejects any version
+    // mismatch (breaking additive minor bumps / §8.5 assets_ext growth) would pass.
+    const { createWsClient } = await import("../../src/clients/wsClient");
+    const onEnvStep = vi.fn();
+    const client = createWsClient({
+      url: "ws://localhost:8000/ws",
+      onEnvStep, onTrainMetrics: vi.fn(), onEvalCompare: vi.fn(), onStatusChange: vi.fn(),
+    });
+    client.connect();
+    act(() => { server.onopen?.(new Event("open")); });
+    const fwd = { ...FIXTURE_ENV_STEP, schema_version: "1.5.0",
+      payload: { ...FIXTURE_ENV_STEP.payload, some_future_field: 123 } };
+    act(() => { server.onmessage?.({ data: JSON.stringify(fwd) } as MessageEvent); });
+    expect(onEnvStep).toHaveBeenCalledOnce();
+    expect(onEnvStep.mock.calls[0][0].payload.step).toBe(42);
+  });
+});
+
+// ─── wsClient — recovery from stale on next message ───────────────────────────
+
+describe("reviewer: wsClient — stale recovers to connected on next message", () => {
+  let server: any;
+  beforeEach(() => {
+    vi.stubGlobal("WebSocket", vi.fn().mockImplementation((url: string) => {
+      server = { url, readyState: WebSocket.CONNECTING, send: vi.fn(), close: vi.fn(),
+        onopen: null, onmessage: null, onerror: null, onclose: null };
+      return server;
+    }) as any);
+  });
+  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+
+  it("a message arriving after 'stale' returns status to 'connected'", async () => {
+    // reviewer: §4.1.5 makes 'stale' a sticky state with no defined exit. Without a
+    // recovery transition the status indicator stays "stale" forever even though data
+    // is flowing again. Pin that the next message clears stale back to connected.
+    vi.useFakeTimers();
+    const { createWsClient } = await import("../../src/clients/wsClient");
+    const onStatusChange = vi.fn();
+    const client = createWsClient({
+      url: "ws://localhost:8000/ws",
+      onEnvStep: vi.fn(), onTrainMetrics: vi.fn(), onEvalCompare: vi.fn(),
+      onStatusChange, staleAfterMs: 5000,
+    });
+    client.connect();
+    act(() => { server.onopen?.(new Event("open")); });
+    act(() => { vi.advanceTimersByTime(5001); });
+    expect(onStatusChange).toHaveBeenCalledWith("stale");
+    onStatusChange.mockClear();
+    act(() => { server.onmessage?.({ data: JSON.stringify(FIXTURE_ENV_STEP) } as MessageEvent); });
+    expect(onStatusChange).toHaveBeenCalledWith("connected");
+  });
+});
+
+// ─── restClient — timeout path (§5) ───────────────────────────────────────────
+
+describe("reviewer: restClient — timeout rejects with 'timeout:'", () => {
+  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+
+  it("a request that exceeds timeoutMs rejects with a timeout error", async () => {
+    // reviewer: §5 defines `timeout: <url>` but no test exercised it. A client that
+    // never times out hangs the dashboard on a dead server.
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => new Promise(() => {}))); // never resolves
+    const { createRestClient } = await import("../../src/clients/restClient");
+    const client = createRestClient({ baseUrl: "http://localhost:8000", timeoutMs: 1000 });
+    const p = client.getRuns();
+    const assertion = expect(p).rejects.toThrow(/timeout/);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1001); });
+    await assertion;
+  });
+});
+
+// ─── restClient — getSiteConfig field names + units (feeds 3D scaling) ────────
+
+describe("reviewer: restClient — getSiteConfig pins field names and units", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("returns SiteConfig with MW/MWh fields intact (945 MW export, 294.5 MWh battery)", async () => {
+    // reviewer: only getRuns was tested. getSiteConfig.pcc_max_export_mw is what the 3D
+    // scene scales the PCC wire against (D5=945) and battery_capacity_mwh (294.5) sizes
+    // the SOC bank — wrong field name or a kW/MW mixup here silently mis-scales the scene.
+    const mockCfg = {
+      site_id: "gansu",
+      wind_capacity_mw: 800, solar_capacity_mw: 500,
+      battery_capacity_mwh: 294.5, battery_max_charge_mw: 100, battery_max_discharge_mw: 100,
+      pcc_max_export_mw: 945, pcc_max_import_mw: 400,
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => mockCfg }));
+    const { createRestClient } = await import("../../src/clients/restClient");
+    const client = createRestClient({ baseUrl: "http://localhost:8000" });
+    const cfg = await client.getSiteConfig("gansu");
+    expect(cfg.pcc_max_export_mw).toBe(945);   // D5 physics export limit, MW
+    expect(cfg.pcc_max_import_mw).toBe(400);
+    expect(cfg.battery_capacity_mwh).toBe(294.5);
+  });
+});
+
+// ─── evalStore — self-contained (no cross-test state leak) + cost integrity ───
+
+describe("reviewer: evalStore — self-contained dispatch + cost-sum integrity", () => {
+  // reviewer: the developer "stores all three policy entries" test reads `latest`
+  // without dispatching, depending on the previous test leaving store state — it
+  // breaks under test reordering/isolation. This version dispatches its own fixture.
+  it("stores all three policies after its own dispatch", async () => {
+    const { useEvalStore } = await import("../../src/stores/evalStore");
+    useEvalStore.getState().clear();
+    act(() => { useEvalStore.getState().receiveEvalCompare(FIXTURE_EVAL_COMPARE as any); });
+    const latest = useEvalStore.getState().latest;
+    expect(latest?.policies.rl).toBeDefined();
+    expect(latest?.policies.no_battery).toBeDefined();
+    expect(latest?.policies.rule_based_tou).toBeDefined();
+  });
+
+  it("each policy's cost components sum to total_cost_yuan", async () => {
+    // reviewer: cost-breakdown integrity (acceptance: components add to the headline
+    // total). Guards the fixture and any store-side total against drift.
+    const { policies } = FIXTURE_EVAL_COMPARE.payload;
+    for (const p of Object.values(policies)) {
+      const sum = p.energy_cost_yuan + p.demand_charge_yuan + p.degradation_yuan
+        + p.curtailment_yuan + p.voll_yuan;
+      expect(sum).toBe(p.total_cost_yuan);
+    }
+  });
+});
