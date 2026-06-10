@@ -13,6 +13,7 @@ These rules apply to every agent working in this repo. They are non-negotiable.
 - Reviewer routing: `contracts/env|training|harness|serving/` → backend-reviewer; `contracts/frontend|frontend3d/` → frontend-reviewer; shared contracts → both, locked by rl-architect.
 - **Never modify a reviewer-approved test to make it pass.** If a test seems wrong, go back through review.
 - QA (qa-engineer, `qa-verification` skill) issues the verdict that closes a task — not your own test run.
+- **All changes go through GitHub PRs.** Never commit to `main`. Branch `feat/<area>-<feature>`, open a draft PR for the contract+tests gate, mark ready after implementation. Reviewers verdict with `gh pr review` (inline comments, approve/request-changes); QA posts its verdict as a PR comment; every review comment gets an answer (fixing commit or reasoned reply). Merge requires reviewer APPROVE + QA_PASS.
 
 ## File locations (no exceptions)
 - Contracts: `contracts/<area>/<feature>.md`; review records: `contracts/reviews/<feature>.md`. Worked example: `contracts/_example/`.

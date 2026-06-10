@@ -13,7 +13,9 @@ Read `LINEAGE.md` (project root) before anything else: pick up binding DECISION 
 
 **Throughout this workflow, append a LINEAGE.md entry at every milestone** (format defined in that file): CONTRACT_DRAFTED after step 1, TESTS_WRITTEN after step 2, REVIEW_APPROVED/REJECTED after step 3 (the reviewer appends this one), IMPLEMENTED after step 4, and the handoff entry at step 5. Append-only — never rewrite history.
 
-## Step 1 — Write the contract
+## Step 1 — Branch, then write the contract
+
+Create a feature branch off `main`: `feat/<area>-<feature>` (e.g. `feat/env-battery-dynamics`). All work for this feature happens on this branch — never commit to `main` directly.
 
 Create `contracts/<area>/<feature>.md` containing:
 
@@ -49,9 +51,16 @@ Derive the cases from the contract and REBUILD_SPEC.md formulas:
 - Frontend/serving: schema-validation tests for every message type; component tests against fixture data matching the contract.
 - Tests must fail at this point (nothing is implemented). That's correct — commit them red.
 
-## Step 3 — Reviewer gate (mandatory)
+## Step 3 — Reviewer gate (mandatory, on GitHub)
 
-Submit the contract + test cases to the responsible reviewer:
+Commit the contract + test cases, push the branch, and open a **draft PR** titled `[<area>] <feature> — contract + tests`:
+
+```
+gh pr create --draft --title "[env] battery_dynamics — contract + tests" \
+  --body "Contract: contracts/env/battery_dynamics.md ..."
+```
+
+The PR body must link the contract, list the test cases, and cite the REBUILD_SPEC.md sections implemented. Then request review from the responsible reviewer:
 - `contracts/env|training|harness|serving/` → **backend-reviewer**
 - `contracts/frontend|frontend3d/` → **frontend-reviewer**
 - Shared contracts consumed by both sides (telemetry schema, checkpoint format, `assets/3d/registry.json`) → **both reviewers**, locked by rl-architect.
@@ -65,15 +74,18 @@ The reviewer checks:
 
 The reviewer does not just approve/reject — it must **actively hunt for edge cases the developer missed and add test cases for them** directly to the same test file, marked with a `# reviewer: <reason>` comment (with hand-computed expected values, same standard as developer tests). Think adversarially: boundary values, constraint interactions, degenerate inputs (zero generation, zero load), unit traps, seasonal/calendar edges. The approved test suite = developer cases + reviewer cases.
 
-Record the approval in `contracts/reviews/<feature>.md` (reviewer verdict, date, list of reviewer-added cases, the exact test-file versions approved). **No approval, no implementation.** If the reviewer rejects, revise and resubmit.
+The reviewer delivers the gate verdict **on the PR**: a `gh pr review` with inline comments on specific test lines, pushing their added test cases as a commit to the branch (marked `# reviewer:`), and an APPROVE (gate passed) or REQUEST_CHANGES (revise and re-request). The reviewer also commits the review record to `contracts/reviews/<feature>.md` on the branch (verdict, date, list of reviewer-added cases, the exact test-file versions approved). **No PR approval of the contract+tests stage, no implementation.**
 
-## Step 4 — Implement
+## Step 4 — Implement (same PR)
 
-Write code until the approved tests pass.
+Write code on the same branch until the approved tests pass, then mark the PR ready for review (`gh pr ready`) and re-request the reviewer for the **code audit** stage.
 
-- **Never modify an approved test to make it pass.** If you believe a test is wrong, go back to step 3 — the change needs reviewer re-approval and a note in the review record.
+- **Never modify an approved test to make it pass.** If you believe a test is wrong, go back to step 3 — the change needs reviewer re-approval on the PR and a note in the review record.
 - Stay inside the contract; if implementation reveals the contract is wrong, stop and revise the contract first (architect + reviewer re-approval if it's a shared contract).
+- Answer every reviewer comment on the PR — either with a fixing commit (reference it in the reply) or a reasoned response. No comment left unanswered; unresolved disagreements escalate to rl-architect.
 
-## Step 5 — Hand off to QA
+## Step 5 — Hand off to QA, then merge
 
-Submit to the **qa-engineer** agent (`qa-verification` skill) with: contract path, review record path, test suite location, and how to run it. QA's verdict — not your own test run — is what marks the task done.
+After the reviewer approves the implementation, request **qa-engineer** (`qa-verification` skill) on the PR with: contract path, review record path, test suite location, and how to run it. QA posts its structured verdict as a PR comment. QA's verdict — not your own test run — is what marks the task done.
+
+Merge only when all three are true: reviewer APPROVE on the code, QA verdict QA_PASS (or QA_PASS_WITH_ISSUES with rl-architect sign-off recorded on the PR), and the LINEAGE.md entries are on the branch. Squash-merge; the branch is deleted after merge.
