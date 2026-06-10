@@ -85,3 +85,16 @@ golden-fixture requirement. Verified the golden fixtures exist and match the ass
 Re-request when must-fix 1 (WsStatus alignment + §3.1 condition) and must-fix 2 (real seqGap data
 source + de-fictionalized Section-10 tests) land. Stage-2 implementation audit on PR-ready — I'll
 run `validate-telemetry` against the implementation and re-check D13 in the rendered cost table.
+
+---
+
+## Re-review (stage 1b) — 2026-06-10 — VERDICT: APPROVE
+
+Re-reviewed e140d94 against code:
+- Must-fix 1 (WsStatus): RESOLVED — §2.3 = app_shell union verbatim; §3.1 guard `!== "disconnected"`; §3.7 store-stale + precedence.
+- Must-fix 2 (seqGap): RESOLVED — `trainingStore` amended with `lastTrainSeq`/`trainSeqGap` (forward-only, first-never, clear-resets); §5 store-based; Section-10 tests store-mock (no `_seq`).
+- Should-fix: RESOLVED — `formatThroughput` doc fix + B-tier (1e9→"1B/s") + floor (1500→"1k/s"); `formatSteps(1e9)="1B steps"`; tie-break test. My 4 reviewer tests intact.
+
+Tracked dependency (note, not a gate blocker): the app_shell `trainingStore` implementation must gain `lastTrainSeq`/`trainSeqGap` before the dashboard implementation — coordinated with frontend-engineer.
+
+Verdict: APPROVE (stage-1 gate). Stage-2 implementation audit on PR-ready — I'll run validate-telemetry and re-check D13 in the rendered table.
