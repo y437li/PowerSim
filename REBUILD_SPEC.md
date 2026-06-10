@@ -596,7 +596,7 @@ Both optimize the **D13 real-money total including the monthly demand charge**, 
 **Eval integration:** add `eval_compare` policy keys **`sa`** and **`aco`** (additive/minor, same as the §11.5 ruling — `policies` is `additionalProperties: true`, reuse the `policy_costs` shape). The headline panel shows them on the ladder with their oracle gaps.
 
 #### 11.7 Open questions for the user
-1. Given the **exact DP oracle is already greenlit** (and dominates these), do you still want SA + ACO? Their distinct value is as **scalable approximate oracles for the §8 compositions** where exact DP is intractable — recommend **yes, but sequence them after §8** (for single-battery Gansu they're a cross-check, not a necessity).
+1. **Sequencing (not whether — SA and ACO were explicitly requested):** the exact DP oracle (already greenlit) dominates these, so SA/ACO's distinct value is as **scalable approximate oracles for the §8 compositions** where exact DP's state explodes. Recommend **implementing them after §8**; for the single-battery Gansu plant they serve as a cross-check against the exact oracle.
 2. SA continuous-schedule encoding + ACO reusing the Δsoc = 0.01 SOC graph — acceptable, or prefer a different encoding?
 3. OK to report each as an **oracle gap** (never as a bound)?
 
