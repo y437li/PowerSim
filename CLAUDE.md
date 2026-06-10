@@ -36,7 +36,8 @@ These rules apply to every agent working in this repo. They are non-negotiable.
 - Python tests: `tests/<area>/test_<area>_<feature>.py` (feature matches the contract filename)
 - Contracts: `contracts/<area>/<feature>.md` in `snake_case`; review records: `contracts/reviews/<feature>.md`
 - React components: `PascalCase.tsx` (one component per file, filename = component name); hooks: `useCamelCase.ts`; non-component TS (utils, stores, clients): `camelCase.ts`
-- Frontend tests: `tests/frontend*/<feature>.test.tsx` where `<feature>` matches the file under test
+- Frontend unit tests: `tests/frontend*/<feature>.test.tsx` (Vitest+RTL) where `<feature>` matches the file under test
+- Frontend E2E tests: `tests/frontend_e2e/<scenario>.spec.ts` (Playwright; D20) — `<scenario>` is the browser scenario (e.g. `smoke`), not a component name; harness contract `contracts/frontend/playwright_harness.md`
 - 3D assets: `kebab-case.glb` under `assets/3d/<function>/` (e.g. `assets/3d/turbines/vestas-v150-4.2.glb`); `registry.json` keys = the asset IDs used in config YAML, verbatim
 - Config: `config/<site|asset>_<name>.yaml` in `snake_case` (e.g. `site_gansu.yaml`)
 - Markdown docs: root-level project docs are `SCREAMING_CASE.md` (CLAUDE.md, LINEAGE.md, REBUILD_SPEC.md); all other docs `snake_case.md`
