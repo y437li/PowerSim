@@ -148,3 +148,36 @@ instance on the branch yet) — route separately; not a gate-1 blocker.
 
 **Verdict: APPROVE** (stage-1 contract+tests gate). Approved suite = developer cases + my 6
 reviewer cases. Implementation may proceed; stage-2 implementation audit on PR-ready.
+
+---
+
+## Stage-2 implementation audit — 2026-06-10 — VERDICT: APPROVE
+
+Audited implementation commit `23e04c2` (92/92 approved tests pass per developer; QA runs the suite
+formally). Code audited directly against the contract:
+
+- **No hardcoded asset paths ✓** — scene code contains no `assets/3d/` or `.glb` literals; every
+  instance resolves through `resolveAsset(registry, id)` with `registry` passed as a prop.
+- **No rogue I/O ✓** — reads telemetry exclusively from `useTelemetryStore()`; never opens a socket
+  or calls fetch/restClient.
+- **Animation bindings correct ✓** — rotor ← `wind_speed_mps` via `calcRotorOmega` with the §6
+  constants (cut-in 3 / rated 12 / cut-out 25 / ω_max 0.2); SOC fill ← `calcSocFill(soc, 0.2, 0.9)`
+  (D4); PV emissive ← `calcEmissive(irradiance_wm2)`; internal flow width/speed normalized by
+  `siteMaxMw = wind_cap + solar_cap`; **PCC export normalized by `pcc.max_export_mw` (945, D5) and
+  import by `pcc.max_import_mw` (400, D12)** — never `site_max` for the grid wires. The 12 FLOW_EDGES
+  map each flow field to the correct source/target, with split solar/wind curtailment.
+- **Graceful freeze on telemetry gaps ✓** — `isPayloadFinite` checks all scalar + flow fields; a
+  NaN/Inf payload is discarded and `lastValidRef` retains the previous good frame (freeze, not reset
+  to zero); the overlay shows on `envStep === null || wsStatus !== "connected"`.
+- **Instancing + draw-call budget ✓** — turbines grouped by `assetId` (one InstancedMesh/draw call
+  per unique id; 146 Gansu turbines → 1 group); total counter = turbine groups + PV arrays +
+  battery + PCC + 14 flow lines (well under the §9.3 ≤100 budget).
+- **Battery direction ✓** — charge>0→charging, discharge>0→discharging, else idle.
+
+**Non-blocking notes:** (1) the actual R3F/Three.js render is `import()`-deferred and no-ops in
+JSDOM, so tests verify the computed animation STATE (via `data-*` bridge attributes), not the visual
+mesh transforms — actual rendering needs QA/manual verification. (2) `assets/3d/registry.json`
+remains a SHARED contract pending rl-architect LOCK + backend-reviewer comment (resolveAsset takes
+the registry as a prop, so no code change is needed once it lands).
+
+**Verdict: APPROVE** (stage-2 code audit). Mergeable on reviewer APPROVE + QA_PASS.
