@@ -270,7 +270,7 @@ interface WsClientOptions {
   onStatusChange: (status: WsStatus) => void;
   bufferSize?: number;    // max env_step messages to buffer (default 1000)
   staleAfterMs?: number;  // mark stale if no message for this duration (default 10000)
-  reconnectBaseMs?: number; // base reconnect delay (default 50)
+  reconnectBaseMs?: number; // base reconnect delay (default 1000)
   reconnectMaxMs?: number;  // cap reconnect delay (default 30000)
 }
 
