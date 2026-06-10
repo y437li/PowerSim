@@ -15,7 +15,7 @@ Read `LINEAGE.md` (project root) before anything else: pick up binding DECISION 
 
 ## Step 1 — Branch, then write the contract
 
-Create a feature branch off `main`: `feat/<area>-<feature>` (e.g. `feat/env-battery-dynamics`). All work for this feature happens on this branch — never commit to `main` directly.
+Create a feature branch off `main` following the CLAUDE.md naming convention: `feat/<area>-<feature>`, lowercase with hyphens (e.g. `feat/env-battery-dynamics`); bug fixes use `fix/<area>-<feature>`. The `<feature>` segment must match the contract filename (hyphens in the branch, underscores in the file). All work for this feature happens on this branch — never commit to `main` directly.
 
 Create `contracts/<area>/<feature>.md` containing:
 
