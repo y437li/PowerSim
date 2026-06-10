@@ -13,6 +13,12 @@ export interface TrainingState {
    * Reset on clear(). Non-sticky — mirrors telemetryStore.seqGap semantics.
    */
   trainSeqGap: boolean;
+  /**
+   * ISO-8601 UTC ts_utc from the most recent train_metrics envelope.
+   * Used by TrainingPanel StreamStatusBanner for local data-stale check.
+   * null before first message; reset to null on clear().
+   */
+  latestTsUtc: string | null;
 
   receiveTrainMetrics: (msg: TelemetryEnvelope) => void;
   clear: () => void;
@@ -23,6 +29,7 @@ export const useTrainingStore = create<TrainingState>((set) => ({
   history: [],
   lastTrainSeq: null,
   trainSeqGap: false,
+  latestTsUtc: null,
 
   receiveTrainMetrics(msg: TelemetryEnvelope) {
     const payload = msg.payload as TrainMetricsPayload;
@@ -35,11 +42,18 @@ export const useTrainingStore = create<TrainingState>((set) => ({
         history: [...state.history, payload],
         lastTrainSeq: incomingSeq,
         trainSeqGap: gap,
+        latestTsUtc: msg.ts_utc ?? null,
       };
     });
   },
 
   clear() {
-    set({ latest: null, history: [], lastTrainSeq: null, trainSeqGap: false });
+    set({
+      latest: null,
+      history: [],
+      lastTrainSeq: null,
+      trainSeqGap: false,
+      latestTsUtc: null,
+    });
   },
 }));
