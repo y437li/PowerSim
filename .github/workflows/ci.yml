@@ -42,9 +42,11 @@ jobs:
         shell: bash
         run: |
           if [ -f package.json ] && find tests -name '*.test.ts*' 2>/dev/null | grep -q .; then
-            # npm install instead of npm ci: avoids the known npm/rollup cross-platform
-            # optional-dep bug where a macOS-generated lock omits @rollup/rollup-linux-x64-gnu
-            # (rollup error message itself recommends this workaround)
+            # Delete the macOS-generated lock before install: avoids the known npm/rollup
+            # cross-platform optional-dep bug (github.com/npm/cli/issues/4828) where a
+            # macOS lock omits @rollup/rollup-linux-x64-gnu even under `npm install`.
+            # Rollup's own error message recommends removing both lock + node_modules.
+            rm -f package-lock.json
             npm install
             npm test
           else
