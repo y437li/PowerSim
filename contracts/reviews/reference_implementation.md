@@ -7,7 +7,7 @@
 - **Decisions:** D3, D4, D5, D6–D10, D11, D12, D13, **D19** (load ×100)
 - **PR:** #14 (`feat/env-reference-implementation`) — tasks #5 + #21
 - **Reviewer:** backend-reviewer
-- **Verdict:** **APPROVE** — 2026-06-10 (commit 09c99c0, + reviewer commit)
+- **Verdict:** **APPROVE** — 2026-06-10 (commit 9adfced, + reviewer commit)
   - R1 (ac3bc32→a0050be): REQUEST_CHANGES — B1–B4 + M1–M6.
   - R2/R3 (845ff5d): B1, B3, M1–M6 resolved; new C1 (self-test fixture) + B4/D19 citation + STEP 10/11 ordering raised.
   - R4 (b7ac172): C1 fixed, D19 cited, B3-minor (per-source curtailment) fixed.
@@ -43,3 +43,11 @@ complementary explicit value-pin.
 
 ## Notes
 - `validate-telemetry` N/A (reference is a test fixture, not a telemetry producer); `physics-invariants` battery (1–5) IS contracted here via the task #21 helpers — satisfied.
+
+## Post-merge-review: team-lead blocker + D21 (commit 9adfced)
+team-lead's independent review found real-money c_demand_charge never books for a truncated mid-month training episode. Scoped (backend-reviewer): real-money/eval ONLY — reward uses 2·c_demand_shape every step (L513), c_demand_charge stays out of cost_total_reward_basis (D13). rl-architect ruled **D21**: terminal flush = year-end (full-year horizon), NOT per-episode → impl conformant, no signature change.
+Resolved in 9adfced + reviewer tests:
+- D21 cite at contract line 450; gate test `test_truncated_episode_books_zero_demand_charge` (t=100..267 ⊂ Jan, no boundary → Σ c_demand_charge==0). Verified: Σ==0.
+- D6 forecast-price clip ≥0 via `_noised_feature` helper (structural). Tests `test_noised_feature_clips_to_floor` (seed-independent: 250·(1−2)=−250→0; 250·1.2=300) + `test_forecast_price_obs_nonnegative` (σ=2.0/seed=999 → all≥0, 4 clip events, non-vacuous). Note: clipped to ≥0 (universal physical floor) rather than the site-specific tariff band [250,780] — more general for the reusable helper; accepted.
+- SOC penalty rate parameterized → GansuParams.soc_penalty_yuan_per_mwh (single source; env + invariants read it). Tautology resolved.
+Full env suite: 128 passed + 3 reviewer tests = 131 passed / 9 skipped. APPROVE restored.

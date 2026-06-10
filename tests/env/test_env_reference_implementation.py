@@ -1493,3 +1493,53 @@ def test_d13_boundary_divergence_real_vs_reward_basis():
         result.c_demand_charge_yuan, rel=1e-9), (
         "real − reward_basis must equal c_demand_charge_yuan at a boundary step")
     assert result.reward == pytest.approx(0.0, abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# reviewer (backend-reviewer): D21 episode semantics + D6 price-clip gating
+# ---------------------------------------------------------------------------
+from reference.gansu_env import _noised_feature as _rv_noised_feature  # noqa: E402
+
+
+def test_truncated_episode_books_zero_demand_charge():  # reviewer: D21
+    # reviewer: D21 (rl-architect binding) — real c_demand_charge books ONLY at a
+    # reviewer: calendar-month boundary or year-end (t==8759). A 7-day slice that
+    # reviewer: crosses NO boundary books 0 by design (training pressure is the per-step
+    # reviewer: 2·C_DC_shape in cost_total_reward_basis; c_demand_charge is real-money/eval).
+    # reviewer: t=100..267 ⊂ January (Jan=744h, 267<743 → no Feb crossing, not t==8759) → Σ==0.
+    # reviewer: NOT "all 7-day episodes book 0": a straddling slice books at the crossing (M1/M2).
+    data = generate_year(seed=0, params=PARAMS)
+    state = make_state(t=100, month_peak_mw=50.0, seed=7)
+    total_dc = 0.0
+    for _ in range(168):
+        w = (float(data["wind_mps"][state.t]), float(data["irradiance_wm2"][state.t]),
+             float(data["temperature_c"][state.t]))
+        r = env_step(state, np.zeros(6), w, float(data["load_mw"][state.t]), PARAMS)
+        total_dc += r.c_demand_charge_yuan
+        state = r.new_state
+    assert total_dc == pytest.approx(0.0, abs=1e-9), (
+        f"D21: no-boundary 7-day episode must book 0 real demand charge, got {total_dc:.4f}")
+
+
+def test_noised_feature_clips_to_floor():  # reviewer: D6
+    # reviewer: D6 — _noised_feature clips noised value to [lo, hi]. Seed-independent
+    # reviewer: unit check so the integration test below can't silently go vacuous.
+    # reviewer: noisy = true·(1 + noise·σ). 250·(1 + (−1.0)·2.0) = 250·(−1) = −250 → clip(0) = 0.
+    assert _rv_noised_feature(250.0, -1.0, 2.0, 0.0) == pytest.approx(0.0, abs=1e-9)
+    # reviewer: positive passes through: 250·(1 + 0.1·2.0) = 250·1.2 = 300.
+    assert _rv_noised_feature(250.0, 0.1, 2.0, 0.0) == pytest.approx(300.0, rel=1e-9)
+
+
+def test_forecast_price_obs_nonnegative():  # reviewer: D6
+    # reviewer: D6 — noised forecast price is clipped ≥ 0. With σ_max=2.0 (stress) many
+    # reviewer: draws drive the unclipped value < 0; the clipped obs must stay ≥ 0.
+    # reviewer: Non-vacuity: seed=999 produces clip events (verified ≥1 entry == 0).
+    data = generate_year(seed=0, params=PARAMS)
+    params_high_noise = GansuParams(forecast_sigma_max=2.0)
+    state = make_state(t=0, seed=999)
+    obs = get_obs(state, data, params_high_noise, price_buy=250.0)
+    price_obs = obs[14::4][:24]   # forecast price feature for h_idx=1..24
+    assert (price_obs >= 0.0).all(), (
+        f"D6: forecast price obs must be ≥ 0; min={price_obs.min():.6f}")
+    assert (price_obs == 0.0).any(), (
+        "D6 non-vacuity: σ_max=2.0/seed=999 must trigger ≥1 clip-to-floor event")
