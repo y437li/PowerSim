@@ -219,8 +219,14 @@ export function PriceTimeline(props: PriceTimelineProps): JSX.Element;
 - Live price line: `price_buy_yuan_per_mwh`, colour from `touColors.ts` keyed by the step's
   `tariff_tier` (wire value, fine for per-point colouring — only the background band edges need
   the static schedule).
-- Accessible band list: hidden `<ul aria-label="TOU bands">` with each tier name (for tests
-  that can't query SVG).
+- Accessible band list: hidden `<ul aria-label="TOU bands">` with one `<li>` per `TouBand`
+  entry from `TOU_SCHEDULE` (9 items). Each `<li>` carries three attributes:
+  - `data-tier` — tier name (e.g. `"critical_peak"`)
+  - `data-from-min` — band start in minutes-from-midnight (string, e.g. `"630"`)
+  - `data-to-min` — band end in minutes-from-midnight (string, e.g. `"690"`)
+  The morning critical-peak `<li>` **must** have `data-from-min="630"` and `data-to-min="690"`
+  (not 660/720 — the naïve hourly-step boundary). This is testable without querying SVG and
+  is the primary guard against C1 geometry bugs.
 - `data-testid="price-timeline"`.
 - Empty history → `data-testid="price-timeline"` with `data-state="empty"`.
 
@@ -249,9 +255,9 @@ Monthly Peak Demand
   rate comes from the wire field `demand_rate_yuan_per_mw_month` (D10).
 - `data-testid="month-peak-card"`.
 - `data-testid="month-peak-mw"` on the MW value, `data-testid="demand-exposure"` on the ¥ value.
-- Peak in MW formatted via `formatPower()` (or plain `${v.toFixed(1)} MW` if `formatPower` changes
-  the unit for small values — use `${monthPeakMw.toFixed(1)} MW` directly, since site-scale peak
-  is always ≥1 MW and the wire unit is already MW).
+- Peak in MW formatted via `formatPower(monthPeakMw)` from `units.ts`. Site-scale peak is always
+  ≥1 MW so the formatted output is "95.0 MW". Do **not** inline `${v.toFixed(1)} MW` — all
+  power formatting must go through the shared `formatPower` utility.
 
 ### 2.6 `AlertList`
 
@@ -289,6 +295,8 @@ export function AlertList(props: AlertListProps): JSX.Element;
 - `data-testid="alert-list"`.
 - Each alert row: `data-testid="alert-{kind}"` (e.g. `data-testid="alert-curtailment"`).
 - When `alerts.length === 0`: renders `data-testid="alert-list"` with text "No alerts".
+- **Rendered order: newest-first** (highest `stepIndex` at the top). `deriveAlerts` returns events
+  in descending step order; `AlertList` renders the array as-is.
 - Alert severity colour: curtailment → amber; VOLL → red; SOC violation → orange.
 - ¥ penalty formatted via `formatYuan(v, 0)`.
 
@@ -354,13 +362,18 @@ No new store fields needed. All dashboard state derives from these three.
 
 ```typescript
 // Derived in LiveDashboard — pure function, testable without React:
+
+// Sub-tolerance guard: JAX float curtailment can produce ~1e-6 MW noise.
+// Only raise an alert when the value meaningfully exceeds zero.
+const ALERT_EPSILON = 0.001; // MW (and MWh for SOC violation)
+
 function deriveAlerts(history: EnvStepPayload[]): AlertEvent[] {
   const alerts: AlertEvent[] = [];
   for (const step of history) {
     const curtailed = step.flows.solar_curtailed_mw
                     + step.flows.wind_curtailed_mw
                     + step.flows.bat_curtailed_mw;
-    if (curtailed > 0) {
+    if (curtailed > ALERT_EPSILON) {
       alerts.push({
         kind: "curtailment",
         stepIndex: step.step,
@@ -368,7 +381,7 @@ function deriveAlerts(history: EnvStepPayload[]): AlertEvent[] {
         detail: `${curtailed.toFixed(1)} MW curtailed`,
       });
     }
-    if (step.flows.load_unserved_mw > 0) {
+    if (step.flows.load_unserved_mw > ALERT_EPSILON) {
       alerts.push({
         kind: "voll",
         stepIndex: step.step,
@@ -376,7 +389,7 @@ function deriveAlerts(history: EnvStepPayload[]): AlertEvent[] {
         detail: `${step.flows.load_unserved_mw.toFixed(1)} MW unserved`,
       });
     }
-    if (step.battery.soc_violation_mwh > 0) {
+    if (step.battery.soc_violation_mwh > ALERT_EPSILON) {
       alerts.push({
         kind: "soc_violation",
         stepIndex: step.step,
@@ -385,7 +398,8 @@ function deriveAlerts(history: EnvStepPayload[]): AlertEvent[] {
       });
     }
   }
-  return alerts;
+  // Newest-first: highest stepIndex at top (live lists show most recent first).
+  return alerts.reverse();
 }
 ```
 
@@ -399,7 +413,7 @@ function deriveAlerts(history: EnvStepPayload[]): AlertEvent[] {
 | ¥/MWh prices (live) | `formatYuanPerMwh(v)` | `¥620/MWh` |
 | SOC (display) | `socToPercent(soc).toFixed(1) + " %"` | `55.0 %` |
 | Power flows | `formatPower(mw)` (from units.ts) | `40.0 MW` or `850 kW` |
-| Monthly peak | `${v.toFixed(1)} MW` directly (always ≥1 MW site-scale) | `95.0 MW` |
+| Monthly peak | `formatPower(monthPeakMw)` (always ≥1 MW site-scale → "95.0 MW") | `95.0 MW` |
 
 No inline unit conversion math. All conversions imported from `units.ts`.
 
@@ -445,10 +459,13 @@ Tests in `tests/frontend/live_dashboard.test.tsx`:
 4. **`MonthPeakCard`** — exposure = `monthPeakMw × demandRateYuanPerMwMonth` (hand-computed:
    95 × 32,000 = ¥3,040,000); no hardcoded rate.
 5. **`AlertList`** — empty → "No alerts"; curtailment/VOLL/SOC-violation alerts from fixture data.
-6. **`deriveAlerts()`** — pure function; tested independently of React render.
+6. **`deriveAlerts()`** — pure function; tested independently of React render; epsilon guard
+   (0.001 MW threshold — sub-tolerance floats ≤ 0.001 do not fire); newest-first ordering.
 7. **`SocTimeline`** — SOC displayed as percent (55 → "55.0 %"); D4 bounds reference lines present;
    empty state renders `data-state="empty"`.
-8. **`PriceTimeline`** — accessible `<ul>` with all four tier names present; empty state.
+8. **`PriceTimeline`** — accessible `<ul>` with all four tier names present; empty state;
+   **band geometry: critical-peak `<li>` has `data-from-min="630"` and `data-to-min="690"`**
+   (blocker C1 — pins rendered band edges, not just tier names).
 9. **`PowerFlowsTable`** — all 16 flow rows present with correct `data-field` attributes; values
    from golden fixture A.
 10. **`LiveDashboard`** — empty+connected → "Waiting" spinner; empty+disconnected → blank;

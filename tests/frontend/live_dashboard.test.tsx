@@ -27,7 +27,7 @@ import { PriceTimeline }      from "../../src/components/live/PriceTimeline";
 import { PowerFlowsTable }    from "../../src/components/live/PowerFlowsTable";
 import { getTouTier, getTouPrice, TOU_SCHEDULE } from "../../src/utils/touSchedule";
 import { deriveAlerts }       from "../../src/utils/deriveAlerts";
-import { socToPercent, formatYuan } from "../../src/utils/units";
+import { socToPercent, formatYuan, formatPower } from "../../src/utils/units";
 import type {
   EnvStepPayload,
   PerStepCosts,
@@ -386,6 +386,95 @@ describe("deriveAlerts() — pure alert derivation from history", () => {
     expect(alerts).toHaveLength(1);
     expect(alerts[0].stepIndex).toBe(200);
   });
+
+  // ── Epsilon guard (finding #2) ───────────────────────────────────────────────
+  it("sub-epsilon curtailment (0.0005 MW) → no alert (JAX float noise guard)", () => {
+    // ALERT_EPSILON = 0.001 MW; 0.0005 < epsilon → suppress
+    const step: EnvStepPayload = {
+      ...GOLDEN_A,
+      flows: { ...GOLDEN_A.flows, solar_curtailed_mw: 0.0005 },
+      costs: { ...GOLDEN_A.costs, c_curtail_yuan: 0.4 },
+    };
+    expect(deriveAlerts([step])).toHaveLength(0);
+  });
+
+  it("at-epsilon curtailment (0.001 MW) → no alert (boundary is exclusive: > epsilon)", () => {
+    // 0.001 is NOT > 0.001 → suppressed
+    const step: EnvStepPayload = {
+      ...GOLDEN_A,
+      flows: { ...GOLDEN_A.flows, solar_curtailed_mw: 0.001 },
+      costs: { ...GOLDEN_A.costs, c_curtail_yuan: 0.8 },
+    };
+    expect(deriveAlerts([step])).toHaveLength(0);
+  });
+
+  it("above-epsilon curtailment (0.0011 MW) → alert fires", () => {
+    // 0.0011 > 0.001 → real event, alert must fire
+    const step: EnvStepPayload = {
+      ...GOLDEN_A,
+      flows: { ...GOLDEN_A.flows, solar_curtailed_mw: 0.0011 },
+      costs: { ...GOLDEN_A.costs, c_curtail_yuan: 0.88 },
+    };
+    const alerts = deriveAlerts([step]);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].kind).toBe("curtailment");
+  });
+
+  it("sub-epsilon VOLL (0.0005 MW unserved) → no alert", () => {
+    const step: EnvStepPayload = {
+      ...GOLDEN_A,
+      flows: { ...GOLDEN_A.flows, load_unserved_mw: 0.0005 },
+      costs: { ...GOLDEN_A.costs, c_voll_yuan: 1.5 },
+    };
+    expect(deriveAlerts([step])).toHaveLength(0);
+  });
+
+  it("sub-epsilon SOC violation (0.0005 MWh) → no alert", () => {
+    const step: EnvStepPayload = {
+      ...GOLDEN_A,
+      battery: { ...GOLDEN_A.battery, soc_violation_mwh: 0.0005 },
+      costs: { ...GOLDEN_A.costs, penalty_yuan: 10.0 },
+    };
+    expect(deriveAlerts([step])).toHaveLength(0);
+  });
+
+  // ── Newest-first ordering (finding #3) ──────────────────────────────────────
+  it("multi-alert history → returned newest-first (descending stepIndex)", () => {
+    // step 10 (older) has curtailment; step 20 (newer) has VOLL
+    // expected output: [step-20-voll, step-10-curtailment]
+    const step10: EnvStepPayload = {
+      ...GOLDEN_A,
+      step: 10,
+      flows: { ...GOLDEN_A.flows, solar_curtailed_mw: 5.0 },
+      costs: { ...GOLDEN_A.costs, c_curtail_yuan: 4000.0 },
+    };
+    const step20: EnvStepPayload = {
+      ...GOLDEN_A,
+      step: 20,
+      flows: { ...GOLDEN_A.flows, load_unserved_mw: 2.0 },
+      costs: { ...GOLDEN_A.costs, c_voll_yuan: 6000.0 },
+    };
+    // history in chronological (oldest-first) order
+    const alerts = deriveAlerts([step10, step20]);
+    expect(alerts).toHaveLength(2);
+    // Newest-first: step 20 at index 0, step 10 at index 1
+    expect(alerts[0].stepIndex).toBe(20);
+    expect(alerts[0].kind).toBe("voll");
+    expect(alerts[1].stepIndex).toBe(10);
+    expect(alerts[1].kind).toBe("curtailment");
+  });
+
+  it("single-step alert → order trivially correct (length 1, no reversal confusion)", () => {
+    const step: EnvStepPayload = {
+      ...GOLDEN_A,
+      step: 42,
+      flows: { ...GOLDEN_A.flows, solar_curtailed_mw: 3.0 },
+      costs: { ...GOLDEN_A.costs, c_curtail_yuan: 2400.0 },
+    };
+    const alerts = deriveAlerts([step]);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].stepIndex).toBe(42);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -532,6 +621,17 @@ describe("MonthPeakCard", () => {
     const exposure = screen.getByTestId("demand-exposure");
     expect(exposure.textContent).toContain("0");
   });
+
+  // finding #4: peak MW must use formatPower — not inline ${v.toFixed(1)} MW
+  it("peak MW rendered via formatPower: 95.0 MW matches formatPower(95)", () => {
+    // formatPower(95) = "95.0 MW" (site-scale, always ≥1 MW → no kW conversion)
+    // The rendered testid text must equal formatPower output exactly
+    const formatted = formatPower(95.0);
+    render(
+      <MonthPeakCard monthPeakMw={95.0} demandRateYuanPerMwMonth={32000} />
+    );
+    expect(screen.getByTestId("month-peak-mw").textContent).toContain(formatted);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -666,6 +766,42 @@ describe("PriceTimeline", () => {
   it("non-empty history → price-timeline rendered (not empty state)", () => {
     render(<PriceTimeline history={[GOLDEN_A]} />);
     expect(screen.getByTestId("price-timeline")).not.toHaveAttribute("data-state", "empty");
+  });
+
+  // reviewer: C1 blocker — pins rendered band geometry, not just tier name presence.
+  // A naïve hourly-boundary implementation would emit 660/720 (11:00–12:00) instead of 630/690.
+  it("critical-peak morning band: data-from-min=630 data-to-min=690 (C1, D8 — not 660/720)", () => {
+    render(<PriceTimeline history={[GOLDEN_A]} />);
+    const bandList = screen.getByRole("list", { name: /tou bands/i });
+    // Find the critical_peak li that starts at 630 min (10:30) — there are two critical-peak bands
+    const criticalItems = Array.from(
+      bandList.querySelectorAll('li[data-tier="critical_peak"]')
+    );
+    // At least two critical-peak bands (morning 630–690, evening 1140–1260)
+    expect(criticalItems.length).toBeGreaterThanOrEqual(2);
+    const morningBand = criticalItems.find(
+      (li) => li.getAttribute("data-from-min") === "630"
+    );
+    expect(morningBand).toBeTruthy(); // band exists at 630
+    // Exact end boundary: 690 = 11:30 (not 720 = 12:00)
+    expect(morningBand?.getAttribute("data-to-min")).toBe("690");
+  });
+
+  it("TOU_SCHEDULE produces 9 <li> items in accessible band list", () => {
+    render(<PriceTimeline history={[GOLDEN_A]} />);
+    const bandList = screen.getByRole("list", { name: /tou bands/i });
+    // 9 bands from TOU_SCHEDULE: valley(0–420), mid(420–480), peak(480–630),
+    // critical(630–690), mid(690–1080), peak(1080–1140), critical(1140–1260),
+    // peak(1260–1380), valley(1380–1440)
+    expect(bandList.querySelectorAll("li")).toHaveLength(9);
+  });
+
+  it("valley band: data-from-min=0 data-to-min=420 (midnight to 07:00)", () => {
+    render(<PriceTimeline history={[GOLDEN_A]} />);
+    const bandList = screen.getByRole("list", { name: /tou bands/i });
+    const valleyBand = bandList.querySelector('li[data-tier="valley"][data-from-min="0"]');
+    expect(valleyBand).toBeTruthy();
+    expect(valleyBand?.getAttribute("data-to-min")).toBe("420");
   });
 });
 
@@ -806,5 +942,9 @@ describe("LiveDashboard", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// reviewer: placeholder (frontend-reviewer will add edge-case tests here)
+// reviewer: edge-case tests added per REQUEST_CHANGES findings (PR #34):
+//   - PriceTimeline band geometry: data-from-min/data-to-min (Section 8, finding #1/C1)
+//   - deriveAlerts epsilon guard: 0.0005/0.001/0.0011 MW (Section 3, finding #2)
+//   - deriveAlerts newest-first ordering (Section 3, finding #3)
+//   - MonthPeakCard formatPower (Section 5, finding #4)
 // ─────────────────────────────────────────────────────────────────────────────
