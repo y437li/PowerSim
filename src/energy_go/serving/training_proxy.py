@@ -297,7 +297,10 @@ async def ws_training_stream(websocket: WebSocket) -> None:
                             from energy_go.telemetry.validate import validate  # type: ignore
                             errs = validate(frame)
                             if errs:
-                                log.warning("D18 validate (training_proxy train_metrics): %s", errs)
+                                log.warning(
+                                    "D18 validate kind=%s seq=%s: %s",
+                                    frame.get("kind"), frame.get("seq"), errs,
+                                )
                         except ImportError:
                             pass
 

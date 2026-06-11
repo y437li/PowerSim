@@ -308,6 +308,26 @@ class TestTelemetrySchemaConformance:
                 + "\n".join(f"  - {e}" for e in errs)
             )
 
+    def test_step_cmd_frame_passes_validate(self, ws_client):
+        """cmd:'step' emitted env_step must pass validate(msg) == [] (D18 producer obligation).
+
+        This exercises the interactive single-step path (_send_validated helper),
+        separate from the continuous _step_loop path tested above.
+        """
+        with ws_client.websocket_connect("/ws/inference") as ws:
+            ws.receive_text(timeout=5)  # initial ready status
+            ws.send_text(_start_cmd())
+            _recv_until(ws, "env_step", max_frames=20)  # session is live
+            ws.send_text(json.dumps({"cmd": "pause"}))
+            _recv_until(ws, "status", max_frames=20)    # wait for paused status
+            ws.send_text(json.dumps({"cmd": "step"}))
+            frame = _recv_until(ws, "env_step", max_frames=10)
+        errs = validate(frame)
+        assert errs == [], (
+            "cmd:'step' env_step frame fails telemetry validation:\n"
+            + "\n".join(f"  - {e}" for e in errs)
+        )
+
     def test_frame_has_required_envelope_fields(self, ws_client):
         frames = self._collect_frames(ws_client, n=1)
         frame = frames[0]

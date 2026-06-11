@@ -399,6 +399,23 @@ async def ws_inference(websocket: WebSocket) -> None:
     async def _send(text: str) -> None:
         await websocket.send_text(text)
 
+    async def _send_validated(frame: dict) -> None:
+        """D18 producer obligation: validate before sending; log warning if invalid.
+
+        Never blocks or raises — stream resilience is preserved.
+        """
+        try:
+            from energy_go.telemetry.validate import validate  # type: ignore
+            errs = validate(frame)
+            if errs:
+                log.warning(
+                    "D18 validate kind=%s seq=%s: %s",
+                    frame.get("kind"), frame.get("seq"), errs,
+                )
+        except ImportError:
+            pass
+        await _send(json.dumps(frame))
+
     async def _step_loop() -> None:
         """Async loop: step env → build env_step frame → send."""
         assert s.env is not None and s.policy_entry is not None
@@ -420,16 +437,7 @@ async def ws_inference(websocket: WebSocket) -> None:
             }
             s.seq += 1
 
-            # D18 producer obligation: validate before sending
-            try:
-                from energy_go.telemetry.validate import validate  # type: ignore
-                errs = validate(frame)
-                if errs:
-                    log.warning("D18 validate (_step_loop env_step): %s", errs)
-            except ImportError:
-                pass
-
-            await _send(json.dumps(frame))
+            await _send_validated(frame)
             await asyncio.sleep(0)  # yield to let command messages through
 
     # Send initial ready status
@@ -550,15 +558,7 @@ async def ws_inference(websocket: WebSocket) -> None:
                     "payload": payload,
                 }
                 s.seq += 1
-                # D18 producer obligation: validate before sending
-                try:
-                    from energy_go.telemetry.validate import validate  # type: ignore
-                    _errs = validate(frame)
-                    if _errs:
-                        log.warning("D18 validate (step cmd env_step): %s", _errs)
-                except ImportError:
-                    pass
-                await _send(json.dumps(frame))
+                await _send_validated(frame)
 
             # ── stop ───────────────────────────────────────────────────────
             elif cmd == "stop":
