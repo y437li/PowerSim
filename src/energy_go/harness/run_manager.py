@@ -255,7 +255,13 @@ class RunManager:
             record.updated_at = _utc_now()
 
     def stop_run(self, run_id: str) -> None:
-        """Set status → STOPPED (terminal). Idempotent if already STOPPED."""
+        """Set status → STOPPED (terminal). Idempotent if already STOPPED.
+
+        Signals the background thread and joins it with a 2-second timeout so
+        any in-flight JAX/XLA native call can finish before the caller returns.
+        Prevents SIGABRT (exit 134) on CI when the interpreter tears down while
+        a daemon thread is inside XLA native code.
+        """
         with self._lock:
             record = self._get_record(run_id)
             if record.status == RunStatus.STOPPED:
@@ -264,6 +270,11 @@ class RunManager:
             self._pause_events[run_id].set()   # unblock if paused
             record.status = RunStatus.STOPPED
             record.updated_at = _utc_now()
+        # Join OUTSIDE the lock: the background thread acquires self._lock to
+        # update total_steps_done/status — holding it here would deadlock.
+        t = self._threads.get(run_id)
+        if t is not None and t.is_alive():
+            t.join(timeout=2.0)
 
     def get_run(self, run_id: str) -> RunRecord:
         """Return the RunRecord. Raises KeyError on unknown run_id."""
@@ -296,6 +307,40 @@ class RunManager:
                 yield msg
             except queue.Empty:
                 return  # timeout — StopIteration via generator return
+
+    def close(self) -> None:
+        """Stop all active runs and join their background threads.
+
+        Safe to call multiple times.  Intended for explicit cleanup in tests or
+        application shutdown; also called automatically by __del__.
+        """
+        with self._lock:
+            active = [
+                run_id for run_id, rec in self._runs.items()
+                if rec.status in (RunStatus.RUNNING, RunStatus.PAUSED)
+            ]
+            for run_id in active:
+                self._stop_events[run_id].set()
+                self._pause_events[run_id].set()
+                self._runs[run_id].status = RunStatus.STOPPED
+                self._runs[run_id].updated_at = _utc_now()
+        # Join OUTSIDE the lock (same reason as stop_run).
+        for run_id in active:
+            t = self._threads.get(run_id)
+            if t is not None and t.is_alive():
+                t.join(timeout=2.0)
+
+    def __del__(self) -> None:
+        """Stop background threads when garbage-collected (CPython guarantee).
+
+        Prevents SIGABRT on CI: if a test lets the RunManager go out of scope
+        without stopping its runs, the daemon threads may still be inside XLA
+        native code when the interpreter shuts down, causing a core dump.
+        """
+        try:
+            self.close()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Internal helpers
