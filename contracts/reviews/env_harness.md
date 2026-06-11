@@ -30,3 +30,18 @@ Class `TestReviewerAddedHarness` in `tests/harness/test_harness_env_harness.py`:
 - Red-phase: the whole file is `pytest.importorskip`-guarded until `energy_go.harness` exists. `py_compile` clean.
 - Harness implementation is blocked on the additive EnvInfo 13-field amendment to jax_env_core landing first.
 - Post-implementation, run the per-source conservation battery (solar/wind/**battery**), D13 cost identities, the telemetry positive + negative validator cases, and fixed-seed determinism (InteractiveEnv / ScenarioReplay / Sweeper).
+
+---
+
+## Stage-2 re-review — B-CONSTRAINT fixes (PR #43 @ e5a99b9)
+
+**Reviewer:** backend-reviewer · **Verdict:** APPROVE (harness substance) · merge-order condition below.
+
+Both REQUEST_CHANGES items resolved by deriving the flags from canonical EnvInfo signals (the §1 no-recompute rule):
+
+- **B-CONSTRAINT/2 — `constraint_load_capped = bool(info.load_capped)`** (interactive_env.py L207). Reads the JAX `load_capped` signal directly; the divergent Python fraction-renorm recompute is gone. ✓
+- **B-CONSTRAINT/1 — `constraint_import_capped = f(info.p_load_unserved_mw) > _CONSERVATION_TOL or bool(info.import_cap_active)`** (L218–220). Covers both F-IMPORT regimes: load-shed (`load_unserved > tol`) and cap-reduced-battery-with-load-served (`import_cap_active`). The two branches are mutually exclusive (import_cap_active is defined with `load_unserved < 1e-6`); their union = "the import cap forced a change," which is the correct constraint semantics. When import == max but nothing was reduced/shed, both correctly stay False (cap touched but not binding). ✓
+
+Fix commit `e5a99b9` is scoped to interactive_env.py only (10+/16−). `validate_message = validate` (telemetry/validate.py) is a harmless name alias, not a schema change. Env files in this branch are **byte-identical** to #33's approved HEAD `2f38439` (no fork).
+
+**Merge-order condition (binding):** this branch merged `feat/env-jax-env-core` (#33) into itself to obtain the EnvInfo fields, so PR #43's diff-vs-main currently includes all of #33's env-core. **#43 must merge strictly AFTER #33**, then be **rebased onto main** so its final diff collapses to harness-only. Merging #43 before #33 would land #33's env-core under this PR and bypass #33's QA gate — not permitted. Flagged to team-lead.
