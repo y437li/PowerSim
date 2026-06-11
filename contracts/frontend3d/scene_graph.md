@@ -1,10 +1,10 @@
 # Contract: Scene Graph — 3D Site Render
 
-- **Status:** DRAFT — awaiting VERDICT: APPROVE from frontend-reviewer
+- **Status:** AMENDED — `fix/frontend3d-scene-extend` (browser bug: extend(THREE) missing on manual root)
 - **Spec:** REBUILD_SPEC §8 (3D visualization)
 - **Owner:** 3d-assets-engineer · **Reviewer:** frontend-reviewer
 - **Area:** frontend3d
-- **Branch:** feat/frontend3d-scene-graph
+- **Branch:** feat/frontend3d-scene-graph (original); fix/frontend3d-scene-extend (amendment)
 - **Depends on LOCKED:**
   - `contracts/frontend3d/site_scene.md` (PR #7 — data bridge + R3F root creation)
   - `assets/3d/registry.json` v1.0.1 (PR #38 — asset IDs and paths; `contracts/assets/registry_schema.md`)
@@ -269,8 +269,13 @@ useEffect(() => {
   let cancelled = false;
   (async () => {
     try {
-      const { createRoot } = await import("@react-three/fiber");
+      const { createRoot, extend } = await import("@react-three/fiber");
       if (cancelled) return;
+      // REQUIRED: manual createRoot() does NOT auto-register the THREE namespace
+      // (the <Canvas> component does this implicitly; manual roots must do it explicitly).
+      // Without this, R3F throws "AmbientLight is not part of the THREE namespace!"
+      // extend() is idempotent — safe to call on every mount.
+      extend(THREE);
       r3fRootRef.current = createRoot(canvas);
       // Trigger initial render — subsequent updates come from Effect 2
       r3fRootRef.current.render(
@@ -311,10 +316,15 @@ no-op until Effect 1 has populated `r3fRootRef.current`.
 ### 3.4 Imports added to SiteScene.tsx
 
 ```typescript
+import * as THREE from "three";          // needed for extend(THREE) in Effect 1
 import { SceneContent } from "./SceneContent";
 // isPayloadFinite — replace inline definition with:
 import { isPayloadFinite } from "./isPayloadFinite";
 ```
+
+`extend` is destructured from the dynamic `await import("@react-three/fiber")` inside Effect 1
+(not a static import — the dynamic import keeps the lazy-loading pattern that lets jsdom tests
+mount `SiteScene` without triggering WebGL).
 
 ---
 
@@ -383,3 +393,16 @@ the scene graph must also include whichever infrastructure change makes the URLs
     for the turbine assetId — not once per instance.
 20. `SceneContent` with an unknown `assetId` in config: does not crash; `useGLTF` is not
     called with an invalid URL; the unknown instance simply renders nothing.
+
+### Amendment: extend(THREE) regression (fix/frontend3d-scene-extend)
+
+> **Root cause of browser crash (post-merge):** `R3F: AmbientLight is not part of the THREE
+> namespace! Did you forget to extend?` — the manual `createRoot(canvas)` path does NOT
+> auto-register the THREE namespace the way the `<Canvas>` component does. This was invisible
+> in jsdom tests (R3F mocked out) but crashed in real browsers.
+
+21. After mounting `SiteScene` with a valid `containerEl`, `extend` is called with the THREE
+    namespace object (containing `AmbientLight`, `DirectionalLight`, `Mesh`, etc.) **before**
+    `r3fRoot.render()` is called. Order: extend → createRoot → render.
+22. `extend` is called exactly once per Effect 1 mount (idempotent by R3F contract, but must
+    not be skipped). `containerEl=null` → Effect 1 is skipped → `extend` not called.
