@@ -438,7 +438,14 @@ async def ws_inference(websocket: WebSocket) -> None:
             s.seq += 1
 
             await _send_validated(frame)
-            await asyncio.sleep(0)  # yield to let command messages through
+            # 1 ms real sleep: suspends the event-loop thread so the OS can schedule
+            # the test-client / browser thread to push control commands.
+            # asyncio.sleep(0) only yields within asyncio and does not give the OS
+            # time to run a different thread — on CI (shared VMs, ~1–5 ms scheduling
+            # latency) the step loop could emit 50+ frames before "pause/stop" arrives,
+            # exceeding _recv_until's max_frames budget.  A real sleep also wakes early
+            # via the self-pipe mechanism when call_soon_threadsafe fires.
+            await asyncio.sleep(0.001)
 
     # Send initial ready status
     await _send(_status_frame(s))
