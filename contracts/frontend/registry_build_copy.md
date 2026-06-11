@@ -42,12 +42,40 @@ must be removed to avoid config confusion.
 
 ---
 
-## 1. Vite plugin (`scripts/registryBuildPlugin.ts`)
+## 1. Vite plugin (`scripts/registryBuildPlugin.ts`) + `tsconfig.app.json` split
 
 A plain-TS module (no Vite runtime dependency) that exports a Vite plugin object.
-**Lives in `scripts/`** (NOT `src/`) so the browser-targeted `tsconfig.json` (which has
-`"include": ["src", "tests"]` and no `@types/node`) never typechecks it.  Vite and Vitest
-load it through their own esbuild transpiler, which handles Node built-in imports correctly.
+**Lives in `scripts/`** (NOT `src/`) so the browser-targeted build typecheck never
+typechecks it.
+
+**Why `scripts/` alone is not enough:** `tests/frontend/registry_build_copy.test.ts`
+does `await import("../../scripts/registryBuildPlugin")`, and `tests/` is in
+`tsconfig.json`'s `"include"`. With a bare `tsc`, TypeScript follows that import
+and typechecks the plugin — TS2307 (`fs`/`path`, no `@types/node`) persists.
+
+**Fix — `tsconfig.app.json`** (`include: ["src"]` only):
+
+```json
+{
+  "extends": "./tsconfig.json",
+  "include": ["src"],
+  "compilerOptions": { "noEmit": true }
+}
+```
+
+The `"build"` script is updated to use it:
+
+```json
+"build": "tsc -p tsconfig.app.json && vite build"
+```
+
+This ensures `tsc` during `npm run build` typechecks only the browser source tree.
+The test tree (`tests/`) and build-time scripts (`scripts/`) are typechecked by
+Vitest (esbuild, which handles Node imports natively). This also cures the 90+
+pre-existing `toBeInTheDocument` errors that prevented `vite build` from ever being
+reached when `tests/` was included in the build typecheck.
+
+Vite and Vitest load their config files through esbuild; no `@types/node` is needed.
 
 The plugin is added to **both** config files:
 
