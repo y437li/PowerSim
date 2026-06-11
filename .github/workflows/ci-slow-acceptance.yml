@@ -65,4 +65,9 @@ jobs:
             "pytest>=8.0" "pytest-asyncio>=0.23" "anyio>=4.0" \
             "pyyaml>=6.0" "numpy>=1.26"
           # §9.5 real-install / venv / subprocess tests.  `acceptance` ⊆ `slow`.
-          pytest tests/ -m "acceptance" -q
+          # Scope collection to tests/serving (where all acceptance tests live): a
+          # full `tests/` collection imports the jax-dependent env/training/shared
+          # modules, and this lightweight job deliberately does NOT install jax, so
+          # collecting the whole tree would ModuleNotFoundError. tests/serving is
+          # jax-free at import (serving lazy-imports jax). (D30)
+          pytest tests/serving -m "acceptance" -q

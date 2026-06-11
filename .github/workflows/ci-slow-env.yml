@@ -22,6 +22,13 @@ on:
   schedule:
     - cron: "0 7 * * *"
 
+# dorny/paths-filter calls the PR "list files" API on pull_request events; that
+# needs pull-requests:read. Without it the action fails with "Resource not
+# accessible by integration" before any gating logic runs.
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
   slow-env:
     runs-on: ubuntu-latest
