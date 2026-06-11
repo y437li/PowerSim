@@ -778,13 +778,21 @@ class TestTelemetryEvalCompareKeys:
             reason="requires telemetry_validate from PR #23",
         )
         msg = {
-            "type": "eval_compare",
-            "step": 100_000,
-            "policies": {
-                "rl":             self._make_policy_costs(total_cost_yuan=-5e6),
-                "no_battery":     self._make_policy_costs(total_cost_yuan=-4e6),
-                "rule_based_tou": self._make_policy_costs(total_cost_yuan=-4.5e6),
-                "greedy":         self._make_policy_costs(total_cost_yuan=-4.8e6),  # NEW
+            "schema_version": "1.0.0",
+            "kind": "eval_compare",
+            "ts_utc": "2026-01-01T00:00:00Z",
+            "run_id": "test-g1-greedy",
+            "seq": 1,
+            "payload": {
+                "eval_horizon_steps": 8760,
+                "checkpoint_id": "ckpt-g1-001",
+                "cost_basis": "real_money",
+                "policies": {
+                    "rl":             self._make_policy_costs(),
+                    "no_battery":     self._make_policy_costs(),
+                    "rule_based_tou": self._make_policy_costs(),
+                    "greedy":         self._make_policy_costs(),  # NEW key — §11.5
+                },
             },
         }
         errors = _validate.validate(msg)
@@ -799,13 +807,21 @@ class TestTelemetryEvalCompareKeys:
             reason="requires telemetry_validate from PR #23",
         )
         msg = {
-            "type": "eval_compare",
-            "step": 100_000,
-            "policies": {
-                "rl":             self._make_policy_costs(total_cost_yuan=-5e6),
-                "no_battery":     self._make_policy_costs(total_cost_yuan=-4e6),
-                "rule_based_tou": self._make_policy_costs(total_cost_yuan=-4.5e6),
-                "dp_oracle":      self._make_policy_costs(total_cost_yuan=-5.2e6),  # NEW
+            "schema_version": "1.0.0",
+            "kind": "eval_compare",
+            "ts_utc": "2026-01-01T00:00:00Z",
+            "run_id": "test-g2-dp-oracle",
+            "seq": 1,
+            "payload": {
+                "eval_horizon_steps": 8760,
+                "checkpoint_id": "ckpt-g2-001",
+                "cost_basis": "real_money",
+                "policies": {
+                    "rl":             self._make_policy_costs(),
+                    "no_battery":     self._make_policy_costs(),
+                    "rule_based_tou": self._make_policy_costs(),
+                    "dp_oracle":      self._make_policy_costs(),  # NEW key — §11.5
+                },
             },
         }
         errors = _validate.validate(msg)
@@ -820,13 +836,21 @@ class TestTelemetryEvalCompareKeys:
             reason="requires telemetry_validate from PR #23",
         )
         msg = {
-            "type": "eval_compare",
-            "step": 100_000,
-            "policies": {
-                "rl":             self._make_policy_costs(total_cost_yuan=-5e6),
-                "no_battery":     self._make_policy_costs(total_cost_yuan=-4e6),
-                "rule_based_tou": self._make_policy_costs(total_cost_yuan=-4.5e6),
-                "mpc":            self._make_policy_costs(total_cost_yuan=-5.0e6),  # NEW
+            "schema_version": "1.0.0",
+            "kind": "eval_compare",
+            "ts_utc": "2026-01-01T00:00:00Z",
+            "run_id": "test-g3-mpc",
+            "seq": 1,
+            "payload": {
+                "eval_horizon_steps": 8760,
+                "checkpoint_id": "ckpt-g3-001",
+                "cost_basis": "real_money",
+                "policies": {
+                    "rl":             self._make_policy_costs(),
+                    "no_battery":     self._make_policy_costs(),
+                    "rule_based_tou": self._make_policy_costs(),
+                    "mpc":            self._make_policy_costs(),  # NEW key — §11.5
+                },
             },
         }
         errors = _validate.validate(msg)
@@ -841,15 +865,23 @@ class TestTelemetryEvalCompareKeys:
             reason="requires telemetry_validate from PR #23",
         )
         msg = {
-            "type": "eval_compare",
-            "step": 500_000,
-            "policies": {
-                "rl":             self._make_policy_costs(total_cost_yuan=-5.1e6),
-                "no_battery":     self._make_policy_costs(total_cost_yuan=-4.0e6),
-                "rule_based_tou": self._make_policy_costs(total_cost_yuan=-4.5e6),
-                "greedy":         self._make_policy_costs(total_cost_yuan=-4.9e6),
-                "dp_oracle":      self._make_policy_costs(total_cost_yuan=-5.3e6),
-                "mpc":            self._make_policy_costs(total_cost_yuan=-5.0e6),
+            "schema_version": "1.0.0",
+            "kind": "eval_compare",
+            "ts_utc": "2026-01-01T00:00:00Z",
+            "run_id": "test-g4-all-three",
+            "seq": 1,
+            "payload": {
+                "eval_horizon_steps": 8760,
+                "checkpoint_id": "ckpt-g4-001",
+                "cost_basis": "real_money",
+                "policies": {
+                    "rl":             self._make_policy_costs(),
+                    "no_battery":     self._make_policy_costs(),
+                    "rule_based_tou": self._make_policy_costs(),
+                    "greedy":         self._make_policy_costs(),  # §11.5
+                    "dp_oracle":      self._make_policy_costs(),  # §11.5
+                    "mpc":            self._make_policy_costs(),  # §11.5
+                },
             },
         }
         errors = _validate.validate(msg)
