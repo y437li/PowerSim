@@ -57,3 +57,39 @@ Added to the §IS1–§IS5 block (share the WebSocket mock):
 ## Approved suite (on re-request)
 Developer §IS1–§IS25 + my 3 payload-guard regression cases. Re-request when the two must-fix items
 land.
+
+---
+
+## Round 2 @ commit `b776a80` — **APPROVE**
+
+Both must-fix items resolved (verified against the diff):
+
+1. **§1.3 payload-guard — resolved.** Reworded to be explicitly kind-specific: only `status`/`error`
+   bypass the `payload === undefined` check; `env_step`/`train_metrics`/`eval_compare` still require
+   payload (load-bearing per D18). Added an implementation note (branch on control-vs-data frame; do
+   NOT drop the guard globally). My 3 reviewer regression tests pin it (intact).
+2. **`session_id` → `clearHistory()` — resolved.** §3.3 "running" row now calls
+   `telemetryStore.clearHistory()` when `frame.session_id !== current sessionId`, before the state
+   update, with the rationale (inference_stream.md:180–182, reconnect/same-run risk) inline. §IS13b
+   (new session_id → clearHistory called once + sessionId updated) and §IS13c (same session_id →
+   not called + step updates) test both branches correctly (spy on the real
+   `telemetryStore.clearHistory`).
+3. **seed** out-of-scope note added.
+
+Both prior inline threads resolved; 0 unresolved.
+
+### Non-blocking integration note (verify at stage-2)
+`session_id` is delivered only via **status** frames, so the clear fires in time only if serving
+emits a `status` (running) frame carrying the new `session_id` **at session start, before** it
+streams `env_step` frames. If serving streams `env_step` first, the new session's opening frames
+briefly mix into the old history until the first status frame arrives. The contract's mechanism is
+correct (this is a serving emit-order detail) — recommend confirming with serving-engineer / in the
+integration pass. A belt-and-suspenders fallback (also reset on same-run step regression) is
+optional, not required.
+
+### Approved suite
+Developer §IS1–§IS25 + §IS13b/§IS13c + my 3 payload-guard regression cases. Cleared for
+implementation; mark ready for the stage-2 audit (real wsClient guard branch, session_id reset
+wiring, cmd:start shape, REST endpoint).
+
+**Verdict: APPROVE** (stage-1 gate).
