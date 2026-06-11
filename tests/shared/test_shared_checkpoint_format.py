@@ -428,10 +428,13 @@ class TestActorForwardNumpy:
         h2 = np.maximum(0.0, h1 @ ckpt.actor_fc2_w + ckpt.actor_fc2_b)
         # out = h2 @ out_w + out_b               — shape (12,); first 6 = mean
         out = h2 @ ckpt.actor_out_w + ckpt.actor_out_b
-        # Step 3: per-component squash
+        # Step 3: clip mean before squash — prevents float32 tanh/sigmoid saturation
+        # (tanh(x)==±1.0 exactly for |x|≳8.7 in float32; violates open-range contract).
+        # ±8.0 is the safe threshold: tanh(8)≈0.99999976 < 1.0 in float32. (D28)
         mean = out[:6]
-        expected_a_bat = np.tanh(mean[0])
-        expected_fractions = 1.0 / (1.0 + np.exp(-mean[1:6]))  # sigmoid
+        mean_clipped = np.clip(mean, -8.0, 8.0)
+        expected_a_bat = np.tanh(mean_clipped[0])
+        expected_fractions = 1.0 / (1.0 + np.exp(-mean_clipped[1:6]))  # sigmoid
 
         api_action = actor_forward_numpy(ckpt, obs)
         assert float(api_action[0]) == pytest.approx(float(expected_a_bat), abs=1e-6), \
@@ -756,16 +759,15 @@ def test_inference_recipe_clips_extreme_obs():
     assert np.all(np.isfinite(action)), f"extreme obs produced non-finite action: {action}"
 
 
-# reviewer: critic input is obs‖action concat (108 dims) — weight shape (108,256) not (107,256)
-def test_critic_fc1_input_dim_is_108():
-    """Critic Q-network input = obs (107) ‖ action (1) = 108 dims.
-    actor_fc1_w input dim is 107; critic1_fc1_w input dim is 108 (§4.4)."""
+def test_critic_fc1_input_dim_is_113():
+    """Critic Q-network input = obs (107) ‖ action (6) = 113 dims.
+    actor_fc1_w input dim is 107; critic1_fc1_w input dim is 113 (§4.4, §5.3)."""
     rng = np.random.RandomState(52)
     critic_shapes = TestCriticWeights.CRITIC_SHAPES
-    # critic1_fc1_w shape is (108, 256) not (107, 256)
-    assert critic_shapes["critic1_fc1_w"][0] == 108, (
-        "Critic input dim must be 108 = 107 obs + 1 action"
+    # critic1_fc1_w shape is (113, 256) not (107, 256)
+    assert critic_shapes["critic1_fc1_w"][0] == 113, (
+        "Critic input dim must be 113 = 107 obs + 6 action"
     )
     assert critic_shapes["critic1_fc1_w"] != TestActorWeightShapes.EXPECTED_SHAPES["actor_fc1_w"], (
-        "Critic and actor fc1 weights have the same shape — critic input must be 108, not 107"
+        "Critic and actor fc1 weights have the same shape — critic input must be 113, not 107"
     )
