@@ -1833,3 +1833,114 @@ class TestPriceTableCriticalPeakHour11:
             f"PRICE_TABLE_YPW[12] = {PRICE_TABLE_YPW[12]} ≠ 450 ¥/MWh. "
             "Hour 12 (12:00) is after critical-peak boundary at 11:30, → mid tier."
         )
+
+
+# =========================================================================== #
+#  §R — Reviewer-added edge cases (backend-reviewer, PR #43 gate, e499f48)     #
+# =========================================================================== #
+class TestReviewerAddedHarness:
+    """Backend-reviewer edge cases. Hand-derived; arithmetic shown in comments.
+
+    Targets untested edges: (1) all THREE grid channels exporting under one PCC
+    cap — uniform scale_export; (2) D7 sell-price clamp at a valley hour (T1-T6
+    are all at peak h=8); (3) charge-mode battery conservation branch; (4) the
+    C_DC_shape max(0,·) knife-edge at month_peak == P_import.
+    """
+
+    # --- R1: mixed solar+wind+battery export, all curtailed by the SAME scale ---
+    @pytest.fixture
+    def insp_mixed_export(self):
+        # reviewer: T5b is renewable-only export, T5c is battery-only. This exercises ALL
+        # reviewer: THREE grid channels exporting simultaneously under a binding PCC cap,
+        # reviewer: verifying jax_env_core §5.3.5 applies ONE scale_export uniformly to
+        # reviewer: P_sol_to_grid / P_wind_to_grid / P_bat_to_grid.
+        # reviewer: t=8, wind=12 (rated), irr=1000, load=5, a_bat=-1 (discharge), all
+        # reviewer: allocation fractions 0 → solar, wind, and battery all flow to grid;
+        # reviewer: max_export=200 binds. With bat_to_load=0 and no renewable-to-load, the
+        # reviewer: pre-cap grid flow of each source equals p_pv / p_wind / p_bat_dis, so a
+        # reviewer: single scale_export ⇒ curtailed fraction identical across all three:
+        # reviewer:   sol_curtailed/p_pv == wind_curtailed/p_wind == bat_curtailed/p_bat_dis.
+        params = make_deterministic_params(grid_max_export_mw=200.0)
+        data = make_synthetic_data_with_step(8, 12.0, 1000.0, 25.0, 5.0)
+        ienv = InteractiveEnv(params=params, data=data)
+        state = ienv.make_state(soc=0.7, t=8, month_peak_mw=200.0)
+        return ienv.step(state, [-1.0, 0, 0, 0, 0, 0])
+
+    def test_mixed_export_at_cap(self, insp_mixed_export):
+        # reviewer: P_export pinned at the cap; export-cap constraint flag set.
+        assert abs(insp_mixed_export.p_export_mw - 200.0) < TOL_MW
+        assert insp_mixed_export.constraint_export_capped is True
+
+    def test_mixed_all_three_conservation(self, insp_mixed_export):
+        # reviewer: every source's per-source conservation holds after proportional curtailment.
+        assert insp_mixed_export.solar_conservation_ok is True
+        assert insp_mixed_export.wind_conservation_ok is True
+        assert insp_mixed_export.bat_conservation_ok is True
+
+    def test_mixed_uniform_scale_export(self, insp_mixed_export):
+        # reviewer: ONE scale_export ⇒ identical curtailed fraction across all three channels.
+        # reviewer: pre-cap grid flow == generation/discharge for each (nothing routed to load).
+        i = insp_mixed_export
+        frac_sol = i.solar_curtailed_mw / i.p_pv_mw
+        frac_wind = i.wind_curtailed_mw / i.p_wind_mw
+        frac_bat = i.bat_curtailed_mw / i.p_bat_dis_mw
+        assert abs(frac_sol - frac_wind) < 1e-3, (frac_sol, frac_wind)
+        assert abs(frac_sol - frac_bat) < 1e-3, (frac_sol, frac_bat)
+        assert i.bat_curtailed_mw > 0.0
+
+    def test_mixed_c_curtail_sums_all_sources(self, insp_mixed_export):
+        # reviewer: C_curtail = 800 ¥/MWh × (solar + wind + bat curtailed) × 1 h.
+        i = insp_mixed_export
+        expected = 800.0 * (i.solar_curtailed_mw + i.wind_curtailed_mw + i.bat_curtailed_mw)
+        assert abs(i.c_curtail_yuan - expected) < 1.0
+
+    # --- R2: D7 sell-price clamp at a valley hour (h=0) ---
+    @pytest.fixture
+    def insp_valley(self):
+        # reviewer: every hand-cost test T1-T6 runs at peak h=8 (620). This pins the D7
+        # reviewer: sell-price formula at a VALLEY hour. t=0 → PRICE_TABLE_YPW[0]; with
+        # reviewer: spread=30 and sigma=0, price_sell = max(0, price_buy − 30), and the
+        # reviewer: D7 invariant price_sell ≤ price_buy must hold.
+        params = make_deterministic_params()
+        data = make_synthetic_data_with_step(0, 0.0, 0.0, 25.0, 50.0)
+        ienv = InteractiveEnv(params=params, data=data)
+        state = ienv.make_state(soc=0.5, t=0, month_peak_mw=100.0)
+        return ienv.step(state, [0.0, 0, 0, 0, 0, 0])
+
+    def test_valley_price_buy_matches_table(self, insp_valley):
+        # reviewer: price_buy at h=0 == PRICE_TABLE_YPW[0] (source of truth, not hardcoded).
+        assert abs(insp_valley.price_buy_yuan_per_mwh - float(PRICE_TABLE_YPW[0])) < TOL_YEN
+
+    def test_valley_price_sell_clamp(self, insp_valley):
+        # reviewer: D7: price_sell = max(0, price_buy − 30); and price_sell ≤ price_buy.
+        pb = insp_valley.price_buy_yuan_per_mwh
+        assert abs(insp_valley.price_sell_yuan_per_mwh - max(0.0, pb - 30.0)) < TOL_YEN
+        assert insp_valley.price_sell_yuan_per_mwh <= pb + 1e-6
+
+    def test_valley_tariff_tier(self, insp_valley):
+        # reviewer: hour 0 classifies as the valley tier.
+        assert insp_valley.tariff_tier == "valley"
+
+    # --- R3: battery conservation in CHARGE mode (the other §4.4 branch) ---
+    def test_bat_conservation_charge_mode(self, ienv_t8_no_ren):
+        # reviewer: T5c covers discharge; this pins the charge-mode branch of bat_conservation_ok.
+        # reviewer: a_bat=0.5 (charge) → p_bat_dis=0 and bat_to_load=bat_to_grid=bat_curtailed=0,
+        # reviewer: so |0+0+0 − 0| = 0 < 1e-3 ⇒ flag True; bat_curtailed is 0 in charge mode.
+        state = ienv_t8_no_ren.make_state(soc=0.5, t=8, month_peak_mw=100.0)
+        insp = ienv_t8_no_ren.step(state, [0.5, 0, 0, 0, 0, 0])
+        assert insp.p_bat_dis_mw == 0.0
+        assert insp.bat_to_load_mw == 0.0
+        assert insp.bat_to_grid_mw == 0.0
+        assert insp.bat_curtailed_mw == 0.0
+        assert insp.bat_conservation_ok is True
+
+    # --- R4: C_DC_shape knife-edge at month_peak == P_import ---
+    def test_demand_shape_zero_at_exact_boundary(self, ienv_t8_no_ren):
+        # reviewer: T1 (month_peak=100 > import) and T2 (month_peak=40 < import) bracket the
+        # reviewer: max(0, P_import − month_peak) clamp; this pins the exact boundary.
+        # reviewer: T1 setup → P_import = 50 + 0.5×98.16 = 99.08 MW. Set month_peak = 99.08
+        # reviewer: exactly → C_DC_shape = 32000 × max(0, 99.08 − 99.08) = 0 ¥.
+        state = ienv_t8_no_ren.make_state(soc=0.5, t=8, month_peak_mw=99.08)
+        insp = ienv_t8_no_ren.step(state, [0.5, 0, 0, 0, 0, 0])
+        # exact-equality at the clamp; allow 1 ¥ for any float32 residual (vs 1.89e6 if active)
+        assert abs(insp.c_demand_shape_yuan - 0.0) < 1.0
