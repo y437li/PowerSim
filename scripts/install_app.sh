@@ -413,8 +413,14 @@ fi
 # that are not available on Apple Silicon (Rosetta 2 does not translate AVX),
 # so the import crashes with SIGILL.  Detecting it here lets the caller skip
 # (exit 2 → pytest.skip) rather than fail at the final assert.
-if [[ "$OS" == "Darwin" ]] && [[ "$ARCH" == "arm64" || "$ARCH" == "aarch64" ]]; then
-    if [[ "$EXTRAS" == *"jax"* ]]; then
+#
+# Use `file .venv/bin/python` to detect the venv Python's actual Mach-O arch
+# rather than `uname -m` ($ARCH): under Rosetta 2, `uname -m` always reports
+# x86_64 even on Apple Silicon, so the $ARCH guard would never fire.  `file`
+# inspects the binary directly and is unaffected by the emulation layer.
+if [[ "$OS" == "Darwin" ]] && [[ "$EXTRAS" == *"jax"* ]]; then
+    _PY_ARCH="$(file ".venv/bin/python" 2>/dev/null | grep -o 'arm64' | head -1)"
+    if [[ "$_PY_ARCH" == "arm64" ]]; then
         ".venv/bin/python" -c "import jax" 2>/dev/null \
             || die 2 "jaxlib installed but fails to import on ARM (AVX/architecture mismatch). uv resolved an x86_64 wheel despite ARM64 Python — likely uv itself runs under Rosetta. Remediation: Reinstall uv as a native arm64 binary — 'curl -LsSf https://astral.sh/uv/install.sh | arch -arm64 sh' — then re-run this script."
     fi
