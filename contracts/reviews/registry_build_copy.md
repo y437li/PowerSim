@@ -225,3 +225,35 @@ Flagging team-lead + rl-architect on whether the build-tsconfig split belongs in
 dedicated task. Either way, `f14332f` as-is should not merge under the banner "§9.5 build fixed."
 
 **Verdict: REQUEST_CHANGES.** Supersedes APPROVE @ ffc9f75.
+
+---
+
+## Re-review — tsconfig.app.json split @ `350093a` — **APPROVE** (stage 2, final)
+
+- **Reviewer:** frontend-reviewer · **Date:** 2026-06-11
+
+Addresses the `f14332f` REQUEST_CHANGES per team-lead's in-scope ruling. Verified by running
+the **actual `npm run build`** (not vitest — that was the path that hid the original problem).
+
+- `tsconfig.app.json` (`extends ./tsconfig.json`, `include: ["src"]`, `noEmit`); `package.json`
+  `"build": "tsc -p tsconfig.app.json && vite build"`. Base `tsconfig.json` keeps
+  `["src","tests"]` for editor/vitest. STACK.md + contract §1 updated.
+
+### Verified by running (worktree @ 350093a, full node_modules = faithful §9.5 build env)
+1. **`npm run build` exits 0** end-to-end: `tsc -p tsconfig.app.json` clean → `vite build`
+   (1376 modules, ✓ built). The §9.5 step-5 command is genuinely green now.
+2. **`tsc -p tsconfig.app.json`: 0 errors** — no TS2307, no 138 `toBeInTheDocument` (tests
+   excluded from the production typecheck).
+3. **Probe A (plugin out of build program):** injected `const __PROBE__: string = 123;` into
+   `scripts/registryBuildPlugin.ts` → build tsc did **not** flag it (count 0). So the plugin is
+   truly outside the build program; the TS2307 cannot recur via the RB test's dynamic import.
+4. **Probe B (src still checked):** injected a type error into `src/clients/restClient.ts` →
+   build tsc **did** flag it (count 1). The build still genuinely typechecks `src/` — not hollow.
+5. RB suite green; registry copy + drift guard unchanged from the approved `ffc9f75`.
+
+Both prior findings resolved: TS2307 fix is real (proven, not claimed), and the pre-existing
+138-error breakage is cured in the build. Note: team-lead is adding `npm run build` to the
+frontend CI job (follow-up) so this path can't regress unseen behind vitest again.
+
+**Verdict: APPROVE (stage 2).** Supersedes my REQUEST_CHANGES @ f14332f. Head moved to
+`350093a`, so QA must re-verify here — and should run the real `npm run build`, not just vitest.
