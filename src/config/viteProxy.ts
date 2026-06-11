@@ -5,11 +5,32 @@
  * Extracted to a plain TS module so it can be imported by both vite.config.ts
  * (build-time) and tests (jsdom) without triggering esbuild environment checks.
  *
- * STUB — implementation pending gate approval (PR #45).
- * Exported shape must match the acceptance criterion in contracts/frontend/app_integration.md §T1.
+ * Rewrite rule (§1): /^\/api(\/.*)?$/ → $1 || '/'
+ *   /api/sites → /sites   (strip prefix, keep sub-path)
+ *   /api       → /         (bare /api → root)
+ *   /api/      → /         (trailing slash → root)
+ *
+ * The backend (FastAPI/uvicorn) exposes routes WITHOUT the /api prefix.
+ * /ws proxies verbatim — /ws/inference and /ws/training/stream pass through unchanged.
  */
 
-export const VITE_PROXY_CONFIG = {} as Record<
-  string,
-  { target?: string; ws?: boolean; changeOrigin?: boolean; rewrite?: (path: string) => string }
->;
+type ProxyEntry = {
+  target: string;
+  changeOrigin?: boolean;
+  ws?: boolean;
+  rewrite?: (path: string) => string;
+};
+
+export const VITE_PROXY_CONFIG: Record<string, ProxyEntry> = {
+  "/api": {
+    target: "http://localhost:8000",
+    changeOrigin: true,
+    rewrite: (path: string) =>
+      path.replace(/^\/api(\/.*)?$/, (_, rest) => rest || "/"),
+  },
+  "/ws": {
+    target: "ws://localhost:8000",
+    ws: true,
+    // No rewrite — /ws/inference and /ws/training/stream pass through verbatim
+  },
+};

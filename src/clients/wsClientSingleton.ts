@@ -2,29 +2,75 @@
  * wsClientSingleton — two WsClient instances wired to telemetryStore + trainingStore.
  * Contract: contracts/frontend/app_integration.md §2
  *
- * STUB — implementation pending gate approval (PR #45).
- * Exports the correct shape (URL constants, handler fns, two WsClients) so tests compile
- * and fail with assertion errors rather than module-not-found errors.
+ * Two clients are required because the serving layer exposes two WebSocket endpoints
+ * carrying different message kinds:
+ *   WS /ws/inference        → env_step + status  (inference_stream.md:24)
+ *   WS /ws/training/stream  → train_metrics       (training_proxy.md:98)
+ *
+ * Handler functions are exported as named exports for direct testability (§T_wire).
+ * URL constants are exported for direct URL pinning tests (§T_url).
+ *
+ * Neither client opens a socket at import time — connect() is called by App.useEffect.
  */
-import type { WsClient } from "./wsClient";
+
+import { createWsClient, type WsClient } from "./wsClient";
 import type { TelemetryEnvelope, WsStatus } from "../types/telemetry";
+import { useTelemetryStore } from "../stores/telemetryStore";
+import { useTrainingStore } from "../stores/trainingStore";
 
-// URL constants — exported for §T_url tests (stub values fail intentionally)
-export const TELEMETRY_WS_URL = "/ws/stub-telemetry";   // impl: /ws/inference
-export const TRAINING_WS_URL = "/ws/stub-training";     // impl: /ws/training/stream
+// ─── URL constants ────────────────────────────────────────────────────────────
 
-// Handler functions — exported for §T_wire tests (stub no-ops fail intentionally)
-export function handleEnvStep(_msg: TelemetryEnvelope): void {}
-export function handleTrainMetrics(_msg: TelemetryEnvelope): void {}
-export function handleStatusChange(_status: WsStatus): void {}
+/** WS endpoint for env_step + status (contracts/serving/inference_stream.md:24) */
+export const TELEMETRY_WS_URL = "/ws/inference";
 
-// Clients — connect/disconnect are stubs; app wires them in useEffect
-export const telemetryWsClient: WsClient = {
-  connect: () => {},
-  disconnect: () => {},
-};
+/** WS endpoint for train_metrics (contracts/serving/training_proxy.md:98) */
+export const TRAINING_WS_URL = "/ws/training/stream";
 
-export const trainingWsClient: WsClient = {
-  connect: () => {},
-  disconnect: () => {},
-};
+// ─── Handler functions (exported for §T_wire direct tests) ───────────────────
+
+/** Routes env_step envelopes to telemetryStore.receiveEnvStep. */
+export function handleEnvStep(msg: TelemetryEnvelope): void {
+  useTelemetryStore.getState().receiveEnvStep(msg);
+}
+
+/** Routes train_metrics envelopes to trainingStore.receiveTrainMetrics. */
+export function handleTrainMetrics(msg: TelemetryEnvelope): void {
+  useTrainingStore.getState().receiveTrainMetrics(msg);
+}
+
+/**
+ * Routes WS status changes to telemetryStore.setWsStatus.
+ * TrainingPanel reads wsStatus from telemetryStore (confirmed TrainingPanel.tsx:33),
+ * so a single status path serves both SiteView and TrainingPanel.
+ * trainingWsClient's onStatusChange is a no-op.
+ */
+export function handleStatusChange(status: WsStatus): void {
+  useTelemetryStore.getState().setWsStatus(status);
+}
+
+// ─── Client singletons ────────────────────────────────────────────────────────
+
+/**
+ * Telemetry client — connects to /ws/inference.
+ * Receives env_step; drives telemetryStore (SiteView / LiveDashboard).
+ */
+export const telemetryWsClient: WsClient = createWsClient({
+  url: TELEMETRY_WS_URL,
+  onEnvStep: handleEnvStep,
+  onTrainMetrics: () => {},        // /ws/inference never sends train_metrics
+  onEvalCompare: () => {},          // eval_compare: no v1 consumer
+  onStatusChange: handleStatusChange,
+});
+
+/**
+ * Training client — connects to /ws/training/stream.
+ * Receives train_metrics; drives trainingStore (TrainingPanel).
+ */
+export const trainingWsClient: WsClient = createWsClient({
+  url: TRAINING_WS_URL,
+  onEnvStep: () => {},              // /ws/training/stream never sends env_step
+  onTrainMetrics: handleTrainMetrics,
+  onEvalCompare: () => {},
+  onStatusChange: () => {},         // training WS status not surfaced in UI
+                                    // (TrainingPanel reads wsStatus from telemetryStore)
+});
