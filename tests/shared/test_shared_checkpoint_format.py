@@ -13,6 +13,9 @@ Expected at gate stage: ImportError / collection errors for every test.
 """
 
 import json
+import subprocess
+import sys
+import textwrap
 import numpy as np
 import pytest
 from pathlib import Path
@@ -771,3 +774,186 @@ def test_critic_fc1_input_dim_is_113():
     assert critic_shapes["critic1_fc1_w"] != TestActorWeightShapes.EXPECTED_SHAPES["actor_fc1_w"], (
         "Critic and actor fc1 weights have the same shape — critic input must be 113, not 107"
     )
+
+
+# ---------------------------------------------------------------------------
+# JAX-free import guarantee — §6 "Import-level guarantee (PR #60)"
+# Relocated from tests/training/test_training_lazy_init.py (PR #60 fix branch)
+# so this consumer property of the LOCKED checkpoint contract lives next to
+# the other §6 tests.  The subprocess helper is self-contained.
+# ---------------------------------------------------------------------------
+
+def _run_without_jax(code: str) -> subprocess.CompletedProcess:
+    """Run code in a fresh Python subprocess with jax/jaxlib blocked in sys.modules.
+
+    Uses explicit string concatenation so that multiline `code` arguments
+    (0-indent) don't confuse textwrap.dedent into leaving the header indented
+    → IndentationError inside the subprocess.
+    """
+    header = (
+        "import sys\n"
+        "# Block jax/jaxlib so any eager import raises ImportError\n"
+        "sys.modules['jax'] = None\n"
+        "sys.modules['jaxlib'] = None\n"
+        "sys.modules['jax.numpy'] = None\n"
+        "sys.modules['jax.nn'] = None\n"
+    )
+    return subprocess.run(
+        [sys.executable, "-c", header + code],
+        capture_output=True,
+        text=True,
+    )
+
+
+class TestJaxFreeImport:
+    """§6 import-level guarantee: checkpoint_format must not require JAX at import time.
+
+    Contract: contracts/shared/checkpoint_format.md §6 — "Import-level guarantee (PR #60)".
+    Tests run in subprocesses that block JAX via sys.modules to simulate a JAX-free box.
+    The in-process JAX import (module level above) does not affect these tests.
+    """
+
+    def test_checkpoint_format_importable_without_jax(self):
+        """Direct regression pin for PR #59 deployment crash.
+
+        `from energy_go.training.checkpoint_format import ...` must not raise
+        ModuleNotFoundError on a serving box that has no JAX installed.
+        """
+        result = _run_without_jax(
+            "from energy_go.training.checkpoint_format import "
+            "load_checkpoint, actor_forward_numpy, CheckpointData; "
+            "print('ok')"
+        )
+        assert result.returncode == 0, (
+            "checkpoint_format import failed without jax:\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+        assert "ok" in result.stdout
+
+    def test_training_package_importable_without_jax(self):
+        """energy_go.training package import must not require JAX.
+
+        PEP 562 lazy __getattr__ in training/__init__.py defers all
+        JAX-heavy submodule imports until the symbol is accessed.
+        """
+        result = _run_without_jax("import energy_go.training; print('ok')")
+        assert result.returncode == 0, (
+            "energy_go.training import failed without jax:\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+        assert "ok" in result.stdout
+
+    def test_actor_forward_numpy_runs_without_jax(self):
+        """Full CheckpointData construction + actor_forward_numpy without JAX.
+
+        Verifies the complete serving import path end-to-end on a JAX-free box.
+        """
+        code = textwrap.dedent("""\
+            import numpy as np
+            from energy_go.training.checkpoint_format import CheckpointData, actor_forward_numpy
+            rng = np.random.default_rng(0)
+            ckpt = CheckpointData(
+                schema_version="1.0.0",
+                checkpoint_id="jax-free-test-0000-0000-000000000001",
+                run_id="jax_free_test",
+                global_step=1,
+                created_at_utc="2026-06-11T00:00:00Z",
+                code_version="test",
+                run_config_json="{}",
+                obs_dim=107,
+                action_dim=6,
+                obs_count=1,
+                obs_mean=np.zeros(107, dtype=np.float32),
+                obs_var=np.ones(107, dtype=np.float32),
+                obs_clip=np.float32(10.0),
+                actor_fc1_w=rng.standard_normal((107, 256)).astype(np.float32),
+                actor_fc1_b=np.zeros(256, dtype=np.float32),
+                actor_fc2_w=rng.standard_normal((256, 256)).astype(np.float32),
+                actor_fc2_b=np.zeros(256, dtype=np.float32),
+                actor_out_w=rng.standard_normal((256, 12)).astype(np.float32),
+                actor_out_b=np.zeros(12, dtype=np.float32),
+            )
+            obs = np.ones(107, dtype=np.float32)
+            action = actor_forward_numpy(ckpt, obs)
+            assert action.shape == (6,), f"expected (6,) got {action.shape}"
+            assert action.dtype == np.float32, f"expected float32 got {action.dtype}"
+            assert -1.0 < float(action[0]) < 1.0, f"a_bat out of range: {action[0]}"
+            assert all(0.0 < float(f) < 1.0 for f in action[1:6]), f"fractions out of range: {action[1:6]}"
+            print('ok')
+        """)
+        result = _run_without_jax(code)
+        assert result.returncode == 0, (
+            "actor_forward_numpy failed without jax:\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+        assert "ok" in result.stdout
+
+    def test_training_public_api_accessible_with_jax(self):
+        """Lazy __getattr__ must not break training public API when JAX IS present.
+
+        Regression guard: `from energy_go.training import train` must still work.
+        Skipped if JAX is not installed in the test process.
+        """
+        try:
+            import jax  # noqa: F401
+        except (ImportError, ModuleNotFoundError):
+            pytest.skip("jax not installed — skipping JAX-dependent API check")
+        from energy_go.training import RunConfig, RunningStats  # noqa: F401
+        from energy_go.training import train, run_eval, run_baseline  # noqa: F401
+
+    def test_actor_params_and_obs_stats_work_with_jax(self):
+        """actor_params and obs_stats convenience properties work when JAX is present.
+
+        These properties do `import jax.numpy as jnp` locally and must still
+        function correctly after the local-import fix.
+        Skipped if JAX is not installed.
+        """
+        try:
+            import jax.numpy as jnp  # noqa: F401
+        except (ImportError, ModuleNotFoundError):
+            pytest.skip("jax not installed — skipping jax-property check")
+        rng = np.random.default_rng(0)
+        ckpt = CheckpointData(
+            schema_version="1.0.0",
+            checkpoint_id="jax-free-test-0000-0000-000000000002",
+            run_id="jax_free_test",
+            global_step=1,
+            created_at_utc="2026-06-11T00:00:00Z",
+            code_version="test",
+            run_config_json="{}",
+            obs_dim=107,
+            action_dim=6,
+            obs_count=1,
+            obs_mean=np.zeros(107, dtype=np.float32),
+            obs_var=np.ones(107, dtype=np.float32),
+            obs_clip=np.float32(10.0),
+            actor_fc1_w=rng.standard_normal((107, 256)).astype(np.float32),
+            actor_fc1_b=np.zeros(256, dtype=np.float32),
+            actor_fc2_w=rng.standard_normal((256, 256)).astype(np.float32),
+            actor_fc2_b=np.zeros(256, dtype=np.float32),
+            actor_out_w=rng.standard_normal((256, 12)).astype(np.float32),
+            actor_out_b=np.zeros(12, dtype=np.float32),
+        )
+        params = ckpt.actor_params
+        assert set(params.keys()) == {"fc1_w", "fc1_b", "fc2_w", "fc2_b", "out_w", "out_b"}
+        stats = ckpt.obs_stats
+        assert hasattr(stats, "mean") and hasattr(stats, "var")
+
+    # reviewer: __all__ ↔ __getattr__ consistency guard (backend-reviewer, PR #60 gate)
+    def test_all_public_names_resolvable(self):
+        """Every name in training.__all__ must be resolvable via lazy __getattr__."""
+        pytest.importorskip("jax")
+        import importlib
+        t = importlib.import_module("energy_go.training")
+        missing = [name for name in t.__all__ if not hasattr(t, name)]
+        assert not missing, (
+            f"__all__ names not resolvable by __getattr__ (drift): {missing}"
+        )
+
+    # reviewer: fall-through guard (backend-reviewer, PR #60 gate)
+    def test_unknown_attribute_raises_attribute_error(self):
+        """__getattr__ must raise AttributeError for names not in __all__."""
+        import importlib
+        t = importlib.import_module("energy_go.training")
+        with pytest.raises(AttributeError):
+            _ = t.this_symbol_does_not_exist
