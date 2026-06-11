@@ -200,7 +200,7 @@ Error code semantics:
 |---|---|---|
 | `run_not_found` | `start` with unknown `run_id` | no |
 | `site_not_found` | `start` with unknown `site_id` | no |
-| `policy_not_found` | `start` but no `policy.npz`/`.onnx` in run dir | no |
+| `policy_not_found` | `start` but no canonical checkpoint in run dir (see §Policy loading) | no |
 | `already_running` | `start` while session is already running or paused | no |
 | `no_session` | `pause`/`resume`/`step` with no active session | no |
 | `bad_state` | `step` when not paused, or other state-inappropriate command | no |
@@ -213,32 +213,62 @@ error).  All other error codes leave the connection open; the client may retry.
 
 ## Normalization
 
-The serving layer applies the same observation normalization as training:
-```
-obs_norm = (obs_raw - obs_mean) / max(obs_std, 1e-8)
-```
-where `obs_mean` and `obs_std` are loaded from `checkpoints/{run_id}/normalization.npz`
-at session start.  If `normalization.npz` is absent, the layer uses identity
-normalization (`obs_mean=0`, `obs_std=1`) and logs a warning.
+The serving layer applies the **exact same obs normalization as training** using the
+stats embedded in the checkpoint (`CheckpointData.obs_mean`, `obs_var`, `obs_clip`):
 
-The telemetry stream carries **raw (un-normalized) values** — the normalization is
-only applied internally when calling the policy.
+```
+std      = sqrt(obs_var + 1e-8)
+obs_norm = clip((obs_raw - obs_mean) / std, -obs_clip, obs_clip)
+```
+
+`obs_clip` is always `10.0` (§5 training_pipeline; carried in the checkpoint so
+inference does not hardcode it).  This is identical to
+`energy_go.training.normalizer.normalize_obs()` with `clip=obs_clip`.
+
+There is no separate `normalization.npz` file — all stats are in the single checkpoint
+archive loaded via `load_checkpoint` (§Policy loading).
+
+The telemetry stream carries **raw (un-normalized) values** — normalization is only
+applied internally before calling the policy.
 
 ## Policy loading
 
-Policy weights are loaded from `checkpoints/{run_id}/policy.npz` on first `start` for a
-given `run_id`.  Weights are cached in memory for the duration of the server process
-(re-loading on subsequent `start` commands for the same `run_id` is a no-op).
+**Checkpoint discovery** — on `start`, the serving layer resolves the checkpoint path
+for a `run_id` as follows:
 
-Policy file format (`policy.npz`): a NumPy archive with keys `"w_0"`, `"b_0"`,
-`"w_1"`, `"b_1"`, ..., `"w_N"`, `"b_N"` for an N-layer MLP (layer 0 = first hidden).
-Activation: tanh for hidden layers, identity for output (raw action logits).  Action is
-clipped to [−1, 1] before passing to the env.
+1. `checkpoints/{run_id}/checkpoint_*.npz` — canonical format (checkpoint_format.md).
+   If multiple files match, pick the one with the highest `_step<N>` suffix (integer N).
 
-If ONNX export is available (`policy.onnx`), it is preferred over `policy.npz`
-(identical numerical output within float32 tolerance; ONNX runtime = faster inference).
-The contract does not prescribe which backend is used — the test suite only checks
-that the served action matches a reference forward pass within 1e-5 tolerance.
+The legacy `policy.npz` / `normalization.npz` path is **not supported**.  All real
+training runs (PR #40) emit canonical §6 `.npz` checkpoints; the placeholder never
+produced trained policies and has been removed.
+
+If no canonical checkpoint is found, the server sends `code: "policy_not_found"` and
+does not start.
+
+**Loading** — canonical checkpoints are loaded via:
+
+```python
+from energy_go.training.checkpoint_format import load_checkpoint, actor_forward_numpy
+checkpoint = load_checkpoint("checkpoints/{run_id}/checkpoint_…npz")
+```
+
+The returned `CheckpointData` is cached in memory per `run_id` for the server lifetime
+(re-loading on subsequent `start` for the same `run_id` is a no-op).
+
+**Forward pass** — uses `actor_forward_numpy` from `energy_go.training.checkpoint_format`
+exactly as specified in checkpoint_format.md §6:
+
+```
+action = actor_forward_numpy(checkpoint, raw_obs)  # (6,) float32
+```
+
+where `raw_obs` is the **un-normalized** observation from the env step.  The function
+applies normalization (§Normalization above), MLP forward pass with ReLU activations,
+clips `mean` to ±8.0 (D28), then returns `[tanh(mean[0]), sigmoid(mean[1:6])]`.
+
+The test suite MUST verify: `actor_forward_numpy(checkpoint, obs)` agrees with a
+reference forward pass to atol=1e-5 on fixed inputs.
 
 ## Public policy utilities
 
@@ -246,29 +276,35 @@ The `inference_stream` module exposes one public utility function for use by tes
 other consumers that need the forward-pass logic without a live WebSocket session:
 
 ```python
-def policy_forward(weights: dict[str, np.ndarray], obs: np.ndarray) -> np.ndarray:
-    """Run the MLP forward pass.
+def policy_forward(checkpoint: "CheckpointData", obs: np.ndarray) -> np.ndarray:
+    """Run the actor forward pass — thin wrapper around actor_forward_numpy (§6).
 
     Args:
-        weights: dict loaded from policy.npz — keys "w_0", "b_0", ..., "w_N", "b_N"
-                 (N = number of layers; layer 0 = first hidden, layer N-1 = output).
-        obs:     float32 array of shape (obs_dim,), already normalized.
+        checkpoint: CheckpointData loaded via load_checkpoint().
+        obs:        float32 (obs_dim,) raw (un-normalized) observation.
 
     Returns:
-        float32 array of shape (action_dim,) clipped to [−1, 1].
-
-    Activation: tanh for hidden layers (indices 0 … N-2); identity for the output
-    layer (index N-1).  Output clipped to [−1, 1] before returning.
+        float32 (6,) action: [tanh(mean[0]), sigmoid(mean[1:6])].
+        Identical to actor_forward_numpy(checkpoint, obs).
     """
 ```
 
-This function is the single source of truth for the forward-pass logic; the WebSocket
-handler and tests both call it.  The test suite imports it directly to verify the
-reference identity:
+`policy_forward` is the single callable the WebSocket handler and tests use; it
+delegates entirely to `actor_forward_numpy` (checkpoint_format.md §6, D26).  The
+test suite imports it directly to verify parity:
+
+```python
+from energy_go.serving.inference_stream import policy_forward
+from energy_go.training.checkpoint_format import actor_forward_numpy
+
+action_served    = policy_forward(checkpoint, raw_obs)
+action_reference = actor_forward_numpy(checkpoint, raw_obs)
+np.testing.assert_allclose(action_served, action_reference, atol=1e-5)
 ```
-served = policy_forward(weights, obs)
-np.testing.assert_allclose(served, reference_forward(weights, obs), atol=1e-5)
-```
+
+**Dependencies:** `contracts/shared/checkpoint_format.md` v1.0.0 (LOCKED).
+Frontend validator gap: `telemetryStore.receiveEnvStep` must validate/skip-on-fail
+before the real-env cutover goes live (tracked; see D26 / task #29).
 
 ## Replay speed
 
@@ -302,9 +338,9 @@ or paused), the server back-pressures via the WebSocket send queue (asyncio awai
 ## Dependencies
 
 - `fastapi>=0.110`, `websockets>=12` (from `serving` extras).
-- `energy_go.telemetry.validate` (task #23 / `contracts/shared/telemetry_validate.md`).
-- `checkpoints/{run_id}/policy.npz` — produced by training-engineer (format defined here;
-  the training checkpoint contract will reference this definition when it lands).
-- `checkpoints/{run_id}/normalization.npz` — produced by training-engineer.
+- `energy_go.telemetry.validate` (`contracts/shared/telemetry_validate.md`).
+- `energy_go.training.checkpoint_format` — LOCKED `contracts/shared/checkpoint_format.md`
+  v1.0.0; provides `CheckpointData`, `load_checkpoint`, `actor_forward_numpy`.
+- `checkpoints/{run_id}/checkpoint_*.npz` — produced by training-engineer (PR #40).
 - The env step interface (NumPy reference implementation from `contracts/env/reference_implementation.md`
   or JAX env step from task #8) — the serving layer calls `env.step(obs, action)`.
