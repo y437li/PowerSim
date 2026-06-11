@@ -948,8 +948,12 @@ def test_acceptance_serving_cpu_creates_venv_sh(tmp_path):
         ],
         capture_output=True, text=True, cwd=tmp_path,
     )
-    if result.returncode != 0:
-        pytest.skip(f"Install failed (toolchain/ARM incompatibility): {result.stderr[:200]}")
+    if result.returncode == 2:
+        pytest.skip(f"Unsupportable toolchain/ARM (exit 2 preflight): {result.stderr[:200]}")
+    assert result.returncode == 0, (
+        f"§9.5 acceptance: install serving --no-launch failed (exit {result.returncode}).\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
     # .venv must exist
     assert (tmp_path / ".venv").exists(), ".venv not created after install"
     # fastapi must be installed (serving dep)
@@ -980,8 +984,12 @@ def test_acceptance_training_no_node_sh(tmp_path):
         ],
         capture_output=True, text=True, cwd=tmp_path,
     )
-    if result.returncode != 0:
-        pytest.skip(f"Install failed (toolchain/ARM incompatibility): {result.stderr[:200]}")
+    if result.returncode == 2:
+        pytest.skip(f"Unsupportable toolchain/ARM (exit 2 preflight): {result.stderr[:200]}")
+    assert result.returncode == 0, (
+        f"§9.5 acceptance: training install failed (exit {result.returncode}).\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
     assert (tmp_path / ".venv").exists()
     # node_modules must NOT exist (training type skips Node/frontend)
     assert not (tmp_path / "node_modules").exists(), (
