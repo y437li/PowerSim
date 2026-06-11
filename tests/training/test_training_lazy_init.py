@@ -212,3 +212,32 @@ def test_actor_params_and_obs_stats_require_jax():
     assert hasattr(stats, "mean") and hasattr(stats, "var"), (
         f"obs_stats missing mean/var: {stats}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Reviewer-added (backend-reviewer, PR #60 lazy-init gate)
+# ---------------------------------------------------------------------------
+
+# reviewer: __all__ ↔ __getattr__ consistency guard. The PEP 562 __getattr__ must
+# reviewer: resolve EVERY name in __all__; otherwise `from energy_go.training import X`
+# reviewer: (and `from energy_go.training import *`) AttributeError for a name that was
+# reviewer: added to __all__ but not to __getattr__. Runs in the normal (JAX-present)
+# reviewer: test process since these names resolve to JAX-heavy submodules.
+def test_all_public_names_resolvable():
+    pytest.importorskip("jax")  # these names pull in JAX-heavy submodules
+    import importlib
+    t = importlib.import_module("energy_go.training")
+    missing = [name for name in t.__all__ if not hasattr(t, name)]
+    assert not missing, (
+        f"__all__ names not resolvable by __getattr__ (drift between __all__ and "
+        f"__getattr__): {missing}"
+    )
+
+
+# reviewer: a name NOT in __all__ / not handled by __getattr__ must raise AttributeError
+# reviewer: (not silently import something or hang) — pins the __getattr__ fall-through.
+def test_unknown_attribute_raises_attribute_error():
+    import importlib
+    t = importlib.import_module("energy_go.training")
+    with pytest.raises(AttributeError):
+        _ = t.this_symbol_does_not_exist
