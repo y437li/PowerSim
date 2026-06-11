@@ -547,473 +547,304 @@ describe("reviewer: validate — eval_compare per-policy additive identity (D13)
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TV.ROB — Robustness amendment tests (task #29, post-D26)
-// Contract: contracts/frontend/telemetry_validator.md §10–§13
+// Contract: contracts/frontend/telemetry_validator.md §10–§15
 //
-// These tests are intentionally RED until wsClient.ts is amended to:
-//   1. Call validate() before dispatching data frames (§10.1)
-//   2. Drop frames where ok:false or validate() throws (§10.2–§10.3)
-//   3. Call useTelemetryStore.getState().pushFrameError() on failure (§13.2)
-// And until telemetryStore.ts adds frameErrors / pushFrameError (§13.2).
+// These tests are intentionally RED until:
+//   - telemetryStore.receiveEnvStep calls validate() and skips on ok:false (§10.1/§10.3)
+//   - telemetryStore gains droppedFrameCount + lastValidationErrors (§13.1)
+//   - deriveAlerts gains "telemetry_invalid" AlertEvent kind (§13.2)
+//   - trainingStore.receiveTrainMetrics validates symmetrically (§10.4)
+//   - ErrorBoundary gains resetKey prop (§14)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// ─── Shared WebSocket mock setup ──────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-type MockWsInstance = {
-  send: ReturnType<typeof vi.fn>;
-  readyState: number;
-  onopen: (() => void) | null;
-  onmessage: ((e: MessageEvent) => void) | null;
-  onerror: (() => void) | null;
-  onclose: (() => void) | null;
-};
-
-/** Inline FrameError shape — mirrors §13.1 of the contract. */
-type FrameError = { ts_utc: string; kind: string; seq: number; errors: string[] };
-
-function makeMockWsInstance(): MockWsInstance {
+/** Build a structurally-valid env_step envelope with overrides applied to payload. */
+function makeEnvStep(payloadOverride: Record<string, unknown> = {}) {
   return {
-    send: vi.fn(),
-    readyState: WebSocket.OPEN,
-    onopen: null,
-    onmessage: null,
-    onerror: null,
-    onclose: null,
+    ...(ENV_STEP_A as Record<string, unknown>),
+    payload: {
+      ...(ENV_STEP_A as any).payload,
+      ...payloadOverride,
+    },
   };
 }
 
-// ─── TV.ROB.1–TV.ROB.12: wsClient validate() integration ─────────────────────
+// ─── TV.ROB.1–TV.ROB.7: telemetryStore.receiveEnvStep — store-boundary validation
 //
-// Uses the REAL validate() (no mock). Invalid frames are constructed so the
-// real validator rejects them — this proves end-to-end that wsClient calls
-// validate() and respects its result.
+// All tests call receiveEnvStep() directly (no wsClient in the loop).
+// The REAL validate() is used throughout — no mocking of the validator.
 
-describe("TV.ROB — wsClient validate() pre-dispatch gate (§10.1)", () => {
-  let mockWs: MockWsInstance;
-
-  beforeEach(() => {
-    mockWs = makeMockWsInstance();
-    vi.stubGlobal("WebSocket", vi.fn().mockImplementation(() => mockWs));
-  });
-
+describe("TV.ROB — telemetryStore.receiveEnvStep store-boundary validation (§10.1/§10.3)", () => {
   afterEach(() => {
-    vi.unstubAllGlobals();
     vi.resetModules();
   });
 
-  it("TV.ROB.1 — valid env_step (golden A) → onEnvStep dispatched", async () => {
-    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
-      "../../src/clients/wsClient"
-    );
-    const onEnvStep = vi.fn();
-    createWsClient({
-      url: "ws://localhost/ws/test",
-      onEnvStep,
-      onTrainMetrics: vi.fn(),
-      onEvalCompare: vi.fn(),
-      onStatusChange: vi.fn(),
-    }).connect();
-    mockWs.onmessage?.({ data: JSON.stringify(ENV_STEP_A) } as MessageEvent);
-    expect(onEnvStep).toHaveBeenCalledOnce();
-  });
-
-  it("TV.ROB.2 — env_step with battery field omitted → validate() rejects → onEnvStep NOT dispatched", async () => {
-    // Omitting battery triggers Zod payload_invalid — the exact crash path from PR #46.
-    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
-      "../../src/clients/wsClient"
-    );
-    const onEnvStep = vi.fn();
-    createWsClient({
-      url: "ws://localhost/ws/test",
-      onEnvStep,
-      onTrainMetrics: vi.fn(),
-      onEvalCompare: vi.fn(),
-      onStatusChange: vi.fn(),
-    }).connect();
-    const { battery: _drop, ...payloadNoBattery } = (ENV_STEP_A as any).payload;
-    const badFrame = { ...ENV_STEP_A, payload: payloadNoBattery };
-    mockWs.onmessage?.({ data: JSON.stringify(badFrame) } as MessageEvent);
-    expect(onEnvStep).not.toHaveBeenCalled();
-  });
-
-  it("TV.ROB.3 — invalid env_step → pushFrameError() called on telemetryStore", async () => {
-    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
-      "../../src/clients/wsClient"
-    );
+  it("TV.ROB.1 — NaN reward field → receiveEnvStep skips; envStep unchanged; droppedFrameCount=1", async () => {
     const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
-    createWsClient({
-      url: "ws://localhost/ws/test",
-      onEnvStep: vi.fn(),
-      onTrainMetrics: vi.fn(),
-      onEvalCompare: vi.fn(),
-      onStatusChange: vi.fn(),
-    }).connect();
-    const { battery: _drop, ...payloadNoBattery } = (ENV_STEP_A as any).payload;
-    mockWs.onmessage?.({
-      data: JSON.stringify({ ...ENV_STEP_A, payload: payloadNoBattery }),
-    } as MessageEvent);
-    const { frameErrors } = useTelemetryStore.getState();
-    expect(frameErrors).toHaveLength(1);
-    expect(frameErrors[0].errors.length).toBeGreaterThan(0);
+    // Seed a good frame so envStep is non-null
+    useTelemetryStore.getState().receiveEnvStep(ENV_STEP_A as any);
+    const goodState = useTelemetryStore.getState().envStep;
+    expect(goodState).not.toBeNull();
+    const historyLen = useTelemetryStore.getState().history.length;
+
+    // NaN reward — validate() catches at §4.9 finiteness check
+    const badFrame = makeEnvStep({ reward: NaN });
+    expect(() => useTelemetryStore.getState().receiveEnvStep(badFrame as any)).not.toThrow();
+
+    expect(useTelemetryStore.getState().envStep).toStrictEqual(goodState); // unchanged
+    expect(useTelemetryStore.getState().history).toHaveLength(historyLen); // no new entry
+    expect(useTelemetryStore.getState().droppedFrameCount).toBe(1);
   });
 
-  it("TV.ROB.4 — FrameError carries kind, seq, and error codes from validate()", async () => {
-    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
-      "../../src/clients/wsClient"
-    );
+  it("TV.ROB.2 — Infinity in a numeric field → receiveEnvStep skips (same semantics)", async () => {
     const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
-    createWsClient({
-      url: "ws://localhost/ws/test",
-      onEnvStep: vi.fn(),
-      onTrainMetrics: vi.fn(),
-      onEvalCompare: vi.fn(),
-      onStatusChange: vi.fn(),
-    }).connect();
-    const { battery: _drop, ...payloadNoBattery } = (ENV_STEP_A as any).payload;
-    const badFrame = { ...ENV_STEP_A, payload: payloadNoBattery };
-    mockWs.onmessage?.({ data: JSON.stringify(badFrame) } as MessageEvent);
-    const err = useTelemetryStore.getState().frameErrors[0];
-    expect(err.kind).toBe("env_step");
-    expect(typeof err.seq).toBe("number");
-    expect(err.errors.length).toBeGreaterThan(0);
-    // Error codes should start with 'payload_invalid' (Zod rejection of missing battery)
-    expect(err.errors.some((e: string) => e.startsWith("payload_invalid"))).toBe(true);
+    useTelemetryStore.getState().receiveEnvStep(ENV_STEP_A as any);
+    const historyLenBefore = useTelemetryStore.getState().history.length;
+
+    const badFrame = makeEnvStep({ load_mw: Infinity });
+    useTelemetryStore.getState().receiveEnvStep(badFrame as any);
+
+    expect(useTelemetryStore.getState().history).toHaveLength(historyLenBefore);
+    expect(useTelemetryStore.getState().droppedFrameCount).toBe(1);
   });
 
-  it("TV.ROB.5 — env_step with battery.soc null → validate() rejects → onEnvStep NOT dispatched", async () => {
-    // null fails z.number() — distinct from the missing-field case
-    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
-      "../../src/clients/wsClient"
-    );
-    const onEnvStep = vi.fn();
-    createWsClient({
-      url: "ws://localhost/ws/test",
-      onEnvStep,
-      onTrainMetrics: vi.fn(),
-      onEvalCompare: vi.fn(),
-      onStatusChange: vi.fn(),
-    }).connect();
-    const badFrame = {
-      ...ENV_STEP_A,
-      payload: {
-        ...(ENV_STEP_A as any).payload,
-        battery: { ...(ENV_STEP_A as any).payload.battery, soc: null },
-      },
-    };
-    mockWs.onmessage?.({ data: JSON.stringify(badFrame) } as MessageEvent);
-    expect(onEnvStep).not.toHaveBeenCalled();
-  });
-
-  it("TV.ROB.6 — valid train_metrics (golden) → onTrainMetrics dispatched", async () => {
-    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
-      "../../src/clients/wsClient"
-    );
-    const onTrainMetrics = vi.fn();
-    createWsClient({
-      url: "ws://localhost/ws/test",
-      onEnvStep: vi.fn(),
-      onTrainMetrics,
-      onEvalCompare: vi.fn(),
-      onStatusChange: vi.fn(),
-    }).connect();
-    mockWs.onmessage?.({ data: JSON.stringify(TRAIN_METRICS) } as MessageEvent);
-    expect(onTrainMetrics).toHaveBeenCalledOnce();
-  });
-
-  it("TV.ROB.7 — train_metrics missing global_step → validate() rejects → onTrainMetrics NOT dispatched", async () => {
-    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
-      "../../src/clients/wsClient"
-    );
-    const onTrainMetrics = vi.fn();
-    createWsClient({
-      url: "ws://localhost/ws/test",
-      onEnvStep: vi.fn(),
-      onTrainMetrics,
-      onEvalCompare: vi.fn(),
-      onStatusChange: vi.fn(),
-    }).connect();
-    const { global_step: _drop, ...payloadNoStep } = (TRAIN_METRICS as any).payload;
-    mockWs.onmessage?.({
-      data: JSON.stringify({ ...TRAIN_METRICS, payload: payloadNoStep }),
-    } as MessageEvent);
-    expect(onTrainMetrics).not.toHaveBeenCalled();
-  });
-
-  it("TV.ROB.8 — valid eval_compare (golden) → onEvalCompare dispatched", async () => {
-    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
-      "../../src/clients/wsClient"
-    );
-    const onEvalCompare = vi.fn();
-    createWsClient({
-      url: "ws://localhost/ws/test",
-      onEnvStep: vi.fn(),
-      onTrainMetrics: vi.fn(),
-      onEvalCompare,
-      onStatusChange: vi.fn(),
-    }).connect();
-    mockWs.onmessage?.({ data: JSON.stringify(EVAL_COMPARE) } as MessageEvent);
-    expect(onEvalCompare).toHaveBeenCalledOnce();
-  });
-
-  it("TV.ROB.9 — status frame bypasses validate() → onServerStatus dispatched (§10.1 bypass)", async () => {
-    // Status frames have no 'payload' field. If wsClient ran validate() on them,
-    // validate() would return ok:false (missing_field:payload) and onServerStatus
-    // would NOT be called. That it IS called proves the bypass path is in effect.
-    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
-      "../../src/clients/wsClient"
-    );
-    const onServerStatus = vi.fn();
-    createWsClient({
-      url: "ws://localhost/ws/test",
-      onEnvStep: vi.fn(),
-      onTrainMetrics: vi.fn(),
-      onEvalCompare: vi.fn(),
-      onStatusChange: vi.fn(),
-      onServerStatus,
-    }).connect();
-    const statusFrame = {
-      kind: "status",
-      state: "ready",
-      session_id: null,
-      step: 0,
-      episode: 0,
-      run_id: null,
-      site_id: null,
-    };
-    mockWs.onmessage?.({ data: JSON.stringify(statusFrame) } as MessageEvent);
-    expect(onServerStatus).toHaveBeenCalledOnce();
-    expect(onServerStatus.mock.calls[0][0]).toMatchObject({ kind: "status", state: "ready" });
-  });
-
-  it("TV.ROB.10 — after invalid frame, next valid frame is dispatched (session survives)", async () => {
-    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
-      "../../src/clients/wsClient"
-    );
-    const onEnvStep = vi.fn();
-    createWsClient({
-      url: "ws://localhost/ws/test",
-      onEnvStep,
-      onTrainMetrics: vi.fn(),
-      onEvalCompare: vi.fn(),
-      onStatusChange: vi.fn(),
-    }).connect();
-    // Invalid frame first
-    const { battery: _drop, ...payloadNoBattery } = (ENV_STEP_A as any).payload;
-    mockWs.onmessage?.({
-      data: JSON.stringify({ ...ENV_STEP_A, payload: payloadNoBattery }),
-    } as MessageEvent);
-    expect(onEnvStep).not.toHaveBeenCalled();
-    // Valid frame next — must be dispatched normally
-    mockWs.onmessage?.({ data: JSON.stringify(ENV_STEP_A) } as MessageEvent);
-    expect(onEnvStep).toHaveBeenCalledOnce();
-    expect(onEnvStep.mock.calls[0][0]).toMatchObject({ kind: "env_step" });
-  });
-
-  it("TV.ROB.11 — invalid frame does NOT change telemetryStore.envStep (store state preserved)", async () => {
-    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
-      "../../src/clients/wsClient"
-    );
+  it("TV.ROB.3 — missing payload.battery (the PR #46 crash path) → receiveEnvStep DOES NOT THROW; store unchanged", async () => {
+    // This tests the exact failure mode: a component reading envStep.battery.soc would
+    // throw if this frame reached the store, crashing the ErrorBoundary.
     const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
-    // Wire wsClient directly to the store so the store gets the dispatched frames
-    createWsClient({
-      url: "ws://localhost/ws/test",
-      onEnvStep: (msg) => useTelemetryStore.getState().receiveEnvStep(msg),
-      onTrainMetrics: vi.fn(),
-      onEvalCompare: vi.fn(),
-      onStatusChange: vi.fn(),
-    }).connect();
-    // First valid frame populates envStep
-    mockWs.onmessage?.({ data: JSON.stringify(ENV_STEP_A) } as MessageEvent);
-    const stepAfterValid = useTelemetryStore.getState().envStep;
-    expect(stepAfterValid).not.toBeNull();
-    // Invalid frame must NOT overwrite envStep
-    const { battery: _drop, ...payloadNoBattery } = (ENV_STEP_A as any).payload;
-    mockWs.onmessage?.({
-      data: JSON.stringify({ ...ENV_STEP_A, payload: payloadNoBattery, seq: 999 }),
-    } as MessageEvent);
-    expect(useTelemetryStore.getState().envStep).toStrictEqual(stepAfterValid);
+    useTelemetryStore.getState().receiveEnvStep(ENV_STEP_A as any);
+    const goodEnvStep = useTelemetryStore.getState().envStep;
+
+    const { battery: _omit, ...payloadNoBattery } = (ENV_STEP_A as any).payload;
+    const badFrame = { ...(ENV_STEP_A as any), payload: payloadNoBattery };
+
+    // Must not throw
+    expect(() => useTelemetryStore.getState().receiveEnvStep(badFrame as any)).not.toThrow();
+
+    // Store must be unchanged
+    expect(useTelemetryStore.getState().envStep).toStrictEqual(goodEnvStep);
+    expect(useTelemetryStore.getState().droppedFrameCount).toBe(1);
   });
 
-  it("TV.ROB.12 — valid env_step does NOT add to frameErrors (no false positives)", async () => {
-    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
-      "../../src/clients/wsClient"
-    );
+  it("TV.ROB.4 — recovery: valid frame accepted after a bad one (per-frame, not sticky)", async () => {
     const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
-    createWsClient({
-      url: "ws://localhost/ws/test",
-      onEnvStep: vi.fn(),
-      onTrainMetrics: vi.fn(),
-      onEvalCompare: vi.fn(),
-      onStatusChange: vi.fn(),
-    }).connect();
-    mockWs.onmessage?.({ data: JSON.stringify(ENV_STEP_A) } as MessageEvent);
-    expect(useTelemetryStore.getState().frameErrors).toHaveLength(0);
+
+    // Bad frame
+    const badFrame = makeEnvStep({ reward: NaN });
+    useTelemetryStore.getState().receiveEnvStep(badFrame as any);
+    expect(useTelemetryStore.getState().droppedFrameCount).toBe(1);
+    expect(useTelemetryStore.getState().envStep).toBeNull(); // still null — never accepted
+
+    // Next valid frame — must be accepted
+    useTelemetryStore.getState().receiveEnvStep(ENV_STEP_A as any);
+    expect(useTelemetryStore.getState().envStep).not.toBeNull();
+    expect(useTelemetryStore.getState().history).toHaveLength(1);
+    // droppedFrameCount stays at 1 (only the one bad frame)
+    expect(useTelemetryStore.getState().droppedFrameCount).toBe(1);
+  });
+
+  it("TV.ROB.5 — golden env_step_a.json → validate ok:true → receiveEnvStep accepts; envStep updated", async () => {
+    // Regression: valid frames MUST still be accepted after the amendment.
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+    useTelemetryStore.getState().receiveEnvStep(ENV_STEP_A as any);
+
+    expect(useTelemetryStore.getState().envStep).not.toBeNull();
+    expect(useTelemetryStore.getState().history).toHaveLength(1);
+    expect(useTelemetryStore.getState().droppedFrameCount).toBe(0); // no false drops
+  });
+
+  it("TV.ROB.6 — bad frame increments droppedFrameCount and sets lastValidationErrors", async () => {
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+
+    const badFrame = makeEnvStep({ reward: NaN });
+    useTelemetryStore.getState().receiveEnvStep(badFrame as any);
+
+    expect(useTelemetryStore.getState().droppedFrameCount).toBe(1);
+    const errs = useTelemetryStore.getState().lastValidationErrors;
+    expect(errs.length).toBeGreaterThan(0);
+    expect(errs.some((e: string) => e.startsWith("non_finite:"))).toBe(true);
+  });
+
+  it("TV.ROB.7 — D13 identity violation → receiveEnvStep skips; deriveAlerts includes telemetry_invalid", async () => {
+    // validate() step 4.11 checks D13 identities. Violate cost_total_real_yuan.
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+    const { deriveAlerts } = await import("../../src/utils/deriveAlerts");
+
+    const costs = (ENV_STEP_A as any).payload.costs;
+    const badCosts = { ...costs, cost_total_real_yuan: costs.cost_total_real_yuan + 5000 };
+    const badFrame = makeEnvStep({ costs: badCosts });
+    useTelemetryStore.getState().receiveEnvStep(badFrame as any);
+
+    expect(useTelemetryStore.getState().droppedFrameCount).toBe(1);
+
+    // deriveAlerts (amended) should surface a telemetry_invalid alert
+    const { droppedFrameCount, lastValidationErrors } = useTelemetryStore.getState();
+    const alerts = deriveAlerts(
+      useTelemetryStore.getState().history,
+      droppedFrameCount,
+      lastValidationErrors
+    );
+    const invalidAlert = alerts.find(a => a.kind === "telemetry_invalid");
+    expect(invalidAlert).toBeDefined();
+    expect(invalidAlert?.detail).toContain("d13_real:");
   });
 });
 
-// ─── TV.ROB exception safety: validate() throws ───────────────────────────────
-// Isolated describe block with its own doMock/doUnmock lifecycle.
+// ─── TV.ROB.8: ErrorBoundary resetKey (§14) ───────────────────────────────────
 
-describe("TV.ROB — §10.2 exception safety: validate() throws", () => {
-  let mockWs: MockWsInstance;
-
-  beforeEach(() => {
-    mockWs = makeMockWsInstance();
-    vi.stubGlobal("WebSocket", vi.fn().mockImplementation(() => mockWs));
-    vi.doMock("../../src/validators/telemetryValidator", () => ({
-      validate: vi.fn(() => {
-        throw new Error("internal validator crash");
-      }),
-    }));
-  });
-
+describe("TV.ROB — ErrorBoundary resetKey self-heals on key change (§14)", () => {
   afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.doUnmock("../../src/validators/telemetryValidator");
     vi.resetModules();
   });
 
-  it("TV.ROB.13 — validate() throws → dispatch NOT called, no exception propagated, WS alive", async () => {
-    // Use regular import (not importActual) so the doMock is picked up
-    const { createWsClient } = await import("../../src/clients/wsClient");
-    const onEnvStep = vi.fn();
-    createWsClient({
-      url: "ws://localhost/ws/test",
-      onEnvStep,
-      onTrainMetrics: vi.fn(),
-      onEvalCompare: vi.fn(),
-      onStatusChange: vi.fn(),
-    }).connect();
-    expect(() => {
-      mockWs.onmessage?.({ data: JSON.stringify(ENV_STEP_A) } as MessageEvent);
-    }).not.toThrow();
-    expect(onEnvStep).not.toHaveBeenCalled();
-  });
+  it("TV.ROB.8 — child crash + resetKey change → boundary resets, children re-render", async () => {
+    const React = await import("react");
+    const { render, screen, cleanup } = await import("@testing-library/react");
+    const { ErrorBoundary } = await import("../../src/components/ErrorBoundary");
 
-  it("TV.ROB.14 — validate() throws → pushFrameError called with errors:[\"validate_threw\"]", async () => {
-    const { createWsClient } = await import("../../src/clients/wsClient");
-    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
-    createWsClient({
-      url: "ws://localhost/ws/test",
-      onEnvStep: vi.fn(),
-      onTrainMetrics: vi.fn(),
-      onEvalCompare: vi.fn(),
-      onStatusChange: vi.fn(),
-    }).connect();
-    mockWs.onmessage?.({ data: JSON.stringify(ENV_STEP_A) } as MessageEvent);
-    const errs = useTelemetryStore.getState().frameErrors;
-    expect(errs).toHaveLength(1);
-    expect(errs[0].errors).toContain("validate_threw");
+    let shouldThrow = true;
+    const ThrowOnMount = () => {
+      if (shouldThrow) throw new Error("simulated crash");
+      return React.createElement("div", { "data-testid": "child-ok" }, "OK");
+    };
+
+    const { rerender } = render(
+      React.createElement(
+        ErrorBoundary,
+        { resetKey: "session-1" },
+        React.createElement(ThrowOnMount, null)
+      )
+    );
+
+    // Boundary caught the error — child not rendered
+    expect(screen.queryByTestId("child-ok")).toBeNull();
+
+    // Fix the component and change resetKey — boundary must reset
+    shouldThrow = false;
+    rerender(
+      React.createElement(
+        ErrorBoundary,
+        { resetKey: "session-2" },
+        React.createElement(ThrowOnMount, null)
+      )
+    );
+
+    expect(screen.getByTestId("child-ok")).toBeDefined();
+    cleanup();
   });
 });
 
-// ─── TV.ROB.15–TV.ROB.18: telemetryStore frameErrors ring buffer (§13.2) ──────
+// ─── TV.ROB.9: Render integration — store boundary protects UI components ─────
+//
+// Uses NaN in battery.soc specifically — the field the PR #46 crash path reads.
+// Before implementation: store accepts bad frame → component renders "NaN%" → test FAILS (RED)
+// After implementation: store rejects bad frame → component shows last-good % → test PASSES
 
-describe("TV.ROB — telemetryStore frameErrors ring buffer (§13.2)", () => {
+describe("TV.ROB — render integration: bad frame → last-good value shown, no crash (§10.3)", () => {
   afterEach(() => {
     vi.resetModules();
   });
 
-  it("TV.ROB.15 — initial state has frameErrors: []", async () => {
+  it("TV.ROB.9 — component reading envStep.battery.soc shows last-good after store rejects NaN-soc frame", async () => {
+    const React = await import("react");
+    const { render, screen, act, cleanup } = await import("@testing-library/react");
     const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
-    expect(useTelemetryStore.getState().frameErrors).toEqual([]);
-  });
 
-  it("TV.ROB.16 — pushFrameError prepends; most-recent at index 0", async () => {
-    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
-    const err1: FrameError = {
-      ts_utc: "2026-06-10T00:00:01Z", kind: "env_step", seq: 1, errors: ["d13_real:5"],
+    // Minimal component reading battery.soc — the crash-causing field from PR #46
+    const SocDisplay = () => {
+      const envStep = useTelemetryStore((s) => s.envStep);
+      if (!envStep) return React.createElement("div", { "data-testid": "no-data" }, "No data");
+      const soc = (envStep as any).battery.soc;
+      // toFixed() on NaN produces "NaN" — this is what we check is absent
+      return React.createElement("div", { "data-testid": "soc-value" }, `${(soc * 100).toFixed(0)}%`);
     };
-    const err2: FrameError = {
-      ts_utc: "2026-06-10T00:00:02Z", kind: "env_step", seq: 2, errors: ["non_finite:battery.soc"],
-    };
-    useTelemetryStore.getState().pushFrameError(err1);
-    useTelemetryStore.getState().pushFrameError(err2);
-    const { frameErrors } = useTelemetryStore.getState();
-    expect(frameErrors).toHaveLength(2);
-    expect(frameErrors[0]).toStrictEqual(err2); // newest first
-    expect(frameErrors[1]).toStrictEqual(err1);
-  });
 
-  it("TV.ROB.17 — ring buffer caps at 10; 11th push evicts the oldest", async () => {
-    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
-    for (let i = 0; i < 11; i++) {
-      useTelemetryStore.getState().pushFrameError({
-        ts_utc: `2026-06-10T00:00:${String(i).padStart(2, "0")}Z`,
-        kind: "env_step",
-        seq: i,
-        errors: [`err_${i}`],
-      });
-    }
-    const { frameErrors } = useTelemetryStore.getState();
-    expect(frameErrors).toHaveLength(10);
-    expect(frameErrors[0].seq).toBe(10);  // most recent
-    expect(frameErrors[9].seq).toBe(1);   // oldest retained (seq=0 evicted)
-  });
+    render(React.createElement(SocDisplay, null));
+    expect(screen.getByTestId("no-data")).toBeDefined();
 
-  it("TV.ROB.18 — clearHistory() resets frameErrors to []", async () => {
-    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
-    useTelemetryStore.getState().pushFrameError({
-      ts_utc: "2026-06-10T00:00:00Z", kind: "env_step", seq: 0, errors: ["test_err"],
+    // Accept a valid frame — store updates, component shows good SOC
+    await act(async () => {
+      useTelemetryStore.getState().receiveEnvStep(ENV_STEP_A as any);
     });
-    expect(useTelemetryStore.getState().frameErrors).toHaveLength(1);
-    useTelemetryStore.getState().clearHistory();
-    expect(useTelemetryStore.getState().frameErrors).toEqual([]);
+    const goodSoc = (ENV_STEP_A as any).payload.battery.soc;
+    const expectedText = `${(goodSoc * 100).toFixed(0)}%`;
+    expect(screen.getByTestId("soc-value").textContent).toBe(expectedText);
+
+    // Bad frame: NaN in battery.soc — the exact field the component reads.
+    // Before implementation: store ACCEPTS this, component renders "NaN%", assertion FAILS.
+    // After implementation: store REJECTS this, envStep unchanged, component still shows goodSoc.
+    const badFrame = makeEnvStep({
+      battery: { ...(ENV_STEP_A as any).payload.battery, soc: NaN },
+    });
+    await act(async () => {
+      useTelemetryStore.getState().receiveEnvStep(badFrame as any);
+    });
+
+    // Last-good SOC must still be shown; "NaN" must not appear
+    expect(screen.getByTestId("soc-value").textContent).toBe(expectedText);
+    expect(screen.queryByText(/NaN/)).toBeNull();
+    cleanup();
   });
 });
 
-// ─── TV.ROB.19–TV.ROB.20: full golden-fixture pipeline (validate-telemetry skill)
+// ─── TV.ROB.10: trainingStore.receiveTrainMetrics symmetric validation (§10.4) ─
 
-describe("TV.ROB — full golden-fixture wsClient pipeline (validate-telemetry skill)", () => {
-  let mockWs: MockWsInstance;
-
-  beforeEach(() => {
-    mockWs = makeMockWsInstance();
-    vi.stubGlobal("WebSocket", vi.fn().mockImplementation(() => mockWs));
-  });
-
+describe("TV.ROB — trainingStore.receiveTrainMetrics store-boundary validation (§10.4)", () => {
   afterEach(() => {
-    vi.unstubAllGlobals();
     vi.resetModules();
   });
 
-  it("TV.ROB.19 — env_step_a.json through wsClient validates and dispatches with correct envelope fields", async () => {
-    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
-      "../../src/clients/wsClient"
-    );
-    const onEnvStep = vi.fn();
-    createWsClient({
-      url: "ws://localhost/ws/test",
-      onEnvStep,
-      onTrainMetrics: vi.fn(),
-      onEvalCompare: vi.fn(),
-      onStatusChange: vi.fn(),
-    }).connect();
-    mockWs.onmessage?.({ data: JSON.stringify(ENV_STEP_A) } as MessageEvent);
-    expect(onEnvStep).toHaveBeenCalledOnce();
-    const dispatched = onEnvStep.mock.calls[0][0] as Record<string, unknown>;
-    expect(dispatched["kind"]).toBe("env_step");
-    expect(dispatched["run_id"]).toBe((ENV_STEP_A as any).run_id);
-    expect(dispatched["seq"]).toBe((ENV_STEP_A as any).seq);
-    expect(typeof dispatched["ts_utc"]).toBe("string");
+  it("TV.ROB.10 — invalid train_metrics (missing global_step) → trainingStore skips state update", async () => {
+    const { useTrainingStore } = await import("../../src/stores/trainingStore");
+
+    // Accept a valid frame first
+    useTrainingStore.getState().receiveTrainMetrics(TRAIN_METRICS as any);
+    const goodState = useTrainingStore.getState().latestMetrics;
+    expect(goodState).not.toBeNull();
+
+    // Bad frame: missing global_step → Zod rejects
+    const { global_step: _drop, ...payloadNoStep } = (TRAIN_METRICS as any).payload;
+    const badFrame = { ...(TRAIN_METRICS as any), payload: payloadNoStep };
+    expect(() => useTrainingStore.getState().receiveTrainMetrics(badFrame as any)).not.toThrow();
+
+    // Store state must be unchanged
+    expect(useTrainingStore.getState().latestMetrics).toStrictEqual(goodState);
+    expect(useTrainingStore.getState().droppedFrameCount).toBe(1);
   });
 
-  it("TV.ROB.20 — env_step_b.json through wsClient validates and dispatches (month-boundary demand)", async () => {
-    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
-      "../../src/clients/wsClient"
-    );
-    const onEnvStep = vi.fn();
-    createWsClient({
-      url: "ws://localhost/ws/test",
-      onEnvStep,
-      onTrainMetrics: vi.fn(),
-      onEvalCompare: vi.fn(),
-      onStatusChange: vi.fn(),
-    }).connect();
-    mockWs.onmessage?.({ data: JSON.stringify(ENV_STEP_B) } as MessageEvent);
-    expect(onEnvStep).toHaveBeenCalledOnce();
-    const dispatched = onEnvStep.mock.calls[0][0] as Record<string, unknown>;
-    expect(dispatched["kind"]).toBe("env_step");
-    expect(dispatched["run_id"]).toBe((ENV_STEP_B as any).run_id);
+  it("TV.ROB.10b — golden train_metrics → accepted (regression)", async () => {
+    const { useTrainingStore } = await import("../../src/stores/trainingStore");
+    useTrainingStore.getState().receiveTrainMetrics(TRAIN_METRICS as any);
+    expect(useTrainingStore.getState().latestMetrics).not.toBeNull();
+    expect(useTrainingStore.getState().droppedFrameCount).toBe(0);
+  });
+});
+
+// ─── TV.ROB golden-fixture regression (validate-telemetry skill) ──────────────
+
+describe("TV.ROB — golden fixtures validate + accepted by store (validate-telemetry skill)", () => {
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  it("TV.ROB.G1 — env_step_a.json: validate() ok:true AND receiveEnvStep accepts with correct payload", async () => {
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+    useTelemetryStore.getState().receiveEnvStep(ENV_STEP_A as any);
+
+    const step = useTelemetryStore.getState().envStep;
+    expect(step).not.toBeNull();
+    expect((step as any).step).toBe((ENV_STEP_A as any).payload.step);
+    expect(useTelemetryStore.getState().droppedFrameCount).toBe(0);
+  });
+
+  it("TV.ROB.G2 — env_step_b.json: validate() ok:true AND receiveEnvStep accepts (month-boundary)", async () => {
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+    useTelemetryStore.getState().receiveEnvStep(ENV_STEP_B as any);
+
+    const step = useTelemetryStore.getState().envStep;
+    expect(step).not.toBeNull();
+    expect(useTelemetryStore.getState().droppedFrameCount).toBe(0);
   });
 });
 
