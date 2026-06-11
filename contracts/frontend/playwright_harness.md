@@ -1,6 +1,6 @@
 # Contract: Playwright Browser Test Harness
 
-- **Status:** DRAFT — contract + tests gate
+- **Status:** AMENDED — task #16 amendment gate (fix/frontend-error-report-location)
 - **Area:** frontend (tooling)
 - **Owner:** qa-engineer
 - **Reviewer:** frontend-reviewer
@@ -8,6 +8,34 @@
 - **Tests:** `tests/frontend_e2e/smoke.spec.ts` (area pending rl-architect DECISION; D15-style)
 - **Task:** #29 (user-requested 2026-06-10)
 - **Spec ref:** REBUILD_SPEC §6 (frontend build order), CLAUDE.md (tests tree rule, D15, D16)
+
+## Task #16 Amendment — error-report.ndjson path relocation
+
+**Problem:** `playwright-report/` is cleared by Playwright's HTML reporter at the start of
+every run. Any file written there is wiped before tests run, losing prior error reports.
+
+**Fix:** move `error-report.ndjson` to `test-results/` (Playwright's artifact directory,
+not managed by any reporter plugin).
+
+### Amendment deliverables (implementation scope for PR #58)
+
+1. `tests/frontend_e2e/helpers/reportPaths.ts` — change stub constant from
+   `"playwright-report/error-report.ndjson"` → `"test-results/error-report.ndjson"`
+2. `tests/frontend_e2e/helpers/errorCapture.ts` — import `ERROR_REPORT_PATH` from
+   `reportPaths.ts` (single source of truth) instead of hardcoding the path
+3. `.claude/skills/qa-verification/SKILL.md` — line ~42: update the browser-run step's
+   attachment path from `playwright-report/error-report.ndjson` → `test-results/error-report.ndjson`
+   so QA instructions stay consistent with the actual output location
+4. `tests/frontend_e2e/smoke.spec.ts` — update header comment path reference (cosmetic)
+
+### Amendment gate test (task #16)
+
+`tests/frontend/playwright_harness.test.ts` includes one new test:
+- Imports `ERROR_REPORT_PATH` from `tests/frontend_e2e/helpers/reportPaths.ts`
+- Asserts `ERROR_REPORT_PATH === "test-results/error-report.ndjson"`
+- RED at gate stage (stub exports the old path); GREEN after implementation
+
+---
 
 ## Purpose
 
