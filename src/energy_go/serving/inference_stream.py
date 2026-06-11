@@ -214,6 +214,10 @@ class _SyntheticEnv:
         self._cum_cost         += cost_total_real_yuan
         self._cum_energy_cost  += c_energy_yuan
 
+        # Capture episode BEFORE incrementing: terminal step (step 167, step_count becomes 168)
+        # must belong to episode 0, not episode 1. Mirrors _JaxEnvSession convention and the
+        # locked contract amendment: "step 167 (done=True, last step of episode 0) → episode=0".
+        current_episode = self.episode
         self.step_count += 1
         # Episode boundary at 168 steps (D3: 7-day train episodes)
         if self.step_count % 168 == 0:
@@ -253,7 +257,7 @@ class _SyntheticEnv:
 
         payload = {
             "step":        self.step_count - 1,
-            "episode":     self.episode,
+            "episode":     current_episode,   # locked convention: terminal step belongs to its episode
             "dt_hours":    1.0,
             "sim_time_utc": f"2026-01-01T{(self.step_count - 1) % 24:02d}:00:00Z",
             "hour_of_day":  (self.step_count - 1) % 24,
@@ -336,6 +340,279 @@ class _SyntheticEnv:
             "reward":        reward,
         }
         return obs, payload
+
+
+# ---------------------------------------------------------------------------
+# Real JAX env session (task #48 — replaces _SyntheticEnv placeholder)
+# ---------------------------------------------------------------------------
+
+class _JaxEnvSession:
+    """Real JAX env session driven by energy_go.env.jax_env.
+
+    Interface: identical to _SyntheticEnv — drop-in replacement.
+      reset() → np.ndarray          (107-dim float32 initial obs)
+      step(action) → (next_obs, payload_dict)
+      .step_count, .episode, .obs_dim attributes
+
+    Design notes:
+    - All JAX imports are LAZY (inside __init__) — no top-level import (PR #60 pattern).
+    - EnvParams defaults are used (YAML → EnvParams mapping is out of scope per contract).
+    - generate_year(PRNGKey(seed)) provides the synthetic year data; fixed seed → deterministic.
+    - cost_cum accumulates across ALL steps in a session — NEVER reset on env.reset() (contract).
+    - done returned by jax_env.step() is used directly (single source of truth).
+    - Episode semantics: terminal step (done=True, t=167) belongs to its episode.
+      episode counter increments AFTER building that step's payload (standard convention).
+    """
+
+    def __init__(self, site_yaml: dict, seed: int = 0) -> None:  # noqa: ARG002
+        # Lazy JAX imports — keep module importable without JAX (PR #60)
+        import jax
+        import jax.numpy as jnp
+        from energy_go.env import jax_env as _jax_env_mod
+        from energy_go.generators.synthetic import generate_year  # type: ignore
+
+        self._jax = jax
+        self._jnp = jnp
+        self._mod = _jax_env_mod
+
+        # Default EnvParams — Gansu parity (YAML → EnvParams mapping is out of scope)
+        self._params = _jax_env_mod.EnvParams()
+
+        # Generate synthetic year data (fixed seed → deterministic trajectory)
+        key = jax.random.PRNGKey(seed)
+        key, data_key = jax.random.split(key)
+        self._data = generate_year(data_key)  # (8760, 4) float32 [wind_mps, irr_wm2, temp_c, load_mw]
+        self._key = key
+
+        # Mutable session state
+        self._state: Any = None  # EnvState, set by reset()
+        self.step_count: int = 0   # global step counter (never resets within session)
+        self.episode: int = 0      # episode counter (increments at each done=True boundary)
+
+        # Running cost totals — NEVER reset within a session (including across episode boundaries)
+        # Contract invariant: cost_cum[k+1] == cost_cum[k] + per_step_cost[k+1] for ALL k
+        self._cost_cum: dict[str, float] = {
+            "c_energy_yuan_cum": 0.0,
+            "c_demand_shape_yuan_cum": 0.0,
+            "c_demand_charge_yuan_cum": 0.0,
+            "c_degradation_yuan_cum": 0.0,
+            "c_curtail_yuan_cum": 0.0,
+            "c_voll_yuan_cum": 0.0,
+            "penalty_yuan_cum": 0.0,
+            "cost_total_real_yuan_cum": 0.0,
+            "cost_total_reward_basis_yuan_cum": 0.0,
+        }
+
+    @property
+    def obs_dim(self) -> int:
+        return 107  # canonical Gansu obs dimension (confirmed in jax_env.get_obs)
+
+    def reset(self) -> np.ndarray:
+        """Initialise env for episode 0.  Returns initial obs (float32, shape (107,)).
+
+        cost_cum is NOT reset here — it accumulates for the session lifetime.
+        """
+        self._key, reset_key = self._jax.random.split(self._key)
+        state, obs = self._mod.reset(reset_key, self._params, self._data)
+        self._state = state
+        self.step_count = 0
+        self.episode = 0
+        # cost_cum intentionally NOT reset — contract invariant
+        return np.asarray(obs)
+
+    def step(self, action: np.ndarray) -> tuple[np.ndarray, dict]:
+        """Apply action to the real JAX env and return (next_obs, payload_dict).
+
+        Matches _SyntheticEnv.step interface exactly.
+
+        next_obs: float32 (107,) observation of the state AFTER this step
+                  (or after env.reset() if done=True on this step).
+        payload:  telemetry payload dict conforming to LOCKED telemetry schema.
+        """
+        assert self._state is not None, "call reset() before step()"
+
+        # Input-state step index for data lookup and payload.step
+        t_idx: int = int(self._state.t)
+
+        # Convert action (numpy) → JAX array
+        action_jax = self._jnp.array(action, dtype=self._jnp.float32)
+
+        # Step the env.
+        # NOTE: obs returned by jax_env.step() is from the INPUT state (§5.4).
+        # We derive next_obs via get_obs(new_state, ...) to get the correct carry.
+        new_state, _obs_input, reward, done, info = self._mod.step(
+            self._state, action_jax, self._params, self._data
+        )
+        done_bool: bool = bool(done)  # use done from jax_env.step directly (single source)
+
+        def _f(x: Any) -> float:
+            return float(x)
+
+        # ── Weather (raw generator data at the input state's step index) ──
+        wind_mps = _f(self._data[t_idx, 0])
+        irr_wm2  = _f(self._data[t_idx, 1])
+        temp_c   = _f(self._data[t_idx, 2])
+        load_mw  = _f(self._data[t_idx, 3])
+
+        # ── Prices ──
+        price_buy  = _f(info.price_buy_yuan_per_mwh)
+        price_sell = _f(info.price_sell_yuan_per_mwh)
+
+        # Tariff tier (contract §EnvInfo → telemetry payload)
+        if price_buy >= 780.0:
+            tariff_tier = "critical_peak"
+        elif price_buy >= 620.0:
+            tariff_tier = "peak"
+        elif price_buy >= 450.0:
+            tariff_tier = "mid"
+        else:
+            tariff_tier = "valley"
+
+        # ── Per-step costs ──
+        c_energy_yuan                = _f(info.c_energy_yuan)
+        c_import_yuan                = _f(info.c_import_yuan)
+        r_export_yuan                = _f(info.r_export_yuan)
+        c_demand_shape_yuan          = _f(info.c_demand_shape_yuan)
+        c_demand_charge_yuan         = _f(info.c_demand_charge_yuan)
+        c_degradation_yuan           = _f(info.c_degradation_yuan)
+        c_curtail_yuan               = _f(info.c_curtail_yuan)
+        c_voll_yuan                  = _f(info.c_voll_yuan)
+        penalty_yuan                 = _f(info.penalty_yuan)
+        cost_total_real_yuan         = _f(info.cost_total_real_yuan)
+        cost_total_reward_basis_yuan = _f(info.cost_total_reward_basis_yuan)
+
+        # ── Accumulate cost_cum (NEVER reset — even at episode boundaries) ──
+        self._cost_cum["c_energy_yuan_cum"]               += c_energy_yuan
+        self._cost_cum["c_demand_shape_yuan_cum"]         += c_demand_shape_yuan
+        self._cost_cum["c_demand_charge_yuan_cum"]        += c_demand_charge_yuan
+        self._cost_cum["c_degradation_yuan_cum"]          += c_degradation_yuan
+        self._cost_cum["c_curtail_yuan_cum"]              += c_curtail_yuan
+        self._cost_cum["c_voll_yuan_cum"]                 += c_voll_yuan
+        self._cost_cum["penalty_yuan_cum"]                += penalty_yuan
+        self._cost_cum["cost_total_real_yuan_cum"]        += cost_total_real_yuan
+        self._cost_cum["cost_total_reward_basis_yuan_cum"] += cost_total_reward_basis_yuan
+
+        # ── sim_time_utc: continuous UTC from session start (2026-01-01T00:00:00Z) ──
+        from datetime import timedelta
+        hour_of_day = self.step_count % 24
+        sim_time_utc = (
+            datetime(2026, 1, 1, tzinfo=timezone.utc)
+            + timedelta(hours=self.step_count)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # ── SOC from new_state (post-step battery update, before any episode reset) ──
+        soc_frac = _f(new_state.soc)  # fraction ∈ [soc_min, soc_max] ⊂ [0, 1]
+
+        # ── Build LOCKED telemetry payload ──
+        # episode = CURRENT episode (standard: terminal step stays in its episode)
+        payload: dict[str, Any] = {
+            "step":          self.step_count,   # 0-based; payload built before increment
+            "episode":       self.episode,       # NOT yet incremented for done=True (step 167 → 0)
+            "dt_hours":      1.0,
+            "sim_time_utc":  sim_time_utc,
+            "hour_of_day":   hour_of_day,
+            "minute_of_hour": 0,
+            "wind_speed_mps":    wind_mps,
+            "irradiance_wm2":    irr_wm2,
+            "temperature_c":     temp_c,
+            "load_mw":           load_mw,
+            "price_buy_yuan_per_mwh":  price_buy,
+            "price_sell_yuan_per_mwh": price_sell,
+            "tariff_tier": tariff_tier,
+            "battery": {
+                # LOCKED: 'soc' is fraction [soc_min, soc_max] (post-step value)
+                "soc":                soc_frac,
+                "p_charge_mw":        _f(info.p_bat_ch_mw),
+                "p_discharge_mw":     _f(info.p_bat_dis_mw),
+                "p_max_charge_mw":    float(self._params.bat_power_mw),
+                "p_max_discharge_mw": float(self._params.bat_power_mw),
+                "soc_violation_mwh":  _f(info.soc_violation_mwh),
+                "capacity_mwh":       float(self._params.bat_capacity_mwh),
+            },
+            "generation": {
+                # LOCKED: gross_ values are pre-curtailment raw power
+                "gross_solar_mw": _f(info.p_pv_mw),
+                "gross_wind_mw":  _f(info.p_wind_mw),
+            },
+            "flows": {
+                # LOCKED: 14 required fields (13 per-source + load_unserved, §3.3 amendment)
+                "solar_to_load_mw":   _f(info.p_sol_to_load_mw),
+                "solar_to_bat_mw":    _f(info.p_sol_to_bat_mw),
+                "solar_to_grid_mw":   _f(info.p_sol_to_grid_mw),
+                "solar_curtailed_mw": _f(info.p_sol_curtailed_mw),
+                "wind_to_load_mw":    _f(info.p_wind_to_load_mw),
+                "wind_to_bat_mw":     _f(info.p_wind_to_bat_mw),
+                "wind_to_grid_mw":    _f(info.p_wind_to_grid_mw),
+                "wind_curtailed_mw":  _f(info.p_wind_curtailed_mw),
+                "bat_to_load_mw":     _f(info.p_bat_to_load_mw),
+                "bat_to_grid_mw":     _f(info.p_bat_to_grid_mw),
+                "bat_curtailed_mw":   _f(info.p_bat_curtailed_mw),
+                "grid_to_bat_mw":     _f(info.p_grid_to_bat_mw),
+                "grid_to_load_mw":    _f(info.p_grid_to_load_mw),
+                "load_unserved_mw":   _f(info.p_load_unserved_mw),
+            },
+            "pcc": {
+                "export_mw":     _f(info.p_export_mw),
+                "import_mw":     _f(info.p_import_mw),
+                "max_export_mw": float(self._params.grid_max_export_mw),
+                "max_import_mw": float(self._params.grid_max_import_mw),
+            },
+            "costs": {
+                "c_energy_yuan":               c_energy_yuan,
+                "c_import_yuan":               c_import_yuan,
+                "r_export_yuan":               r_export_yuan,
+                "c_demand_shape_yuan":         c_demand_shape_yuan,
+                "c_demand_charge_yuan":        c_demand_charge_yuan,
+                "c_degradation_yuan":          c_degradation_yuan,
+                "c_curtail_yuan":              c_curtail_yuan,
+                "c_voll_yuan":                 c_voll_yuan,
+                "penalty_yuan":                penalty_yuan,
+                "cost_total_real_yuan":        cost_total_real_yuan,
+                "cost_total_reward_basis_yuan": cost_total_reward_basis_yuan,
+                "demand_rate_yuan_per_mw_month": float(self._params.demand_rate_yuan_per_mw_month),
+            },
+            "cost_cum": dict(self._cost_cum),   # snapshot of running totals (NOT reset on episode)
+            "month_peak_mw": _f(new_state.month_peak),   # post-step peak (0.0 at month-end per D21)
+            "reward": _f(reward),
+        }
+
+        # ── Advance global step counter (AFTER building payload so payload.step is 0-based) ──
+        self.step_count += 1
+
+        # ── Episode reset — standard convention: terminal step belongs to its episode ──
+        # Frame 167 (done=True) payload already carries episode=0 (built above).
+        # NOW reset the env and increment episode for the next frame.
+        if done_bool:
+            self._key, reset_key = self._jax.random.split(self._key)
+            new_state, reset_obs = self._mod.reset(reset_key, self._params, self._data)
+            # Episode increments AFTER building the terminal step's payload (D3 convention)
+            self.episode += 1
+            next_obs = np.asarray(reset_obs)
+        else:
+            # next_obs = get_obs(new_state, ...) — obs of the POST-step state for the next call
+            next_obs = np.asarray(self._mod.get_obs(new_state, self._params, self._data))
+
+        # Update internal state for next step() call
+        self._state = new_state
+
+        return next_obs, payload
+
+
+def _make_env_session(site_yaml: dict, seed: int = 0) -> "_JaxEnvSession | _SyntheticEnv":
+    """Factory: use real JAX env if available; fall back to synthetic placeholder.
+
+    The real JAX env is preferred for authentic Gansu physics, deterministic weather
+    from generate_year(), and all 13+2 per-source flow fields.  The synthetic env is
+    kept as a fallback for environments without JAX/jaxlib (e.g. CI without GPU wheels).
+    """
+    try:
+        return _JaxEnvSession(site_yaml, seed=seed)
+    except ImportError:
+        log.warning(
+            "energy_go.env.jax_env not importable — falling back to _SyntheticEnv placeholder. "
+            "Real env physics will NOT be active."
+        )
+        return _SyntheticEnv(site_yaml, seed=seed)
 
 
 # ---------------------------------------------------------------------------
@@ -519,7 +796,7 @@ async def ws_inference(websocket: WebSocket) -> None:
                 s.session_id = str(uuid.uuid4())
                 s.checkpoint = checkpoint
                 s.speed      = speed
-                s.env        = _SyntheticEnv(site_yaml, seed=seed)
+                s.env        = _make_env_session(site_yaml, seed=seed)
                 s.obs        = s.env.reset()   # initial obs for step 0
                 s.state      = "running"
 

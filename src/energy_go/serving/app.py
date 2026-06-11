@@ -9,13 +9,57 @@ Manual uvicorn launch:
 Contract: contracts/serving/rest_api.md + inference_stream.md + training_proxy.md
           contracts/serving/backend_port.md (§1 __main__ block)
 """
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from energy_go.serving import rest_api, inference_stream, training_proxy
 
-app = FastAPI(title="Energy GO Serving API", version="1.0.0")
+log = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Pre-warm JAX JIT at startup so the first env_step frame isn't delayed.
+
+    JAX compiles (traces) jax_env.reset / jax_env.step on the first call — a
+    one-time cost that can be 4-8 s on a slow runner.  Running a throwaway
+    reset+step during lifespan startup amortises this before any websocket
+    connection arrives, keeping test_speed_zero_delivers_frame_immediately
+    within its 2 s budget and giving users a smooth first frame.
+
+    Startup runs synchronously so the server does not accept connections until
+    warmup completes.  This is acceptable: the warm-up is a one-time cost per
+    process, and TestClient triggers it in __enter__ before tests run.
+
+    Falls back silently if JAX is not importable (e.g. CPU-only CI shard that
+    tests only the REST endpoints).
+    """
+    try:
+        import jax
+        import jax.numpy as jnp
+        from energy_go.env import jax_env as _jax_env_mod       # type: ignore
+        from energy_go.generators.synthetic import generate_year  # type: ignore
+
+        _k = jax.random.PRNGKey(0)
+        _d = generate_year(_k)
+        _k, _wk = jax.random.split(_k)
+        _ws, _ = _jax_env_mod.reset(_wk, _jax_env_mod.EnvParams(), _d)
+        # 6-dim action: a_bat + 5 flow fractions (jax_env.py L264-269).
+        # Shape+dtype must match production policy_forward output exactly so JAX
+        # caches the right compiled entry. jnp.zeros(1) would IndexError at trace
+        # time AND cache-miss at runtime even if it succeeded.
+        _jax_env_mod.step(_ws, jnp.zeros(6, dtype=jnp.float32), _jax_env_mod.EnvParams(), _d)
+        log.info("JAX JIT warmup complete (reset + step compiled)")
+    except Exception as exc:  # ImportError, RuntimeError (no AVX), etc.
+        log.debug("JAX JIT warmup skipped at startup: %s", exc)
+    yield  # server is now ready; shutdown cleanup would go after yield
+
+
+app = FastAPI(title="Energy GO Serving API", version="1.0.0", lifespan=_lifespan)
 
 # CORS: allow all origins (dashboard served separately during dev; restricted at
 # reverse-proxy level in production — out of scope here per contract).
