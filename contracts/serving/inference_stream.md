@@ -234,15 +234,17 @@ applied internally before calling the policy.
 ## Policy loading
 
 **Checkpoint discovery** — on `start`, the serving layer resolves the checkpoint path
-for a `run_id` as follows (first match wins):
+for a `run_id` as follows:
 
 1. `checkpoints/{run_id}/checkpoint_*.npz` — canonical format (checkpoint_format.md).
    If multiple files match, pick the one with the highest `_step<N>` suffix (integer N).
-2. Legacy fallback: `checkpoints/{run_id}/policy.npz` — backward-compatible with runs
-   produced before the checkpoint_format contract landed.  In this case, load weights
-   from the `w_0/b_0` keys and `normalization.npz` for stats (if present).
 
-If neither is found, the server sends `code: "policy_not_found"` and does not start.
+The legacy `policy.npz` / `normalization.npz` path is **not supported**.  All real
+training runs (PR #40) emit canonical §6 `.npz` checkpoints; the placeholder never
+produced trained policies and has been removed.
+
+If no canonical checkpoint is found, the server sends `code: "policy_not_found"` and
+does not start.
 
 **Loading** — canonical checkpoints are loaded via:
 
@@ -336,9 +338,9 @@ or paused), the server back-pressures via the WebSocket send queue (asyncio awai
 ## Dependencies
 
 - `fastapi>=0.110`, `websockets>=12` (from `serving` extras).
-- `energy_go.telemetry.validate` (task #23 / `contracts/shared/telemetry_validate.md`).
-- `checkpoints/{run_id}/policy.npz` — produced by training-engineer (format defined here;
-  the training checkpoint contract will reference this definition when it lands).
-- `checkpoints/{run_id}/normalization.npz` — produced by training-engineer.
+- `energy_go.telemetry.validate` (`contracts/shared/telemetry_validate.md`).
+- `energy_go.training.checkpoint_format` — LOCKED `contracts/shared/checkpoint_format.md`
+  v1.0.0; provides `CheckpointData`, `load_checkpoint`, `actor_forward_numpy`.
+- `checkpoints/{run_id}/checkpoint_*.npz` — produced by training-engineer (PR #40).
 - The env step interface (NumPy reference implementation from `contracts/env/reference_implementation.md`
   or JAX env step from task #8) — the serving layer calls `env.step(obs, action)`.

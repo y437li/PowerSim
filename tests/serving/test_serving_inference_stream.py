@@ -66,32 +66,14 @@ site:
 """
 
 
-def _make_policy_npz(path: Path, obs_dim: int = 107, action_dim: int = 6):
-    """Create a minimal policy.npz with random weights for a 2-hidden-layer MLP."""
-    rng = np.random.default_rng(42)
-    hidden = 64
-    np.savez(
-        path,
-        w_0=rng.standard_normal((obs_dim, hidden)).astype(np.float32),
-        b_0=rng.standard_normal(hidden).astype(np.float32),
-        w_1=rng.standard_normal((hidden, hidden)).astype(np.float32),
-        b_1=rng.standard_normal(hidden).astype(np.float32),
-        w_2=rng.standard_normal((hidden, action_dim)).astype(np.float32),
-        b_2=np.zeros(action_dim, dtype=np.float32),
-    )
-
-
-def _make_normalization_npz(path: Path, obs_dim: int = 107):
-    """Create normalization.npz with obs_mean=0, obs_std=1 (identity normalization)."""
-    np.savez(
-        path,
-        obs_mean=np.zeros(obs_dim, dtype=np.float32),
-        obs_std=np.ones(obs_dim, dtype=np.float32),
-    )
-
-
 @pytest.fixture()
 def work_dir(tmp_path):
+    """Standard test work dir — canonical checkpoint_*.npz only (no legacy policy.npz).
+
+    The legacy policy.npz / normalization.npz path has been removed (backend-reviewer
+    decision on PR #59): real training (PR #40) emits canonical §6 .npz only; the
+    placeholder never produced real trained policies.
+    """
     config = tmp_path / "config"
     config.mkdir()
     (config / "site_gansu.yaml").write_text(SITE_GANSU_YAML)
@@ -102,11 +84,10 @@ def work_dir(tmp_path):
         "episodes_trained": 50,
         "latest_eval_reward": -0.45,
         "site_id": "gansu",
-        "created_at": "2026-06-10T08:00:00Z",
+        "created_at": "2026-06-11T00:00:00Z",
     }
     (run / "metadata.json").write_text(json.dumps(metadata))
-    _make_policy_npz(run / "policy.npz")
-    _make_normalization_npz(run / "normalization.npz")
+    _make_canonical_checkpoint(run)  # checkpoint_run_001_step500000.npz
 
     return tmp_path
 
@@ -164,38 +145,6 @@ def _make_canonical_checkpoint(run_dir: Path, run_id: str = "run_001",
     save_checkpoint(ckpt, path)
     return path
 
-
-@pytest.fixture()
-def canonical_work_dir(tmp_path):
-    """Like work_dir but uses a canonical checkpoint_*.npz (no policy.npz)."""
-    config = tmp_path / "config"
-    config.mkdir()
-    (config / "site_gansu.yaml").write_text(SITE_GANSU_YAML)
-
-    run = tmp_path / "checkpoints" / "run_001"
-    run.mkdir(parents=True)
-    metadata = {
-        "episodes_trained": 50,
-        "latest_eval_reward": -0.45,
-        "site_id": "gansu",
-        "created_at": "2026-06-11T00:00:00Z",
-    }
-    (run / "metadata.json").write_text(json.dumps(metadata))
-    _make_canonical_checkpoint(run)  # checkpoint_run_001_step500000.npz
-
-    return tmp_path
-
-
-@pytest.fixture()
-def canonical_ws_client(canonical_work_dir):
-    old_cwd = os.getcwd()
-    os.chdir(canonical_work_dir)
-    try:
-        from energy_go.serving.app import app  # type: ignore
-        with TestClient(app) as c:
-            yield c
-    finally:
-        os.chdir(old_cwd)
 
 
 def _start_cmd(run_id: str = "run_001", site_id: str = "gansu", seed: int = 0, speed: float = 0.0):
@@ -590,13 +539,13 @@ class TestErrorHandling:
             )
 
     def test_missing_policy_returns_policy_not_found_error(self, tmp_path):
-        """Run dir exists but policy.npz and policy.onnx absent → policy_not_found."""
+        """Run dir exists but no canonical checkpoint_*.npz present → policy_not_found."""
         (tmp_path / "config").mkdir()
         (tmp_path / "config" / "site_gansu.yaml").write_text(SITE_GANSU_YAML)
         run = tmp_path / "checkpoints" / "run_nopolicy"
         run.mkdir(parents=True)
         (run / "metadata.json").write_text('{"episodes_trained": 1}')
-        # No policy.npz / policy.onnx
+        # No checkpoint_*.npz (legacy policy.npz path removed — PR #59)
         old_cwd = os.getcwd()
         os.chdir(tmp_path)
         try:
@@ -618,12 +567,12 @@ class TestErrorHandling:
 # ===========================================================================
 
 class TestNormalization:
-    def test_normalization_loaded_from_npz(self, ws_client):
-        """If normalization.npz exists, obs is normalized before policy call.
+    def test_normalization_applied_from_canonical_checkpoint(self, ws_client):
+        """Canonical checkpoint normalization (obs_var + obs_clip) is applied before policy call.
 
-        Observable: the action the policy emits (via telemetry or status) must
-        not blow up to ±infinity when normalization is applied (finite values
-        confirm the normalization path was used).
+        Observable: if normalization is broken, costs/flows go to extreme values and
+        rewards become NaN/Inf.  Finite rewards confirm the obs_var-based normalization
+        path was used correctly (std = sqrt(obs_var + 1e-8)).
         """
         frames = []
         with ws_client.websocket_connect("/ws/inference") as ws:
@@ -644,30 +593,10 @@ class TestNormalization:
                 "likely normalization is broken"
             )
 
-    def test_identity_normalization_when_npz_absent(self, tmp_path):
-        """normalization.npz absent → identity norm; stream must still work."""
-        (tmp_path / "config").mkdir()
-        (tmp_path / "config" / "site_gansu.yaml").write_text(SITE_GANSU_YAML)
-        run = tmp_path / "checkpoints" / "run_nonorm"
-        run.mkdir(parents=True)
-        (run / "metadata.json").write_text('{"episodes_trained": 1, "site_id": "gansu"}')
-        _make_policy_npz(run / "policy.npz")
-        # No normalization.npz
-        old_cwd = os.getcwd()
-        os.chdir(tmp_path)
-        try:
-            from energy_go.serving.app import app  # type: ignore
-            with TestClient(app) as c:
-                with c.websocket_connect("/ws/inference") as ws:
-                    ws.receive_text(timeout=5)
-                    ws.send_text(json.dumps({
-                        "cmd": "start", "run_id": "run_nonorm",
-                        "site_id": "gansu", "seed": 0, "speed": 0.0
-                    }))
-                    frame = _recv_until(ws, "env_step", max_frames=20)
-                    assert frame["kind"] == "env_step"
-        finally:
-            os.chdir(old_cwd)
+    # test_identity_normalization_when_npz_absent REMOVED: tested the legacy
+    # policy.npz + normalization.npz path which was dropped by backend-reviewer
+    # decision on PR #59.  Canonical §6 checkpoints carry all normalization
+    # stats inline (obs_mean, obs_var, obs_clip) — no separate file needed.
 
 
 # ===========================================================================
@@ -828,165 +757,11 @@ class TestEpisodeBoundary:
 
 
 # ===========================================================================
-# TestPolicyForwardPass
-# reviewer: policy forward-pass never verified — add: known policy.npz +
-#   known obs → served action == reference forward (tanh hidden, identity
-#   output, clip[-1,1]) within 1e-5.
+# TestPolicyForwardPass — REMOVED (backend-reviewer decision, PR #59)
+# The placeholder dict-based API (w_0/b_0 keys, tanh hidden, identity output,
+# clip[-1,1]) is gone; canonical §6 forward pass (ReLU hidden, tanh(a_bat) +
+# sigmoid(fractions), D28 mean-clip) is tested in TestPolicyCutover instead.
 # ===========================================================================
-
-class TestPolicyForwardPass:
-    """Verify the serving layer's MLP forward pass matches the reference.
-
-    Reference (tanh hidden layers, identity output layer, clip to [-1, 1]):
-        h_0    = tanh(obs  @ w_0 + b_0)
-        h_1    = tanh(h_0  @ w_1 + b_1)
-        out    = h_1  @ w_2 + b_2          (identity — no tanh on the last layer)
-        action = clip(out, -1.0, 1.0)
-
-    The serving module must expose `policy_forward(weights: dict, obs: np.ndarray)` as
-    a public utility so tests can verify it independently of the WebSocket session.
-    """
-
-    @staticmethod
-    def _reference_forward(weights: dict, obs: "np.ndarray") -> "np.ndarray":
-        """Pure-NumPy reference: tanh hidden, identity output, clip[-1,1]."""
-        n_layers = max(int(k[2:]) for k in weights if k.startswith("w_")) + 1
-        h = obs.astype(np.float32)
-        for i in range(n_layers):
-            h = h @ weights[f"w_{i}"] + weights[f"b_{i}"]
-            if i < n_layers - 1:
-                h = np.tanh(h)          # tanh for every hidden layer
-            # final layer: identity (no activation applied)
-        return np.clip(h, -1.0, 1.0)
-
-    def test_known_weights_match_reference_forward(self, tmp_path):
-        """
-        Known policy.npz + known obs → serving layer action == reference within 1e-5.
-
-        Architecture: obs_dim=3, hidden=4, action_dim=2 (2-hidden-layer MLP)
-            Layer 0 (hidden): h0 = tanh(obs @ w_0 + b_0)
-            Layer 1 (hidden): h1 = tanh(h0  @ w_1 + b_1)
-            Layer 2 (output): out = h1 @ w_2 + b_2  (identity activation)
-            action = clip(out, -1.0, 1.0)
-
-        Weights chosen so all intermediate values are well within float32 range
-        and the reference result is easy to sanity-check at this small scale.
-        """
-        from energy_go.serving.inference_stream import policy_forward  # type: ignore
-
-        # Small fixed weights — deterministic and hand-verifiable
-        w_0 = np.array(
-            [[ 0.5, -0.3,  0.1,  0.2],
-             [ 0.4,  0.1, -0.2,  0.3],
-             [-0.1,  0.2,  0.3, -0.4]], dtype=np.float32)   # shape (3, 4)
-        b_0 = np.array([ 0.1, -0.2,  0.3, -0.1], dtype=np.float32)   # shape (4,)
-
-        w_1 = np.array(
-            [[ 0.2, -0.1,  0.3,  0.1],
-             [-0.3,  0.2,  0.1, -0.2],
-             [ 0.1,  0.4, -0.2,  0.3],
-             [ 0.4, -0.3,  0.2,  0.1]], dtype=np.float32)  # shape (4, 4)
-        b_1 = np.array([ 0.1, -0.1,  0.2, -0.2], dtype=np.float32)   # shape (4,)
-
-        w_2 = np.array(
-            [[ 0.5,  0.3],
-             [-0.2,  0.4],
-             [ 0.1, -0.3],
-             [ 0.4,  0.2]], dtype=np.float32)               # shape (4, 2)
-        b_2 = np.zeros(2, dtype=np.float32)                 # shape (2,)
-
-        obs = np.array([0.5, -0.3, 0.8], dtype=np.float32)
-
-        # Reference forward — must match exactly what the serving layer does:
-        #   h0   = tanh(obs @ w_0 + b_0)
-        #   h1   = tanh(h0  @ w_1 + b_1)
-        #   out  =  h1  @ w_2 + b_2     (identity output — no tanh here)
-        #   action = clip(out, -1.0, 1.0)
-        weights = {"w_0": w_0, "b_0": b_0,
-                   "w_1": w_1, "b_1": b_1,
-                   "w_2": w_2, "b_2": b_2}
-        expected = self._reference_forward(weights, obs)
-        served   = policy_forward(weights, obs)
-
-        np.testing.assert_allclose(
-            served, expected, atol=1e-5,
-            err_msg=(
-                f"Serving layer action differs from reference.\n"
-                f"Expected: {expected}\n"
-                f"Got:      {served}\n"
-                "Likely causes: wrong activation (should be tanh hidden, identity output), "
-                "missing clip, or wrong layer order."
-            ),
-        )
-
-    def test_output_is_clipped_to_unit_interval(self, tmp_path):
-        """Large weights → pre-clip output >> 1; after clip must be exactly ±1.0.
-
-        1-layer MLP (input→output directly, no hidden):
-            out = obs @ w_0 + b_0      (identity activation on single layer)
-            action = clip(out, -1.0, 1.0)
-
-        obs=[1.0, 1.0], w_0=[[100, -200],[50, 75]], b_0=[0,0]:
-            pre-clip = [1*100 + 1*50, 1*(-200) + 1*75] = [150, -125]
-            clipped  = [1.0, -1.0]
-        """
-        from energy_go.serving.inference_stream import policy_forward  # type: ignore
-
-        # 1-layer MLP: obs_dim=2, action_dim=2 (no hidden layer — w_0 is output layer)
-        # pre-clip: obs @ w_0 + b_0 = [1*100+1*50, 1*(-200)+1*75] = [150, -125]
-        # clipped:  [1.0, -1.0]
-        w_0 = np.array([[100.0, -200.0],
-                         [ 50.0,   75.0]], dtype=np.float32)  # shape (2, 2)
-        b_0 = np.zeros(2, dtype=np.float32)
-        obs = np.array([1.0, 1.0], dtype=np.float32)
-
-        weights = {"w_0": w_0, "b_0": b_0}
-        served = policy_forward(weights, obs)
-
-        assert served[0] == pytest.approx(1.0,  abs=1e-6), (
-            f"positive saturation must clip to 1.0, got {served[0]}"
-        )
-        assert served[1] == pytest.approx(-1.0, abs=1e-6), (
-            f"negative saturation must clip to -1.0, got {served[1]}"
-        )
-
-    def test_single_hidden_layer_uses_tanh_not_relu(self, tmp_path):
-        """Verify hidden activation is tanh (not ReLU or identity).
-
-        Construct an obs + weights where tanh(x) ≠ relu(x) for x in the hidden layer.
-        With x=-0.5: tanh(-0.5)≈-0.462, relu(-0.5)=0.0.
-        If the serving layer uses relu, the output will differ from the tanh reference.
-        """
-        from energy_go.serving.inference_stream import policy_forward  # type: ignore
-
-        # 2-layer MLP: obs_dim=1, hidden=1, action_dim=1
-        # Layer 0 (hidden): h0 = tanh(obs @ w_0 + b_0) = tanh(1.0 * (-0.5) + 0) = tanh(-0.5)
-        # Layer 1 (output): out = h0 @ w_1 + b_1 = tanh(-0.5) * 1.0 + 0 (identity output)
-        # tanh(-0.5) ≈ -0.46211716  →  clipped to -0.46211716  (within [-1,1])
-        w_0 = np.array([[-0.5]], dtype=np.float32)    # (1, 1)
-        b_0 = np.array([0.0],  dtype=np.float32)      # (1,)
-        w_1 = np.array([[ 1.0]], dtype=np.float32)    # (1, 1)
-        b_1 = np.array([0.0],  dtype=np.float32)      # (1,)
-        obs = np.array([1.0],  dtype=np.float32)
-
-        # Reference: tanh(-0.5) ≈ -0.46211716
-        # If relu were used: relu(-0.5) = 0.0, so output = 0.0 (wrong)
-        weights  = {"w_0": w_0, "b_0": b_0, "w_1": w_1, "b_1": b_1}
-        expected = self._reference_forward(weights, obs)   # ≈ -0.46211716
-        served   = policy_forward(weights, obs)
-
-        np.testing.assert_allclose(served, expected, atol=1e-5,
-            err_msg=(
-                f"Hidden activation is wrong (expected tanh≈{expected[0]:.6f}, "
-                f"got {served[0]:.6f}). "
-                "Possible cause: ReLU or identity activation used for hidden layer."
-            ))
-        # Sanity: result is negative (tanh(-0.5) < 0); relu(-0.5)=0 would fail this
-        assert served[0] < 0, (
-            f"tanh(-0.5) must be negative (≈-0.462); got {served[0]:.6f} — "
-            "likely relu used instead of tanh"
-        )
-
 
 # ===========================================================================
 # Reviewer-added (backend-reviewer, PR #46 gate): D18 runtime-warning CONTENT
@@ -1210,13 +985,14 @@ class TestPolicyCutover:
         obs = np.zeros(107, dtype=np.float32)
         action = policy_forward(ckpt, obs)
 
-        # D28: clip(100.0, -8, 8) = 8.0 → tanh(8.0) ≈ 0.9999977
-        # Without clip: tanh(100) = 1.0 (float32 saturates)
-        expected_a_bat = float(np.tanh(np.float32(8.0)))  # ≈ 0.9999977
+        # D28: clip(100.0, -8, 8) = 8.0 → tanh(8.0) ≈ 0.99999977
+        # Without clip: tanh(100) = 1.0 exactly in float32 (saturates).
+        # Computed reference: np.tanh(np.float32(8.0)) ≈ 0.99999977
+        expected_a_bat = float(np.tanh(np.float32(8.0)))
         assert abs(float(action[0]) - expected_a_bat) < 1e-5, (
-            f"D28 mean-clip: a_bat must be tanh(8.0) ≈ {expected_a_bat:.7f}; "
-            f"got {float(action[0]):.7f}. "
-            "Without D28 clip, tanh(100) = 1.0 exactly (float32 saturation)."
+            f"D28 mean-clip: a_bat must be tanh(clip(100,-8,8)) = tanh(8.0) "
+            f"≈ {expected_a_bat:.8f}; got {float(action[0]):.8f}. "
+            "Without D28 clip tanh(100) = 1.0 exactly (float32 saturation)."
         )
 
     # -----------------------------------------------------------------------
@@ -1350,46 +1126,14 @@ class TestPolicyCutover:
             os.chdir(old_cwd)
 
     # -----------------------------------------------------------------------
-    # 6. Legacy fallback still works after cutover
+    # 6. End-to-end: canonical checkpoint → valid D18 telemetry
     # -----------------------------------------------------------------------
-    def test_legacy_fallback_still_works(self, ws_client):
-        """Legacy policy.npz path is not broken by the cutover.
-
-        The work_dir fixture creates only policy.npz + normalization.npz (no
-        checkpoint_*.npz).  The serving layer must fall back to the legacy
-        loader and produce valid D18 env_step frames.
-
-        All existing tests (TestWSSessionLifecycle, TestTelemetrySchemaConformance,
-        etc.) implicitly rely on this path; this case explicitly pins it.
-        """
-        frames = []
-        with ws_client.websocket_connect("/ws/inference") as ws:
-            ws.receive_text(timeout=5)  # ready
-            ws.send_text(_start_cmd())
-            while len(frames) < 3:
-                raw = ws.receive_text(timeout=5)
-                msg = json.loads(raw)
-                if msg.get("kind") == "env_step":
-                    frames.append(msg)
-        assert len(frames) == 3, (
-            f"Legacy path must produce env_step frames after cutover; got {len(frames)}"
-        )
-        for i, frame in enumerate(frames):
-            errs = validate(frame)
-            assert errs == [], (
-                f"Legacy fallback frame {i} fails D18 validate:\n"
-                + "\n".join(f"  - {e}" for e in errs)
-            )
-
-    # -----------------------------------------------------------------------
-    # 7. End-to-end: canonical checkpoint → valid D18 telemetry
-    # -----------------------------------------------------------------------
-    def test_canonical_session_produces_valid_d18_frames(self, canonical_ws_client):
+    def test_canonical_session_produces_valid_d18_frames(self, ws_client):
         """Full end-to-end: canonical checkpoint_*.npz → env_step passes D18 validate.
 
-        Uses the canonical_work_dir fixture which creates a real
-        checkpoint_run_001_step500000.npz (via save_checkpoint) and NO
-        policy.npz.  The serving layer must:
+        The standard work_dir fixture now creates a canonical
+        checkpoint_run_001_step500000.npz (no policy.npz — legacy path removed).
+        The serving layer must:
           1. Discover checkpoint_run_001_step500000.npz via glob
           2. Load it via load_checkpoint
           3. Run actor_forward_numpy for each step
