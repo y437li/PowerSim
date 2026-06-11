@@ -1327,3 +1327,474 @@ class TestReviewerPolicyCutover:
                     assert validate(frame) == [], "canonical discovery must ignore stray files and stream valid frames"
         finally:
             os.chdir(old)
+
+
+# ===========================================================================
+# TestRealJaxEnvPhysics (task #48 — real env wiring)
+# ---------------------------------------------------------------------------
+# These tests verify that after the _SyntheticEnv → _JaxEnvSession cutover:
+#  1. Telemetry fields come from real JAX physics (not random noise).
+#  2. All 13 per-source flow fields from the EnvInfo amendment are present.
+#  3. SOC is a fraction in [soc_min=0.2, soc_max=0.9] (D4 binding).
+#  4. D13 cost identity holds: c_energy_yuan == c_import_yuan - r_export_yuan.
+#  5. D18 validate() == [] for real env output.
+# ===========================================================================
+
+# Guard: JAX-dependent tests require the jax + jaxlib wheel.
+# On macOS Intel, jaxlib 0.8.x has no wheel — skip gracefully.
+_jax_available = pytest.importorskip("jax", reason="jax not installed; skip real-env tests")
+
+_REQUIRED_FLOW_FIELDS = [
+    "solar_to_load_mw",
+    "solar_to_bat_mw",
+    "solar_to_grid_mw",
+    "solar_curtailed_mw",
+    "wind_to_load_mw",
+    "wind_to_bat_mw",
+    "wind_to_grid_mw",
+    "wind_curtailed_mw",
+    "bat_to_load_mw",
+    "bat_to_grid_mw",
+    "bat_curtailed_mw",
+    "grid_to_bat_mw",
+    "grid_to_load_mw",
+    "load_unserved_mw",
+]
+
+
+def _collect_real_env_frames(ws_client, n: int = 3) -> list[dict]:
+    """Collect n env_step frames at speed=0 (no throttle)."""
+    frames: list[dict] = []
+    with ws_client.websocket_connect("/ws/inference") as ws:
+        ws.receive_text(timeout=5)  # ready
+        ws.send_text(_start_cmd(speed=0.0))
+        while len(frames) < n:
+            raw = ws.receive_text(timeout=30)
+            msg = json.loads(raw)
+            if msg.get("kind") == "env_step":
+                frames.append(msg)
+    return frames
+
+
+class TestRealJaxEnvPhysics:
+    """Real JAX env physics after _SyntheticEnv replacement (task #48)."""
+
+    def test_d18_validate_passes_with_real_env(self, ws_client):
+        """Real env output must pass energy_go.telemetry.validate() == [] (D18 hard gate)."""
+        frames = _collect_real_env_frames(ws_client, n=3)
+        for i, frame in enumerate(frames):
+            errs = validate(frame)
+            assert errs == [], (
+                f"Real env frame {i} fails D18 validate:\n"
+                + "\n".join(f"  - {e}" for e in errs)
+            )
+
+    def test_all_14_flow_fields_present(self, ws_client):
+        """All 14 flows fields (13 per-source + load_unserved) must be in the payload.
+
+        Contract §EnvInfo → telemetry payload: 13+2 amendment fields (§3.3 amendment,
+        PR #33) must appear in flows.  Missing a field = serving layer did not wire the
+        EnvInfo field.
+        """
+        frames = _collect_real_env_frames(ws_client, n=1)
+        flows = frames[0]["payload"]["flows"]
+        for field in _REQUIRED_FLOW_FIELDS:
+            assert field in flows, (
+                f"flows.{field} missing from real-env telemetry payload — "
+                "check _JaxEnvSession → payload mapping"
+            )
+
+    def test_soc_is_fraction_in_valid_range(self, ws_client):
+        """battery.soc must be a fraction in [0.2, 0.9] (D4: SOC bounds [soc_min, soc_max]).
+
+        Reference: EnvState.soc is a fraction ∈ [0, 1]; D4 clips to [0.2, 0.9].
+        The initial SOC is soc_init = 0.5 (EnvParams default), so the first step
+        must have battery.soc ∈ [0.2, 0.9].
+        """
+        frames = _collect_real_env_frames(ws_client, n=3)
+        for i, frame in enumerate(frames):
+            soc = frame["payload"]["battery"]["soc"]
+            assert isinstance(soc, float), f"frame {i}: battery.soc must be float, got {type(soc)}"
+            # SOC is a fraction; D4 bounds [0.2, 0.9] ± tiny floating-point tolerance
+            assert 0.199 <= soc <= 0.901, (
+                f"frame {i}: battery.soc={soc:.6f} is outside D4 bounds [0.2, 0.9]"
+            )
+
+    def test_d13_c_energy_identity(self, ws_client):
+        """D13: c_energy_yuan == c_import_yuan - r_export_yuan to floating-point precision.
+
+        Reference arithmetic: C_E = P_import * price_buy - P_export * price_sell
+        c_import = P_import * price_buy, r_export = P_export * price_sell
+        → c_energy = c_import - r_export (D13 identity #3).
+
+        Tolerance 1e-4 ¥ accounts for float32 → float64 cast in the serving layer
+        (all EnvInfo fields are float32 from JAX; Python float() gives float64).
+        """
+        frames = _collect_real_env_frames(ws_client, n=3)
+        for i, frame in enumerate(frames):
+            costs = frame["payload"]["costs"]
+            c_energy = costs["c_energy_yuan"]
+            c_import = costs["c_import_yuan"]
+            r_export = costs["r_export_yuan"]
+            # c_energy == c_import - r_export (D13 identity #3)
+            identity = c_import - r_export
+            assert abs(c_energy - identity) < 1e-3, (
+                f"frame {i}: D13 identity violated: c_energy={c_energy:.6f}, "
+                f"c_import={c_import:.6f}, r_export={r_export:.6f}, "
+                f"c_import-r_export={identity:.6f}, diff={abs(c_energy - identity):.2e}"
+            )
+
+    def test_gross_wind_power_is_non_negative(self, ws_client):
+        """gross_wind_mw must be ≥ 0 (wind power is non-negative by physics).
+
+        Reference: jax_env step computes P_wind = wind_rated_mw * p_frac where
+        p_frac ∈ [0, 1], and wind_rated_mw = 615.0 MW (EnvParams default).
+        So gross_wind_mw ∈ [0.0, 615.0].
+        """
+        frames = _collect_real_env_frames(ws_client, n=5)
+        for i, frame in enumerate(frames):
+            gw = frame["payload"]["generation"]["gross_wind_mw"]
+            assert gw >= 0.0, f"frame {i}: gross_wind_mw={gw:.4f} is negative"
+            assert gw <= 615.0 + 1e-4, (
+                f"frame {i}: gross_wind_mw={gw:.4f} exceeds wind_rated_mw=615.0 MW"
+            )
+
+    def test_gross_solar_power_is_non_negative(self, ws_client):
+        """gross_solar_mw must be ≥ 0 (solar power is non-negative by physics).
+
+        Reference: jax_env P_pv = pv_capacity_mw * irr/1000 * temp_factor * eta * degradation
+        where pv_capacity_mw = 330.0 MW (EnvParams default); clipped to ≥ 0.
+        """
+        frames = _collect_real_env_frames(ws_client, n=5)
+        for i, frame in enumerate(frames):
+            gs = frame["payload"]["generation"]["gross_solar_mw"]
+            assert gs >= 0.0, f"frame {i}: gross_solar_mw={gs:.4f} is negative"
+
+    def test_price_fields_match_gansu_tou(self, ws_client):
+        """price_buy_yuan_per_mwh must be one of the 4 Gansu TOU tiers.
+
+        Reference: PRICE_TABLE_YPW = [250, 450, 620, 780] ¥/MWh (jax_env.py constant).
+        price_sell must be ≤ price_buy (D7: spread clamp ≥ 0 → sell ≥ 0, sell ≤ buy).
+        """
+        VALID_PRICES = {250.0, 450.0, 620.0, 780.0}
+        frames = _collect_real_env_frames(ws_client, n=5)
+        for i, frame in enumerate(frames):
+            p = frame["payload"]
+            buy = p["price_buy_yuan_per_mwh"]
+            sell = p["price_sell_yuan_per_mwh"]
+            assert buy in VALID_PRICES, (
+                f"frame {i}: price_buy={buy} is not a Gansu TOU tier {VALID_PRICES}"
+            )
+            assert sell >= 0.0, f"frame {i}: price_sell={sell:.4f} is negative (D7 violation)"
+            assert sell <= buy + 1e-4, (
+                f"frame {i}: price_sell={sell:.4f} > price_buy={buy:.4f} (D7 violation)"
+            )
+
+    def test_tariff_tier_consistent_with_price(self, ws_client):
+        """tariff_tier must match the price_buy tier (≥780→critical_peak, ≥620→peak,
+        ≥450→mid, else→valley).
+
+        Reference: contract §EnvInfo → telemetry payload, tariff_tier row.
+        """
+        frames = _collect_real_env_frames(ws_client, n=5)
+        for i, frame in enumerate(frames):
+            p = frame["payload"]
+            buy = p["price_buy_yuan_per_mwh"]
+            tier = p["tariff_tier"]
+            if buy >= 780.0:
+                expected = "critical_peak"
+            elif buy >= 620.0:
+                expected = "peak"
+            elif buy >= 450.0:
+                expected = "mid"
+            else:
+                expected = "valley"
+            assert tier == expected, (
+                f"frame {i}: tariff_tier={tier!r} inconsistent with price_buy={buy} ¥/MWh "
+                f"(expected {expected!r})"
+            )
+
+    def test_flow_conservation_solar(self, ws_client):
+        """Solar flow conservation: gross_solar_mw ≈ solar_to_load + solar_to_bat + solar_to_grid
+        + solar_curtailed.
+
+        Reference: jax_env §3.3 amendment — per-source conservation (identity #5).
+        Tolerance 1e-3 MW: float32 → float64 cast + 4 summands.
+        """
+        frames = _collect_real_env_frames(ws_client, n=5)
+        for i, frame in enumerate(frames):
+            p = frame["payload"]
+            gross = p["generation"]["gross_solar_mw"]
+            flows = p["flows"]
+            decomp = (
+                flows["solar_to_load_mw"]
+                + flows["solar_to_bat_mw"]
+                + flows["solar_to_grid_mw"]
+                + flows["solar_curtailed_mw"]
+            )
+            assert abs(gross - decomp) < 1e-2, (
+                f"frame {i}: solar conservation violated: gross={gross:.6f} MW, "
+                f"sum_parts={decomp:.6f} MW, diff={abs(gross - decomp):.2e} MW"
+            )
+
+    def test_flow_conservation_wind(self, ws_client):
+        """Wind flow conservation: gross_wind_mw ≈ wind_to_load + wind_to_bat + wind_to_grid
+        + wind_curtailed.
+
+        Reference: jax_env §3.3 amendment — per-source conservation (identity #6).
+        Tolerance 1e-2 MW.
+        """
+        frames = _collect_real_env_frames(ws_client, n=5)
+        for i, frame in enumerate(frames):
+            p = frame["payload"]
+            gross = p["generation"]["gross_wind_mw"]
+            flows = p["flows"]
+            decomp = (
+                flows["wind_to_load_mw"]
+                + flows["wind_to_bat_mw"]
+                + flows["wind_to_grid_mw"]
+                + flows["wind_curtailed_mw"]
+            )
+            assert abs(gross - decomp) < 1e-2, (
+                f"frame {i}: wind conservation violated: gross={gross:.6f} MW, "
+                f"sum_parts={decomp:.6f} MW, diff={abs(gross - decomp):.2e} MW"
+            )
+
+    def test_weather_fields_come_from_generator_not_random(self, ws_client):
+        """wind_speed_mps and irradiance_wm2 must be deterministic across two sessions
+        with the same seed (fixed seed → fixed year → identical physics).
+
+        This pins that weather comes from generate_year(PRNGKey(seed)), not RNG noise
+        (which is what _SyntheticEnv used — random per step, not deterministic).
+        Same seed → same year data → identical weather fields at the same step.
+        """
+        seed = 42
+
+        def _get_first_weather(client) -> dict:
+            with client.websocket_connect("/ws/inference") as ws:
+                ws.receive_text(timeout=5)
+                ws.send_text(_start_cmd(seed=seed, speed=0.0))
+                return _recv_until(ws, "env_step", max_frames=20)["payload"]
+
+        w1 = _get_first_weather(ws_client)
+        w2 = _get_first_weather(ws_client)
+
+        assert w1["wind_speed_mps"] == w2["wind_speed_mps"], (
+            "wind_speed_mps must be deterministic (fixed seed → fixed year): "
+            f"session1={w1['wind_speed_mps']}, session2={w2['wind_speed_mps']}"
+        )
+        assert w1["irradiance_wm2"] == w2["irradiance_wm2"], (
+            "irradiance_wm2 must be deterministic (fixed seed → fixed year): "
+            f"session1={w1['irradiance_wm2']}, session2={w2['irradiance_wm2']}"
+        )
+
+    def test_reward_is_finite_and_non_positive_for_gansu(self, ws_client):
+        """reward must be finite (no NaN/Inf from real physics).
+
+        Reference: reward = -(cost_total_reward_basis + penalty) * reward_scale (§3.5).
+        All costs are ≥ 0, so reward ≤ 0. reward_scale = 1e-5 (EnvParams default).
+        """
+        import math
+        frames = _collect_real_env_frames(ws_client, n=5)
+        for i, frame in enumerate(frames):
+            r = frame["payload"]["reward"]
+            assert math.isfinite(r), (
+                f"frame {i}: reward={r} is not finite — real env produced NaN/Inf"
+            )
+            assert r <= 1e-6, (
+                f"frame {i}: reward={r:.8f} is positive (expected ≤ 0 since all costs ≥ 0)"
+            )
+
+
+# ===========================================================================
+# TestHasPolicyCanonical (task #38 fix — absorbed into task #48)
+# ---------------------------------------------------------------------------
+# The REST API has_policy field must check for canonical checkpoint_*.npz
+# (not the legacy policy.npz which was never produced by training).
+# ===========================================================================
+
+class TestHasPolicyCanonical:
+    """REST API has_policy field reports True iff a canonical checkpoint_*.npz exists."""
+
+    def _make_rest_client(self, tmp_path):
+        """Return a TestClient with work_dir set to tmp_path."""
+        old = os.getcwd()
+        os.chdir(tmp_path)
+        from energy_go.serving.app import app  # type: ignore
+        client = TestClient(app)
+        client.__enter__()
+        client._old_cwd = old  # stash for cleanup
+        return client
+
+    def _cleanup_rest_client(self, client):
+        client.__exit__(None, None, None)
+        os.chdir(client._old_cwd)
+
+    def _make_run_dir(self, tmp_path, run_id: str) -> Path:
+        config = tmp_path / "config"
+        config.mkdir(exist_ok=True)
+        (config / "site_gansu.yaml").write_text(SITE_GANSU_YAML)
+        run = tmp_path / "checkpoints" / run_id
+        run.mkdir(parents=True)
+        (run / "metadata.json").write_text(json.dumps({
+            "episodes_trained": 50, "site_id": "gansu",
+            "created_at": "2026-06-11T00:00:00Z",
+        }))
+        return run
+
+    def test_has_policy_true_with_canonical_checkpoint(self, tmp_path):
+        """GET /runs returns has_policy=True when a canonical checkpoint_*.npz is present.
+
+        The legacy policy.npz check (pr #59 removal) always returned False for
+        real training runs.  After the fix, has_policy must reflect the canonical
+        checkpoint_*.npz discovery algorithm.
+        """
+        pytest.importorskip("energy_go.serving.app")
+        run = self._make_run_dir(tmp_path, "run_hp_canonical")
+        _make_canonical_checkpoint(run, run_id="run_hp_canonical")
+        client = self._make_rest_client(tmp_path)
+        try:
+            resp = client.get("/runs")
+            assert resp.status_code == 200, f"GET /runs returned {resp.status_code}"
+            runs = resp.json()["runs"]
+            hp_run = next((r for r in runs if r["id"] == "run_hp_canonical"), None)
+            assert hp_run is not None, "run_hp_canonical not found in /runs response"
+            assert hp_run["has_policy"] is True, (
+                f"has_policy must be True when checkpoint_*.npz is present; "
+                f"got {hp_run['has_policy']!r}.  "
+                "Likely still checking policy.npz (legacy) instead of checkpoint_*.npz."
+            )
+        finally:
+            self._cleanup_rest_client(client)
+
+    def test_has_policy_false_with_only_legacy_policy_npz(self, tmp_path):
+        """GET /runs returns has_policy=False when only a legacy policy.npz is present.
+
+        The canonical discovery algorithm requires checkpoint_*.npz with _step<N> suffix.
+        A bare policy.npz (legacy format, PR #59 removed from serving layer) must NOT
+        set has_policy=True — it cannot be loaded by the current serving layer.
+        """
+        pytest.importorskip("energy_go.serving.app")
+        run = self._make_run_dir(tmp_path, "run_hp_legacy")
+        _make_policy_npz(run / "policy.npz")  # legacy file — canonical discovery ignores it
+        client = self._make_rest_client(tmp_path)
+        try:
+            resp = client.get("/runs")
+            assert resp.status_code == 200
+            runs = resp.json()["runs"]
+            hp_run = next((r for r in runs if r["id"] == "run_hp_legacy"), None)
+            assert hp_run is not None, "run_hp_legacy not found in /runs response"
+            assert hp_run["has_policy"] is False, (
+                f"has_policy must be False when only legacy policy.npz is present; "
+                f"got {hp_run['has_policy']!r}.  "
+                "Canonical check (checkpoint_*.npz) must not match policy.npz."
+            )
+        finally:
+            self._cleanup_rest_client(client)
+
+    def test_has_policy_true_in_run_detail_endpoint(self, tmp_path):
+        """GET /runs/{run_id} also reports has_policy=True for canonical checkpoint.
+
+        Both the list endpoint and the detail endpoint share the same discovery logic.
+        """
+        pytest.importorskip("energy_go.serving.app")
+        run = self._make_run_dir(tmp_path, "run_hp_detail")
+        _make_canonical_checkpoint(run, run_id="run_hp_detail")
+        client = self._make_rest_client(tmp_path)
+        try:
+            resp = client.get("/runs/run_hp_detail")
+            assert resp.status_code == 200, f"GET /runs/run_hp_detail returned {resp.status_code}"
+            data = resp.json()
+            assert data.get("has_policy") is True, (
+                f"has_policy in /runs/{{run_id}} must be True for canonical checkpoint; "
+                f"got {data.get('has_policy')!r}"
+            )
+        finally:
+            self._cleanup_rest_client(client)
+
+    def test_has_policy_false_with_no_checkpoints(self, tmp_path):
+        """GET /runs/{run_id} returns has_policy=False when the run dir has no checkpoints."""
+        pytest.importorskip("energy_go.serving.app")
+        run = self._make_run_dir(tmp_path, "run_hp_empty")
+        # No checkpoint files at all
+        client = self._make_rest_client(tmp_path)
+        try:
+            resp = client.get("/runs/run_hp_empty")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data.get("has_policy") is False, (
+                f"has_policy must be False with no checkpoints; got {data.get('has_policy')!r}"
+            )
+        finally:
+            self._cleanup_rest_client(client)
+
+
+# ===========================================================================
+# TestRealEnvEpisodeBoundary (task #48 — real env episode handling)
+# ---------------------------------------------------------------------------
+# After episode 0 ends at step 167, the real env must reset for episode 1.
+# seq must not reset; episode counter must increment.
+# These tests guard the real-env episode-boundary path in _JaxEnvSession.
+# ===========================================================================
+
+class TestRealEnvEpisodeBoundary:
+    """Real-env episode boundary: reset, seq monotonicity, episode increment."""
+
+    def test_real_env_episode_resets_at_boundary(self, ws_client):
+        """After 168 real-env steps (episode 0), payload.episode increments to 1.
+
+        The real JAX env has done = (t == episode_len - 1) = (t == 167).
+        On done=True the serving wrapper must reset and increment the episode counter.
+        payload.episode on the 169th frame (index 168) must be 1 (not 0).
+
+        This is the same contract as TestEpisodeBoundary.test_seq_does_not_reset_at_episode_boundary
+        but exercised through the REAL JAX env path (not _SyntheticEnv).
+        """
+        N = 170
+        frames: list[dict] = []
+        with ws_client.websocket_connect("/ws/inference") as ws:
+            ws.receive_text(timeout=5)
+            ws.send_text(_start_cmd(speed=0.0))
+            while len(frames) < N:
+                raw = ws.receive_text(timeout=60)
+                msg = json.loads(raw)
+                if msg.get("kind") == "env_step":
+                    frames.append(msg)
+
+        # Frame at index 168 (the 169th frame) = first step of episode 1
+        # payload.episode must be 1 (incremented at the episode boundary, step 167)
+        assert frames[168]["payload"]["episode"] == 1, (
+            f"payload.episode at frame 168 must be 1 (episode boundary at step 167, D3); "
+            f"got {frames[168]['payload']['episode']}"
+        )
+        # seq must not reset across the boundary
+        assert frames[168]["seq"] == 168, (
+            f"seq at frame 168 must be 168 (no reset); got {frames[168]['seq']}"
+        )
+
+    def test_real_env_all_frames_pass_validate_across_boundary(self, ws_client):
+        """All 170 frames spanning the episode boundary must pass D18 validate (real env).
+
+        This extends TestTelemetrySchemaConformance to cover the boundary condition:
+        the reset + new episode obs must still produce schema-valid telemetry.
+        """
+        N = 170
+        frames: list[dict] = []
+        with ws_client.websocket_connect("/ws/inference") as ws:
+            ws.receive_text(timeout=5)
+            ws.send_text(_start_cmd(speed=0.0))
+            while len(frames) < N:
+                raw = ws.receive_text(timeout=60)
+                msg = json.loads(raw)
+                if msg.get("kind") == "env_step":
+                    frames.append(msg)
+
+        failures: list[str] = []
+        for i, frame in enumerate(frames):
+            errs = validate(frame)
+            if errs:
+                failures.append(f"  frame {i} (seq={frame['seq']}): {errs}")
+        assert not failures, (
+            f"D18 validate failed for {len(failures)} frames across episode boundary:\n"
+            + "\n".join(failures[:5])  # show first 5 only
+        )

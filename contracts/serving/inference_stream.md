@@ -328,12 +328,150 @@ The env step is deterministic and fast (pure NumPy/JAX forward pass).  There is 
 replay buffer on the WS frame queue; if the client cannot consume frames (slow network
 or paused), the server back-pressures via the WebSocket send queue (asyncio await send).
 
+## Real JAX environment wiring (PR #70 cutover — task #48)
+
+The `_SyntheticEnv` placeholder is replaced by a `_JaxEnvSession` wrapper that drives
+the real `energy_go.env.jax_env` with synthetic year data from
+`energy_go.generators.synthetic.generate_year`.  The WS lifecycle, session commands,
+D24 speed control, D26 two-tier validation, and the LOCKED telemetry schema are
+**unchanged** — only the source of physics data changes.
+
+### Environment construction
+
+On `cmd:start`:
+
+1. **Generate year data** — `data = generate_year(jax.random.PRNGKey(seed))` producing
+   a `(8760, 4)` float32 array with columns `[wind_mps, irr_wm2, temp_c, load_mw]`.
+   Fixed seed → identical year across sessions (reproducible trajectories, per D3).
+
+2. **Build `EnvParams`** — use the library defaults (`energy_go.env.jax_env.EnvParams()`).
+   For the Gansu parity case these are the canonical defaults (bat_capacity_mwh=294.5 MWh,
+   bat_power_mw=98.16 MW, grid_max_export_mw=945.0 MW, grid_max_import_mw=400.0 MW,
+   episode_len=168, D3/D4/D5/D12).  The site YAML is retained for metadata display;
+   env-physics parameters come from `EnvParams` defaults, not the YAML (sufficient for
+   Gansu parity; §8 site-config mapping is deferred to the §8 env-side work).
+
+3. **Reset** — `state, obs = jax_env.reset(jax.random.PRNGKey(seed), params, data,
+   episode_start=0)`.  Store `state` and `obs` (107-dim float32 array) for step 0.
+
+### Per-step loop
+
+Each iteration of the step loop:
+
+```
+action = policy_forward(checkpoint, current_obs)   # (6,) float32
+
+new_state, _, reward, done, info = jax_env.step(
+    state, jnp.array(action, dtype=jnp.float32), params, data
+)
+
+next_obs = jax_env.get_obs(new_state, params, data)   # 107-dim; used as input to step t+1
+```
+
+- `jax_env.step()` returns `obs` from the **input** state (§5.4: obs computed before
+  the action is applied); this is identical to the already-stored `current_obs` —
+  discard it.  Always call `get_obs(new_state, …)` to obtain `next_obs`.
+- All JAX arrays are converted to Python floats via `float(…)` before JSON serialisation.
+- `done = (state.t == params.episode_len - 1)` — True at step 167 (168-step episode, D3).
+  On `done=True`: increment `episode`, reset: `state, next_obs = jax_env.reset(new_key,
+  params, data, episode_start=(episode_count * episode_len) % 8760)` to advance
+  sequentially through the year.  The `payload.step` counter and `seq` counter are
+  **never reset** across episode boundaries (contract invariant, TestEpisodeBoundary).
+
+### `EnvInfo` → telemetry payload field mapping
+
+`jax_env.step()` returns `EnvInfo` (a NamedTuple).  The mapping to the LOCKED
+`env_step` payload is:
+
+| Telemetry field | Source |
+|---|---|
+| `payload.wind_speed_mps` | `data[state.t, 0]` |
+| `payload.irradiance_wm2` | `data[state.t, 1]` |
+| `payload.temperature_c` | `data[state.t, 2]` |
+| `payload.load_mw` | `data[state.t, 3]` |
+| `payload.price_buy_yuan_per_mwh` | `info.price_buy_yuan_per_mwh` |
+| `payload.price_sell_yuan_per_mwh` | `info.price_sell_yuan_per_mwh` |
+| `payload.tariff_tier` | derived: ≥780 → "critical_peak", ≥620 → "peak", ≥450 → "mid", else "valley" |
+| `battery.soc` | `new_state.soc` (fraction ∈ [soc_min, soc_max]) |
+| `battery.p_charge_mw` | `info.p_bat_ch_mw` |
+| `battery.p_discharge_mw` | `info.p_bat_dis_mw` |
+| `battery.p_max_charge_mw` | `params.bat_power_mw` |
+| `battery.p_max_discharge_mw` | `params.bat_power_mw` |
+| `battery.soc_violation_mwh` | `info.soc_violation_mwh` |
+| `battery.capacity_mwh` | `params.bat_capacity_mwh` |
+| `generation.gross_solar_mw` | `info.p_pv_mw` |
+| `generation.gross_wind_mw` | `info.p_wind_mw` |
+| `flows.solar_to_load_mw` | `info.p_sol_to_load_mw` |
+| `flows.solar_to_bat_mw` | `info.p_sol_to_bat_mw` |
+| `flows.solar_to_grid_mw` | `info.p_sol_to_grid_mw` |
+| `flows.solar_curtailed_mw` | `info.p_sol_curtailed_mw` |
+| `flows.wind_to_load_mw` | `info.p_wind_to_load_mw` |
+| `flows.wind_to_bat_mw` | `info.p_wind_to_bat_mw` |
+| `flows.wind_to_grid_mw` | `info.p_wind_to_grid_mw` |
+| `flows.wind_curtailed_mw` | `info.p_wind_curtailed_mw` |
+| `flows.bat_to_load_mw` | `info.p_bat_to_load_mw` |
+| `flows.bat_to_grid_mw` | `info.p_bat_to_grid_mw` |
+| `flows.bat_curtailed_mw` | `info.p_bat_curtailed_mw` |
+| `flows.grid_to_bat_mw` | `info.p_grid_to_bat_mw` |
+| `flows.grid_to_load_mw` | `info.p_grid_to_load_mw` |
+| `flows.load_unserved_mw` | `info.p_load_unserved_mw` |
+| `pcc.export_mw` | `info.p_export_mw` |
+| `pcc.import_mw` | `info.p_import_mw` |
+| `pcc.max_export_mw` | `params.grid_max_export_mw` |
+| `pcc.max_import_mw` | `params.grid_max_import_mw` |
+| `costs.c_energy_yuan` | `info.c_energy_yuan` |
+| `costs.c_import_yuan` | `info.c_import_yuan` |
+| `costs.r_export_yuan` | `info.r_export_yuan` |
+| `costs.c_demand_shape_yuan` | `info.c_demand_shape_yuan` |
+| `costs.c_demand_charge_yuan` | `info.c_demand_charge_yuan` |
+| `costs.c_degradation_yuan` | `info.c_degradation_yuan` |
+| `costs.c_curtail_yuan` | `info.c_curtail_yuan` |
+| `costs.c_voll_yuan` | `info.c_voll_yuan` |
+| `costs.penalty_yuan` | `info.penalty_yuan` |
+| `costs.cost_total_real_yuan` | `info.cost_total_real_yuan` |
+| `costs.cost_total_reward_basis_yuan` | `info.cost_total_reward_basis_yuan` |
+| `costs.demand_rate_yuan_per_mw_month` | `params.demand_rate_yuan_per_mw_month` |
+| `cost_cum.*` | running sums across steps (accumulate per field, never reset within a session) |
+| `month_peak_mw` | `new_state.month_peak` |
+| `reward` | `float(reward)` from step return |
+
+**Units** — all power fields in MW, energy in MWh, costs in ¥, prices in ¥/MWh.
+No unit conversion in the serving layer — `EnvInfo` and `EnvParams` already carry
+values in these units.
+
+**`payload.step`** — global step counter (monotonically increasing per session,
+never reset at episode boundaries, starts at 0 for `cmd:start`).
+
+**`payload.episode`** — increments at the episode boundary.  The boundary step's
+payload carries the **incremented** episode number (so step 167 = last of episode 0
+reports episode=1 after the episode counter is updated).
+
+### `has_policy` in REST API (task #38 fix)
+
+`GET /runs` and `GET /runs/{run_id}` include `has_policy: bool`.  The current
+implementation (`rest_api.py`) checks for `policy.npz`/`policy.onnx` — the legacy
+format that was never produced by training (PR #40) and was removed from the serving
+layer (PR #59).  This **always returns False** for real training runs.
+
+**Fix:** `has_policy` MUST check for the canonical checkpoint format:
+
+```python
+has_policy = any(
+    p for p in (run_dir / "checkpoints" / run_id).glob("checkpoint_*.npz")
+    if "_step" in p.stem
+)
+```
+
+This matches the canonical discovery algorithm in `_load_checkpoint_for_run()` and
+`inference_stream.md §Policy loading`.
+
 ## Out of scope
 
 - Multi-client session sharing (each connection is fully isolated).
 - Training harness proxy — separate contract `training_proxy.md`.
 - Any LLM analysis endpoint.
 - Real hardware I/O.
+- §8 site-config YAML → `EnvParams` field mapping (deferred; Gansu parity uses defaults).
 
 ## Dependencies
 
@@ -341,6 +479,7 @@ or paused), the server back-pressures via the WebSocket send queue (asyncio awai
 - `energy_go.telemetry.validate` (`contracts/shared/telemetry_validate.md`).
 - `energy_go.training.checkpoint_format` — LOCKED `contracts/shared/checkpoint_format.md`
   v1.0.0; provides `CheckpointData`, `load_checkpoint`, `actor_forward_numpy`.
+- `energy_go.env.jax_env` (PR #33 merged) — provides `EnvState`, `EnvParams`,
+  `EnvInfo`, `step`, `reset`, `get_obs`.
+- `energy_go.generators.synthetic` (PR #33 merged) — provides `generate_year`.
 - `checkpoints/{run_id}/checkpoint_*.npz` — produced by training-engineer (PR #40).
-- The env step interface (NumPy reference implementation from `contracts/env/reference_implementation.md`
-  or JAX env step from task #8) — the serving layer calls `env.step(obs, action)`.
