@@ -34,3 +34,27 @@
 
 The path-move + reportPaths + test are sound; this is purely scope-completeness so the consumer
 (QA) instruction matches the new path. Re-request once SKILL.md is in scope.
+
+---
+
+## Round 2 @ commit `41da186` — **APPROVE**
+
+Must-fix resolved (verified):
+- **`.claude/skills/qa-verification/SKILL.md:42`** now attaches `test-results/error-report.ndjson`
+  (was `playwright-report/...`) — the operative QA instruction QA loads is corrected, so QA is no
+  longer directed to the wiped/old path.
+- **Contract "Amendment deliverables"** now explicitly lists the SKILL.md path update as
+  implementation-scope item 3 (alongside reportPaths stub→test-results and errorCapture.ts).
+- **`smoke.spec.ts`** header comment updated to `test-results/` with a task-#16 rationale.
+- Path move + `reportPaths.ts` single-source + the §T9 content gate (unchanged) all stand.
+
+### Stage-2 verification note (not gating)
+`errorCapture.ts` doc comments (lines ~8, ~48) still say `playwright-report/error-report.ndjson`.
+The functional write path is being switched to import `ERROR_REPORT_PATH` from `reportPaths` at
+implementation; the doc comments must be updated in the same change so they don't mislead. I'll
+confirm at stage-2 that errorCapture both writes to `test-results/` AND its comments match (and the
+transient test-comment at playwright_harness.test.ts:94 is updated when the stub flips).
+
+9/10 GREEN, 1 RED (stub still exports the old path) — correct gate state.
+
+**Verdict: APPROVE** (stage-1 gate). Cleared for implementation. Mark ready for stage-2.
