@@ -150,6 +150,52 @@ class TestYamlSchema:
                 f"model_id '{model_id}' missing from device_models.yaml"
             )
 
+    def test_gansu_model_ids_match_registry_json(self):
+        """device_models.yaml Gansu IDs must match the LOCKED registry.json keys verbatim.
+
+        # reviewer: registry-drift-guard (frontend-reviewer advisory, PR #79)
+        # The binding join-key invariant: device-model ID = same key in both
+        # device_models.yaml (physics) and registry.json (3D visual). A mismatch
+        # would silently break the serving layer's cross-schema join.
+        #
+        # registry.json keys for Gansu (from LOCKED v1.0.0):
+        #   vestas-v150-4.2, trina-vertex-n-670w, catl-lmp-300mwh, pcc-substation-945mw
+        """
+        import json
+        registry_path = _REPO_ROOT / "assets" / "3d" / "registry.json"
+        assert registry_path.exists(), f"registry.json not found at {registry_path}"
+
+        with open(registry_path) as f:
+            registry = json.load(f)
+        with open(_DEVICE_MODELS_PATH) as f:
+            device_models = yaml.safe_load(f)
+
+        registry_ids = set(registry.get("assets", {}).keys())
+        model_ids = set(device_models.get("models", {}).keys())
+
+        # Every Gansu registry ID must appear in device_models.yaml
+        gansu_registry_ids = {
+            "vestas-v150-4.2", "trina-vertex-n-670w",
+            "catl-lmp-300mwh", "pcc-substation-945mw",
+        }
+        for registry_id in gansu_registry_ids:
+            assert registry_id in registry_ids, (
+                f"Gansu registry ID '{registry_id}' missing from registry.json — "
+                f"registry may have drifted"
+            )
+            assert registry_id in model_ids, (
+                f"Gansu registry ID '{registry_id}' missing from device_models.yaml — "
+                f"IDs have drifted between registry and device model schema"
+            )
+
+        # The 4 Gansu device model IDs must match the 4 Gansu registry entries exactly
+        gansu_model_ids = {k for k in model_ids if k in registry_ids}
+        assert gansu_model_ids == gansu_registry_ids, (
+            f"Gansu device model IDs do not match registry.json Gansu entries.\n"
+            f"  In device_models: {gansu_model_ids}\n"
+            f"  In registry:      {gansu_registry_ids}"
+        )
+
     def test_model_id_format(self):
         """All model IDs must match ^[a-z0-9][a-z0-9.-]*$ (registry.json convention)."""
         import re

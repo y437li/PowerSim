@@ -107,6 +107,7 @@ assets:
     model: <model_id>
     fleet_rated_mw: <float>       # MW — total fleet rated power (required)
     hub_height_m: <float>         # m  — optional override; model default if absent
+    unit_count: <int>             # optional; if absent, derived as round(fleet_rated_mw / rated_mw_per_unit)
   solar:
     model: <model_id>
     fleet_capacity_mw: <float>    # MW — total fleet DC/AC capacity (required)
@@ -115,6 +116,7 @@ assets:
     model: <model_id>
     fleet_capacity_mwh: <float>   # MWh — total fleet energy capacity (required)
     fleet_power_mw: <float>       # MW  — total fleet charge/discharge power (required)
+    unit_count: <int>             # optional; if absent, derived as round(fleet_capacity_mwh / capacity_mwh_per_unit)
   grid:
     model: <model_id>
     max_export_mw: <float>        # MW  — optional override; model physics default if absent
@@ -223,6 +225,26 @@ def resolve_gansu(
 
 **`resolve_gansu()` must return `(EnvParams(...), 107, 6)`** — obs_dim=107 (§2.1
 LOCKED: 11 base + 24×4 forecast), action_dim=6 (§2.2 LOCKED: a_bat + 5 fractions).
+
+### 4.1 Unit-count derivation (single source of truth)
+
+The resolver computes a `unit_counts: dict[str, int]` for discretely-instanced
+assets (wind turbines, battery units).  This is **not** returned from `resolve_site`
+directly (EnvParams-only path), but is exposed by the serving REST endpoint so the
+frontend and 3D scene can use it for instancing without re-implementing the rounding:
+
+```
+unit_counts["wind"]    = site.assets.wind.unit_count            # if explicit
+                       OR round(fleet_rated_mw / rated_mw_per_unit)   # derived
+unit_counts["battery"] = site.assets.battery.unit_count         # if explicit
+                       OR round(fleet_capacity_mwh / capacity_mwh_per_unit)  # derived
+```
+
+This is the **canonical rounding rule**; TS clients MUST use the serving endpoint
+rather than re-deriving it.  For Gansu: `round(615.0 / 4.2) = 146` (wind),
+`round(294.5 / 300.0) = 1` (battery).  The `unit_count` optional field in
+`site_<name>.yaml` (§2) takes precedence when set, allowing exact deployment counts
+that differ from nameplate math.
 
 ---
 
@@ -408,6 +430,14 @@ None — this contract adds new functionality.
 
 ## 10. Out of scope
 
+- **Sub-hour TOU structure:** `price_table` is an hourly `(24,)` array and cannot
+  express sub-hour TOU boundaries (e.g., D8's 10:30/11:30 transitions). Gansu v1 is
+  correct — Δt=1 h steps land on :00 and the minute-aware lookup lives in the
+  reference impl (not the table). Multi-site deployments with genuine sub-hour TOU
+  will require a breaking schema change (major version bump, superseding DECISION).
+- **Frontend physics access:** the browser cannot read `config/device_models.yaml`
+  off disk; device physics (including `unit_counts` from §4.1) must be served via a
+  REST endpoint wrapping the resolver. The serving contract owns that endpoint shape.
 - **Year-indexed price escalation (F1 ruling, PR #78 gate):** dispatch operates on
   constant-real prices — a flat `price_table` per site, exactly as specified here.
   Nominal price escalation (~49% by year 20) is applied in the finance layer only,
@@ -427,6 +457,14 @@ None — this contract adds new functionality.
 ## 11. Versioning
 
 `config/device_models.yaml` carries `schema_version: "1.0.0"`.  
-Additive new model entries = minor bump (`"1.1.0"`) — no re-LOCK required.  
+Additive new model entries = minor bump (`"1.1.0"`) — no re-LOCK required.
+
+**Adding non-Gansu models that produce different `(obs_dim, action_dim)` is also a
+minor schema bump** — it does NOT reopen the LOCKED Gansu checkpoint.  The Gansu
+checkpoint remains authoritative at `obs_dim=107, action_dim=6`; non-Gansu site
+compositions receive their own site-specific checkpoints (per §8 design and the
+checkpoint-format contract §6 note on non-Gansu sites).  Each composition is
+independently verifiable by `resolve_site()`.
+
 Field removal, rename, type change, or semantics change = major bump → superseding
 DECISION + re-LOCK + re-review.
