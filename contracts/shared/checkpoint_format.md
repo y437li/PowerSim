@@ -1,12 +1,12 @@
 # Contract: Checkpoint Format (SHARED)
 
-- **Status:** DRAFT — both reviewers comment; rl-architect locks (D22d; shared contract routing per CLAUDE.md)
-- **Area:** training (producer) / serving (consumer)
+- **Status:** DRAFT — both reviewers comment (advisory); rl-architect locks on own authority (D25; same precedent as telemetry_schema)
+- **Area:** shared — `contracts/shared/` (training producer + serving consumer; D25 relocates from the D22d-proposed `contracts/training/` path)
 - **Spec sections:** §5 (training methodology), §7 (JAX architecture — actor MLP + VecNormalize)
-- **Decisions:** D22d (checkpoint is next shared contract to LOCK; actor weights + running normalisation stats), D22b (import path `energy_go.env.jax_env`), D13 (real vs reward-basis costs)
-- **Owner:** training-engineer · **Reviewers:** backend-reviewer (mandatory) + frontend-reviewer (comment); **Locked by:** rl-architect
-- **Consumers:** `energy_go.training.run_training` (producer), `energy_go.serving` (consumer — ONNX/MLP policy export), `energy_go.training.eval` (loads for eval), serving websocket inference stream
-- **Cross-reference:** `contracts/training/training_pipeline.md` (defines `RunningStats`, actor architecture, `RunConfig`)
+- **Decisions:** D22d (checkpoint is next shared contract to LOCK; actor weights + running normalisation stats), D25 (relocate to contracts/shared/ — same precedent as telemetry_schema), D22b (import path `energy_go.env.jax_env`), D13 (real vs reward-basis costs)
+- **Owner:** training-engineer · **Reviewers:** backend-reviewer + frontend-reviewer (both advisory COMMENT); **Locked by:** rl-architect
+- **Consumers:** `energy_go.training.run_training` (producer), `energy_go.serving` (consumer — MLP policy export / ONNX), `energy_go.training.eval` (loads for eval), serving websocket inference stream
+- **Cross-reference:** `contracts/training/training_pipeline.md` (defines `RunningStats`, actor architecture, `RunConfig`); `contracts/shared/telemetry_schema.md` (checkpoint_id ties to train_metrics)
 
 ---
 
