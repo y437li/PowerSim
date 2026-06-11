@@ -1,232 +1,208 @@
 <!--
   Workstream-D (Project Finance) section text, authored by finance-expert for task #53.
-  This is the drop-in replacement for the §5 STUB in docs/design/master_plan_geo_finance.md (PR #78).
+  Drop-in replacement for the §5 STUB in docs/design/master_plan_geo_finance.md (PR #78).
   rl-architect integrates this block in place of the current "## 5. Workstream D" stub.
   Heading numbering (## 5, ### 5.x) matches the master-plan container. DESIGN ONLY — no implementation.
-  All currency ¥ (RMB), units explicit at every interface.
+  All currency ¥ (RMB), nominal basis, units explicit at every interface.
+  Incorporates: USER directive (hourly-resolved revenue integration), USER directive (ensemble/Monte-Carlo
+  from the §12 generator → P50/P90/P99), and the integrated decision that finance is an off-wire REST resource.
 -->
 
 ## 5. Workstream D — Project finance  ·  *owner: finance-expert (Sonnet impl: finance-engineer)*
 
-**Deliverable:** a new spec section (proposed **§13 project-finance** — a REBUILD_SPEC change → human-gated) plus the model that feeds the §6/E policy-economics UI. This section fixes the *financial model, formulas, conventions, and the schema obligations on B and C*; pass/fail numbers and default cost figures are contract-stage decisions (flagged in §5.10).
+**Deliverable (this plan):** the financial model — its principles, formulas, conventions, data shapes, and the schema obligations it places on B and C. The downstream **§13 project-finance SPEC section** (a human-gated REBUILD_SPEC change) formalizes what §5 designs and is authored *after* this plan's Fable gate. Default cost figures and pass/fail numbers are contract-stage decisions (§5.11).
 
-### 5.0 Framing — what kind of project this is
+### 5.1 Two foundational principles (these constrain everything below)
 
-The Gansu site is **615 MW wind + 330 MW solar + 294.5 MWh / 98.16 MW battery serving a 50–100 MW local load** behind a 945 MW export / 400 MW import PCC. Generation ≫ load by ~10×, so the plant is **overwhelmingly a merchant exporter with a small embedded load**. The §3 objective ("minimize Σ cost", where `c_energy = c_import − r_export`) is therefore *maximizing export revenue net of import* — the operating result is naturally a **net cash inflow**, and project finance can be built **directly from the D13 real-money telemetry**, not only as an avoided-cost calculation.
+**P1 — Hourly-resolved revenue integration.** Every revenue and cost stream is accounted at the **hourly** level and then integrated up; it is **never** approximated as annual-average-price × annual-quantity.
 
-Two complementary economic **views** fall out of this, and both are needed because they answer different questions:
+```
+revenue_s(year)  =  Σ_{t=1}^{8760}  q_{s,t} · p_{s,t}            # per stream s, per hour t
+cost_s(year)     =  Σ_{t=1}^{8760}  q_{s,t} · p_{s,t}
+```
+
+*Proof of necessity (the valley/peak arbitrage example):* the RL policy's entire value is **temporal** — charge the battery in the ¥250/MWh valley, discharge into the ¥780/MWh critical peak (§3.7). The annual *average* price is the same whether or not the battery shifts energy; only the **hour-by-hour** product `q_t·p_t` captures the ¥530/MWh spread the policy harvests. **Annual-average accounting mathematically erases exactly the value the policy creates** — so it is prohibited in this model. The D13 telemetry already carries hourly costs; D's layer consumes the **trajectory**, not summaries.
+
+**P2 — The dispatched year is the atomic finance unit (storage couples hours).** Because SOC ties timesteps together (charging at hour *t* constrains discharge at *t+k*), project value **cannot be decomposed hour-by-hour independently** — a single hour's cash flow is not a well-defined standalone quantity. The indivisible input to finance is therefore a **full dispatched year** (a `PolicyEvalResult`-grade object: the complete 8760-h hourly trajectory of quantities and the realized prices, under one policy and one scenario). This is *also why the per-policy comparison is meaningful*: different policies produce different trajectories under **identical prices**, so the revenue difference is purely the policy's doing.
+
+These two principles are the design's spine; §5.2–§5.10 are their consequences.
+
+### 5.2 Framing — what kind of project, and the dual economic view
+
+The Gansu site is **615 MW wind + 330 MW solar + 294.5 MWh/98.16 MW battery serving a 50–100 MW load** behind a 945 MW export / 400 MW import PCC. Generation ≫ load (~10×), so the plant is **overwhelmingly a merchant exporter with a small embedded load**; the §3 objective (minimize Σcost, `c_energy = c_import − r_export`) is *maximizing net export revenue*. Project finance builds **directly from the D13 hourly real-money telemetry**.
+
+Two economic **views**, both reported per policy (they answer different questions):
 
 | View | CAPEX basis | Benefit stream | Answers |
 |---|---|---|---|
-| **(I) Absolute project** | full plant (wind+PV+battery+grid) | annual operating net revenue under policy π (from D13) | *Is the whole plant a good investment?* |
-| **(II) Incremental storage** | battery CAPEX only | Δ(operating result) of policy-π-with-battery **vs the no-battery baseline** | *Does the battery pay for itself, and which policy maximizes its value?* |
+| **(I) Absolute project** | full plant | annual operating net revenue under policy π (hourly-integrated, P1) | *Is the whole plant a good investment?* |
+| **(II) Incremental storage** | battery CAPEX only | Δ(operating result) of π-with-battery **vs the no-battery baseline** | *Does the battery pay for itself; which policy maximizes its value?* |
 
-View (II) is where the **per-policy comparison lives**: every §11 policy operates the *same physical plant* and differs only in **battery dispatch** (and resulting wear → replacement timing). Holding renewables/CAPEX fixed, the storage-incremental NPV isolates exactly the money each policy's dispatch is worth. View (I) is the headline "is this a real project"; View (II) is the headline "is the RL policy worth it." **Both are reported per policy.**
+View (II) is the **per-policy discriminator**: every §11 policy operates the *same physical plant* and differs only in **battery dispatch** (and wear→replacement). Holding renewables/CAPEX fixed, the storage-incremental NPV isolates exactly what each policy's dispatch is worth.
 
-### 5.1 From dispatch telemetry to a cash flow — the accounting bridge
+### 5.3 Revenue & cost streams — the multi-product, time-series schema
 
-The LOCKED D13 identity gives, per step and accumulated per year, the real-money operating cost:
+End-product prices are **scenario-specific and time-dependent**, and physical quantities are **hourly time series**. The model is therefore a set of **revenue/cost streams**, each = an hourly quantity (from dispatch) × an hourly price (from the scenario):
 
-```
-cost_total_real_yuan = c_energy + c_demand_charge + c_degradation + c_curtail + c_voll
-c_energy = c_import − r_export        (¥; negative ⇒ net export revenue)
-```
+| Stream | Quantity `q_{s,t}` (hourly, from dispatch) | Price `p_{s,t}` model | Source |
+|---|---|---|---|
+| Electricity export | `P_export` MWh | **TOU** sell (§3.4 spread model) | exists (D13 `r_export`) |
+| Electricity import (cost) | `P_import` MWh | **TOU** buy (§3.7) | exists (D13 `c_import`) |
+| Demand charge (cost) | monthly peak MW | ¥/MW·month (§3.7, D10/D21) | exists (D13 `c_demand_charge`) |
+| Hydrogen sales | `H2_kg` (§8 electrolyzer) | **flat contract OR indexed** ¥/kg | §8.2 `R_H2` |
+| Aluminum / end-product sales | product tonnes (§8 load→offtake) | **spot OR contract** ¥/t | §8 (offtake archetype) |
 
-Project finance composes **on top of** this identity (it does **not** alter it). Each D13 component maps to a cash-flow treatment, and three of them require an explicit honesty ruling to avoid double-counting:
+**The price model is part of the stream schema**, and each stream's price may be: `flat` (constant ¥/unit), `tou` (the §3.7 schedule), `indexed` (a reference series × multiplier), or `spot` (an exogenous hourly series). This generality is required because electricity is TOU (already modeled), H2 is typically a flat or indexed contract, and aluminum is spot/contract — the schema must allow **all** without privileging electricity. New streams (from §8 compositions) register the same way: declare `q` source + `p` model. Each stream carries an `escalation_pct_per_year` (§5.6).
 
-| D13 term | Cash treatment in the project model | Rationale |
+### 5.4 The accounting bridge — D13 → cash flow (memo-vs-cash ruling)
+
+Finance composes **on top of** the LOCKED D13 identity (it does not alter it). Each D13 term maps to a cash treatment; three require an explicit honesty ruling to avoid double-counting:
+
+| D13 term | Cash treatment | Rationale |
 |---|---|---|
-| `c_energy` (= c_import − r_export) | **Cash** — net grid energy revenue/cost | actual money exchanged with the grid |
-| `c_demand_charge` | **Cash** — demand charges paid (¥32 000/MW·month, D10/D21) | actual money |
-| `c_degradation` (¥10/MWh throughput) | **MEMO only — excluded from cash flow** | this is a *dispatch-shaping operating proxy* for cell wear; the real cash consequence of wear is the **replacement CAPEX event** (§5.3). Counting both double-charges the same degradation. The throughput proxy stays a reported memo line so a policy that over-cycles is still visible. |
-| `c_curtail` (¥800/MWh penalty) | **MEMO only — excluded from cash flow** | curtailment is *foregone export revenue*, already reflected as a lower `r_export` inside `c_energy`. The 800 ¥/MWh is a reward-shaping penalty rate, not a cash outflow. Adding it would double-count the lost MWh. |
-| `c_voll` (¥20 000/MWh penalty) | **MEMO / optional cash** — default excluded, reportable as reliability shadow cost | VOLL is a shadow reliability price, not a contractual payment — unless the site carries PPA liquidated-damages clauses (a toggle). Default base case excludes it from cash flow and reports it as a risk memo. |
+| `c_energy` (= c_import − r_export) | **Cash** — net grid energy, hourly-integrated (P1) | actual money with the grid |
+| `c_demand_charge` | **Cash** — demand charges paid | actual money |
+| `c_degradation` (¥10/MWh throughput) | **MEMO only — excluded from cash flow** | a dispatch-shaping proxy for cell wear; the real cash hit is the **replacement CAPEX** (§5.5). Counting both double-charges wear. Kept as a reported memo so over-cycling stays visible. |
+| `c_curtail` (¥800/MWh penalty) | **MEMO only — excluded** | curtailment is *foregone export revenue*, already in a lower `r_export`; 800 ¥/MWh is a shaping penalty, not a cash outflow. |
+| `c_voll` (¥20 000/MWh penalty) | **MEMO / optional cash** (default excluded) | a reliability shadow price; cash only under explicit PPA liquidated-damages (toggle). |
 
-**Net operating cash flow (EBITDA-like), year y** — built from the cash terms plus O&M from B:
+**Annual operating cash flow (EBITDA-like), built hourly then summed (P1):**
 
 ```
-EBITDA(y) = −[ c_energy(y) + c_demand_charge(y) ]          # = r_export − c_import − demand charges
-            − FixedOM(y) − VarOM(y)
-            + OtherRevenue(y)                              # feed-in/PPA/ancillary, v1 default 0
+EBITDA(y) =  Σ_streams Σ_t (revenue_{s,t} − cost_{s,t})        # electricity, H2, aluminum, … (§5.3)
+           − FixedOM(y) − VarOM(y)                            # from B econ facet (§5.7)
 ```
 
-where `FixedOM`, `VarOM` come from B's econ facet (§5.2) and `c_energy`, `c_demand_charge` come from C's multi-year roll of the D13 telemetry (§5.4). **This ruling (memo-vs-cash on c_degradation / c_curtail / c_voll) is the single most important accounting decision in the section and is flagged for reviewer confirmation (§5.10 Q1).**
+### 5.5 CAPEX, construction, replacement, terminal value
 
-### 5.2 CAPEX & the device-model econ facet — *what B must carry*
-
-CAPEX is built **per device-model instance**, summed over the site composition, keyed by the **same device-model ID** the 3D registry and B's physics facet use (§1 keystone). Per device type:
+CAPEX is per device-model instance, summed over the site, keyed by the **same device-model ID** B's physics facet uses (§1 keystone):
 
 ```
 generators (wind, solar, gas):  CAPEX_i = capacity_kw_i · capex_per_kw_yuan_i
-storage (battery):              CAPEX_i = energy_kwh_i · capex_energy_per_kwh_yuan_i      (cells/racks)
-                                        + power_kw_i  · capex_power_per_kw_yuan_i        (PCS/inverter)
-grid / fixed infrastructure:    CAPEX_i = capex_lump_sum_yuan_i                          (substation, interconnection)
-
-Hard_CAPEX     = Σ_i CAPEX_i
-Total_overnight_CAPEX = Hard_CAPEX · (1 + soft_cost_fraction)                            # dev, owner's cost, contingency
+storage (battery):              CAPEX_i = energy_kwh_i · capex_energy_per_kwh_yuan_i
+                                        + power_kw_i  · capex_power_per_kw_yuan_i
+grid / fixed infrastructure:    CAPEX_i = capex_lump_sum_yuan_i
+Total_overnight_CAPEX = (Σ_i CAPEX_i) · (1 + soft_cost_fraction)     # dev, owner's cost, contingency
 ```
 
-**Econ facet B must carry per device-model (the schema obligation D places on B):**
+**Construction/commissioning:** default **overnight at t=0**; optional phasing spreads `Total_overnight_CAPEX` over `T_c = max_i(construction_months)` (linear/S-curve), with **IDC capitalized only if debt is modeled** (§5.8). COD = year 0; operations years 1…N. **Replacement (degradation-driven):** when a device reaches calendar life (`lifetime_years`) or usage life (`cycle_life_full_equiv` / `eol_soh_threshold`), C resets its params and D books `replacement_cost_fraction · CAPEX_i` that year — typically **one battery replacement in a 20-yr horizon, and policy-dependent** (harder cycling → earlier replacement → worse NPV; this is the channel that monetizes §5.4's memo `c_degradation`). **Terminal value (year N):** `Σ_i residual_value_fraction_i · CAPEX_i − Σ_i decommissioning_cost_yuan_i`; optional Gordon continuing-value for assets running beyond N.
+
+### 5.6 Multi-year mechanics & conventions — *what C must apply*
+
+C produces, per policy and year y∈{1…N}, a degraded+escalated 8760-h dispatched year (the P2 atom) yielding hourly quantities, realized prices, throughput, and replacement triggers. D requires C to apply (all in one basis):
+
+| Convention | Param | Default | Note |
+|---|---|---|---|
+| Tariff escalation | `tariff_escalation_pct_per_year` | configurable (~2%/yr nominal) | applies to buy, sell/spread, **and** demand_rate |
+| Per-stream price escalation | `escalation_pct_per_year` (per stream) | configurable | H2/aluminum contracts escalate independently |
+| O&M inflation | `opex_inflation_pct_per_year` | configurable (~2.5%/yr) | FixedOM, VarOM |
+| Capacity fade | `degradation_pct_per_year` (from B) | per device | E_gen(y) compounding; **D references B, doesn't redefine** |
+| Basis | nominal vs real | **nominal** | escalations + discount rate in the **same** basis (the classic error); real toggle deflates by one CPI |
+| Discount timing | end- vs mid-year | **end-year** | mid-year = ×(1+r)^0.5, optional |
+| Year index | — | **CF(0)=−CAPEX, ops y=1…N** | replacement & residual land on their year |
+
+The within-year env is unchanged (§3); C wraps it with per-year closure constants — consistent with §7 purity (year boundary is a host point, like D21's calendar boundary).
+
+### 5.7 Econ facet — *what B must carry* (D defines the fields; B's schema carries them on the device ID)
 
 | Field | Unit | Used for |
 |---|---|---|
 | `capex_per_kw_yuan` | ¥/kW | overnight CAPEX (wind, PV, gas) |
-| `capex_energy_per_kwh_yuan` | ¥/kWh | storage energy CAPEX (battery) |
-| `capex_power_per_kw_yuan` | ¥/kW | storage power/PCS CAPEX (battery) |
+| `capex_energy_per_kwh_yuan` / `capex_power_per_kw_yuan` | ¥/kWh / ¥/kW | storage two-part CAPEX (battery) |
 | `capex_lump_sum_yuan` | ¥ | fixed infrastructure (grid/PCC) |
 | `opex_fixed_per_kw_year_yuan` | ¥/kW·yr | annual fixed O&M |
-| `opex_var_per_mwh_yuan` | ¥/MWh | variable O&M on throughput/generation (distinct from D13 `c_degradation`) |
-| `lifetime_years` | yr | calendar end-of-life → replacement timing & depreciation |
-| `cycle_life_full_equiv` *(storage)* | cycles | usage end-of-life: replacement when cumulative equivalent full cycles ≥ this |
-| `eol_soh_threshold` *(storage)* | fraction | alt. EOL trigger: replace when state-of-health < threshold (e.g. 0.70) |
-| `replacement_cost_fraction` | fraction | replacement CAPEX as fraction of original (learning-curve decline; <1 typical) |
-| `residual_value_fraction` | fraction | salvage at horizon end as fraction of (depreciated) CAPEX |
-| `degradation_pct_per_year` | %/yr | annual capacity fade — **shared with B physics; D references, does not redefine** |
-| `construction_months` | months | construction-period CAPEX phasing / IDC |
-| `decommissioning_cost_yuan` | ¥ | terminal cost (can be ~0 or net-negative w/ salvage) |
-| *(optional, tax layer)* `depreciation_years`, `depreciation_method` | yr / enum | tax depreciation schedule |
+| `opex_var_per_mwh_yuan` | ¥/MWh | variable O&M on throughput (≠ D13 `c_degradation`) |
+| `lifetime_years` | yr | calendar EOL → replacement + depreciation |
+| `cycle_life_full_equiv` / `eol_soh_threshold` *(storage)* | cycles / fraction | usage EOL trigger |
+| `replacement_cost_fraction` | fraction | replacement CAPEX vs original (learning-curve <1) |
+| `residual_value_fraction` | fraction | salvage at horizon end |
+| `degradation_pct_per_year` | %/yr | capacity fade — **shared with B physics** |
+| `construction_months` | months | CAPEX phasing / IDC |
+| `decommissioning_cost_yuan` | ¥ | terminal cost |
+| *(tax layer)* `depreciation_years`, `depreciation_method` | yr / enum | tax depreciation |
 
-**Recommendation to B:** co-locate this econ facet with the physics facet in the same per-ID device-model schema (the plan-lead's sibling-`config/device_models.yaml` lean, §2) under an `econ:` block — one ID, three facets (visual/physics/econ). D specifies the *fields*; B owns the *file*. Default *values* are placeholders/benchmarks flagged as assumptions (§5.10 Q6).
+The env build-step **ignores** the econ block (it never enters the jitted `step`); these fields exist solely for D's offline calc. Recommended home: an `econ:` block beside `physics:` on the same device-model ID in B's `config/device_models.yaml` — one ID, three facets.
 
-### 5.3 Construction timing, replacement, terminal value
+### 5.8 Metrics — exact formulas (¥; discounting on annual CF(y), y=0…N)
 
-**Construction / commissioning.** CAPEX is spent before COD (commercial operation date), not all at t=0. v1 convention:
-- Default: **overnight CAPEX at t=0** (single point), with an **optional construction-period phasing** toggle that spreads `Total_overnight_CAPEX` across `T_c = max_i(construction_months)` using a linear or S-curve drawdown.
-- **IDC (interest during construction)** is capitalized into CAPEX **only if debt is modeled** (§5.5); default all-equity ⇒ no IDC. Stated assumption.
-- COD = **year 0**; operating cash flows accrue years 1…N. (Year-indexing convention fixed in §5.4.)
-
-**Replacement schedule (degradation-driven — the battery channel).** Within an N-year horizon a device whose calendar life (`lifetime_years`) or usage life (`cycle_life_full_equiv` / `eol_soh_threshold`) is reached triggers a **replacement event**: C resets that device's degraded params; D books a **replacement CAPEX** = `replacement_cost_fraction · original_CAPEX_i` in that year. For a Gansu LFP battery (~10–12 yr / cycle-limited) this is typically **one replacement in a 20-yr horizon** — and crucially **policy-dependent**: a policy that cycles harder reaches `cycle_life` sooner ⇒ earlier/額外 replacement ⇒ worse NPV. This is the channel through which dispatch aggression is correctly monetized (and why §5.1 keeps `c_degradation` as memo-only — the cash hit is *here*).
-
-**Terminal / residual value (year N).**
-```
-Terminal_value = Σ_i residual_value_fraction_i · CAPEX_i  −  Σ_i decommissioning_cost_yuan_i
-```
-Default = salvage-net-of-decommissioning. Optional **continuing-value** (Gordon growth) for assets operating beyond N: `TV = EBITDA(N+1)/(r − g)`. Battery residual ≈ scrap; renewables retain land/repower option (stated as a v2 real-option, not valued in v1).
-
-### 5.4 Multi-year mechanics & conventions — *what C must apply*
-
-C produces, for each policy π and year y ∈ {1…N}, a degraded+escalated 8760-h dispatch roll yielding `c_energy(y)`, `c_demand_charge(y)`, throughput/generation MWh, and any replacement triggers. D requires C to apply these **conventions** (all must share one basis — see the nominal rule):
-
-| Convention | Param (C) | Default | Note |
-|---|---|---|---|
-| Tariff escalation | `tariff_escalation_pct_per_year` | configurable (e.g. 2.0%/yr nominal) | applied to buy price, sell price/spread, **and** demand_rate |
-| O&M inflation | `opex_inflation_pct_per_year` | configurable (e.g. 2.5%/yr nominal) | applied to FixedOM, VarOM |
-| PV/wind capacity fade | `degradation_pct_per_year` (from B) | per device | E_gen(y) = E_gen(1)·Π(1−d) |
-| Battery SOH / cycle fade | SOH curve / `cycle_life` (from B) | per device | drives replacement (§5.3), not a price |
-| **Basis** | nominal vs real | **nominal** | *escalations and discount rate MUST be in the same basis* — the classic error. Real-terms toggle deflates by one CPI. |
-| Discounting timing | end-year vs mid-year | **end-year** | mid-year = ×(1+r)^0.5 adjustment, optional toggle |
-| Year indexing | COD spend / ops start | **CF(0) = −CAPEX, ops y=1…N** | fixed convention; replacement & residual land on their year |
-
-**The within-year env is unchanged (§3); C wraps it** with per-year closure constants (degraded capacity, escalated prices) — consistent with §7 purity (year boundary is a host point, like the D21 calendar boundary). D consumes C's per-year aggregates only; no per-step coupling.
-
-### 5.5 Metrics — exact formulas (¥, all discounting on annual CF(y), y = 0…N)
-
-Let `CF(0) = −Total_overnight_CAPEX` (or the phased construction draws), `CF(y) = EBITDA(y) − Replacement(y) − Tax(y)` for y = 1…N−1, and `CF(N) = EBITDA(N) − Tax(N) + Terminal_value`.
-
-**NPV** (¥), at nominal discount rate r (WACC):
-```
-NPV(r) = Σ_{y=0}^{N} CF(y) / (1+r)^y
-```
-
-**IRR** — the rate r* with NPV(r*) = 0:
-```
-Σ_{y=0}^{N} CF(y) / (1+IRR)^y = 0          # solved numerically (bisection on the sign-bracketed NPV curve)
-```
-*Caveat:* replacement years can flip CF sign more than once ⇒ multiple-IRR risk. Report **MIRR** as the robust companion.
-
-**MIRR** (finance rate r_f, reinvestment rate r_r; default both = r):
-```
-MIRR = [ FV_pos / −PV_neg ]^(1/N) − 1
-FV_pos = Σ_{CF(y)>0} CF(y)·(1+r_r)^(N−y) ;  PV_neg = Σ_{CF(y)<0} CF(y)/(1+r_f)^y
-```
-
-**LCOE** (¥/MWh) — levelized lifetime cost per unit net energy delivered:
-```
-LCOE = [ Σ_{y=0}^{N} (CAPEX(y) + FixedOM(y) + VarOM(y) + Replacement(y) − Residual(y)) / (1+r)^y ]
-       ÷ [ Σ_{y=1}^{N} E_net(y) / (1+r)^y ]
-```
-`E_net(y)` = net energy delivered (MWh) = generation − curtailment − auxiliary (definition fixed at contract stage; export+load-served basis recommended).
-
-**LCOS** (¥/MWh discharged) — the storage analog, **policy-sensitive** (both numerator charging cost and denominator MWh-discharged depend on dispatch):
-```
-LCOS = [ PV( battery CAPEX + battery O&M + replacement − residual + charging_energy_cost ) ]
-       ÷ [ PV( MWh_discharged ) ]
-```
-
-**Payback** (yr) — simple and discounted; fractional year by linear interpolation:
-```
-Simple_payback     = min{ y : Σ_{k=0}^{y} CF(k) ≥ 0 }
-Discounted_payback = min{ y : Σ_{k=0}^{y} CF(k)/(1+r)^k ≥ 0 }
-```
-
-**DSCR** (only if debt modeled, §5.6) — report **min** and **average** over the debt tenor:
-```
-DSCR(y) = CFADS(y) / DebtService(y)
-CFADS(y) ≈ EBITDA(y) − Tax(y)                     # v1 ignores ΔWC
-DebtService(y) = Principal(y) + Interest(y)
-```
-
-### 5.6 Tax, depreciation & debt — layered, default-off for a clean base case
-
-To keep v1 honest and the base IRR/NPV clean, finance layers are **toggles**, default off:
-
-- **Base case = pre-tax, all-equity (unlevered).** Project IRR on total CAPEX. Cleanest comparison across policies.
-- **Tax layer (optional):** corporate income tax `tax_rate` (China standard **25%**; renewable preferential **15%** as a documented alternative). Straight-line depreciation over `depreciation_years` (B); `Tax(y) = max(0, tax_rate·(EBITDA(y) − Depreciation(y) − Interest(y)))` with simple cumulative loss offset. **Out of scope v1:** VAT (net-of-VAT prices assumed), deferred tax, incentive-timing, loss-carryforward limits — stated.
-- **Debt layer (optional):** simple amortizing loan at `gearing` (e.g. 60% D / 40% E) and `interest_rate`; produces **equity IRR** (post-debt-service) and **DSCR**. **Out of scope v1:** debt sculpting, DSRA, refinancing, multi-tranche — stated. Debt interest doubles as an **interest-rate sensitivity** axis (the USER's explicit ask).
-
-Both layers reported as **deltas to the base case**, never silently folded in.
-
-### 5.7 Sensitivity analysis (the USER's explicit display requirement)
-
-1. **Discount-rate sweep (primary requested display).** NPV(r) over r ∈ [r_min, r_max] (e.g. 3%–12%) per policy → an **NPV-vs-discount-rate curve**; the IRR is its x-intercept. Overlaid across policies with the DP-oracle as the ceiling.
-2. **Interest-rate sweep (if debt on).** Equity IRR and min-DSCR vs debt `interest_rate`.
-3. **Tornado diagram.** One-at-a-time ± swings ranked by |ΔNPV|, on the high-leverage drivers (the candidates named by team-lead/rl-architect, plus discount rate and weather):
-   - CAPEX (±20%) · tariff/sell-price escalation (±2 pp) · battery cycle-life/degradation → replacement timing (±) · discount rate (±2 pp) · O&M (±20%) · capacity factor / **weather year** (±) · replacement cost (±).
-   Each bar = NPV(low) vs NPV(high); width = sensitivity.
-4. **2-D heatmap (optional).** NPV over (discount rate × CAPEX) or (discount rate × tariff escalation).
-5. **Scenario bundles (optional).** Low / Base / High input sets.
-
-### 5.8 Per-policy economic comparison semantics
-
-Every §11 ladder policy (no-battery, rule-based TOU, greedy, MPC, DP-oracle, SA/ACO, RL) operates the **same physical plant over the same realized weather/price year** (§11's apples-to-apples basis) and differs only in **dispatch** (and wear→replacement). For each policy π:
+`CF(0) = −Total_overnight_CAPEX` (or phased draws); `CF(y) = EBITDA(y) − Replacement(y) − Tax(y)`, `1≤y<N`; `CF(N)` adds Terminal value.
 
 ```
-C(π) → per-year operating trajectory → D's model → { NPV(r_base), IRR, MIRR, LCOE, LCOS,
-                                                     payback, [equity IRR, min DSCR],
-                                                     cash-flow curve, NPV-vs-r curve }
-       reported BOTH as View (I) absolute and View (II) incremental-vs-no-battery (§5.0).
+NPV(r)  = Σ_{y=0}^{N} CF(y)/(1+r)^y
+IRR     : Σ_{y=0}^{N} CF(y)/(1+IRR)^y = 0        # numeric; report MIRR alongside (replacement years can flip CF sign → multi-IRR)
+MIRR    = [ FV_pos/−PV_neg ]^(1/N) − 1            # FV_pos at reinvest r_r; PV_neg at finance r_f (default both = r)
+LCOE    = PV(CAPEX+FixedOM+VarOM+Replacement−Residual) / PV(E_net delivered MWh)        # ¥/MWh
+LCOS    = PV(battery CAPEX+O&M+replacement−residual+charging cost) / PV(MWh discharged)  # ¥/MWh; policy-sensitive
+Payback : min{y : Σ_{0}^{y} CF ≥ 0} (simple) and on discounted CF; fractional by interpolation
+DSCR(y) = CFADS(y)/DebtService(y),  CFADS ≈ EBITDA − Tax       # if debt on (§5.8 toggle); report min & average
 ```
 
-- **Headline discriminator:** because CAPEX is identical across policies, the cleanest comparison is **NPV at the base discount rate** and the **incremental storage NPV vs no-battery** (View II). 
-- **Economic optimality gap** — the money analog of §11.4's optimality gap: `(NPV_oracle − NPV_π) / |NPV_oracle|`, with the **DP-oracle as the economic upper bound** ("money left on the table" in ¥). The §11 information-set ladder thus re-expresses directly in ¥-NPV terms — RL must beat MPC's NPV and approach the oracle's.
+`E_net` and the LCOS discharged-MWh denominator are defined from the hourly trajectory (P1/P2), not annual summaries.
 
-### 5.9 Telemetry / wire basis — *separate offline rollup (confirms rl-architect's lean)*
+### 5.8b Tax & debt — layered, default-off (clean base case)
 
-**Finance is a separate offline rollup; it does NOT touch the per-step `env_step` wire — no new per-step telemetry fields.** It consumes (a) the existing **LOCKED `eval_compare` per-policy real-money operating costs** (Kind 3), (b) C's multi-year per-year aggregates, and (c) B's econ facet, and emits a **new aggregate `finance_compare` artifact** (one record per run, policies × metrics × sensitivity curves).
+Base case = **pre-tax, all-equity (unlevered project IRR)**. **Tax toggle:** corporate `tax_rate` (China 25%; renewable preferential 15% as documented alt), straight-line depreciation (B), simple cumulative loss offset; out of scope v1: VAT (net-of-VAT prices assumed), deferred tax, incentive timing. **Debt toggle:** simple amortizing loan at `gearing`/`interest_rate` → **equity IRR** + DSCR; out of scope v1: sculpting/DSRA/refinancing/tranches. Both reported as **deltas** to the base case; debt `interest_rate` doubles as the interest-rate sensitivity axis.
 
-Two delivery options for that artifact (decision → §5.10 Q1):
-- **(b·preferred for v1)** a **separate serving/finance REST artifact** outside the LOCKED telemetry schema — keeps the LOCKED wire untouched; finance is offline/aggregate, not streamed per-step. 
-- **(a·if E needs it streamed)** a **new telemetry Kind** (`finance_compare`) = additive **minor** version bump, requiring both-reviewer re-review per the schema's versioning rule.
+### 5.9 Ensemble / distributional from day one — *the §12 coupling*
 
-**Confirmed: separate rollup on top of D13, not a per-step wire change.** This preserves every LOCKED contract.
+**The finance interface takes an ENSEMBLE of dispatched-year results, and its outputs are DISTRIBUTIONS — even though v1 fills the ensemble with N=1.** This is mandatory so the §12 / PR #77 block-bootstrap generator (unlimited statistically-faithful weather years) plugs in as Monte-Carlo with **no breaking change**.
 
-### 5.10 Honest limitations (and the natural v2)
+```
+input  :  ensemble = { multi_year_run_m : m = 1…M }       # M weather draws from §12 (v1: M=1)
+          multi_year_run_m = (dispatched_year_{m,y} : y = 1…N)   # each a P2 atom (8760-h hourly trajectory)
+per draw:  cash_flow_m → { IRR_m, NPV_m(r), LCOE_m, LCOS_m, payback_m }
+output :  exceedance distribution over m → P50 / P90 / P99 of each metric
+          (e.g. "P90 IRR" = the 10%-exceedance IRR — the bankability/debt-sizing number real project finance uses)
+```
 
-1. **Single-scenario weather (the headline limitation).** The entire cash flow rides on **one realized weather/price year** (per §11, shared across policies), degraded/escalated across N years. Real IRR has a *distribution* from interannual variability. **Natural v2 — explicitly flagged: a Monte-Carlo IRR/NPV distribution** over the §12 / PR #77 **unlimited block-bootstrap synthetic years**, reporting a P10/P50/P90 fan instead of a point estimate. PR #77's generator is the ready-made MC engine; v1 is deterministic point estimates, and the *relative* policy ranking (same exogenous year) is robust even though absolute IRRs are not.
-2. **Price model = the env's TOU+spread**, not a forward/PPA/market curve — no merchant price-risk modeling, no negative-price or curtailment-market dynamics beyond the §3 penalty. Revenue risk understated.
-3. **Deterministic availability** — no forced-outage/failure stochastics; availability ≈ 100% (a flat `availability_factor` knob is the only hook).
-4. **Simplified financing** — debt is a single amortizing loan toggle; no sculpting/DSRA/refinancing/tranches.
+- **Bankability framing:** real renewable project finance sizes debt and equity off **exceedance probabilities** (P50 base case, P90/P99 downside). Reporting P50/P90/P99 IRR/NPV/LCOE is the industry-standard form, and it is the natural shape of an ensemble — so the schema is exceedance-shaped from the start.
+- **v1 degenerate case:** with M=1 (the §12 generator not yet implemented), every percentile collapses to the single realized year; the UI shows a point estimate that *becomes a fan* when M grows — same schema, no migration.
+- **The relative policy ranking is robust even at M=1** (all policies share the same draw); only the absolute distribution width needs M>1.
+
+### 5.10 Sensitivity — a surface, not a line
+
+The USER's rate-sensitivity requirement **composes with weather uncertainty** into a 2-D surface:
+
+1. **Discount-rate sweep (primary 1-D display):** NPV(r) over r∈[3%,12%] per policy at the **P50** weather percentile; IRR is the x-intercept; overlaid across policies with the DP-oracle as the ceiling.
+2. **Sensitivity surface (the composition):** NPV (or IRR) over **(discount rate × weather exceedance percentile)** — the rate axis the USER asked for, crossed with the P50/P90/P99 axis from §5.9. v1 (M=1) shows the rate axis only; the percentile axis populates when Monte-Carlo lands.
+3. **Tornado diagram:** one-at-a-time ± swings ranked by |ΔNPV| — CAPEX (±20%), tariff/price escalation (±2pp), battery cycle-life→replacement timing (±), discount rate (±2pp), O&M (±20%), **weather percentile (P50↔P90)**, replacement cost (±).
+4. **Interest-rate sweep (if debt on):** equity IRR & min-DSCR vs `interest_rate`.
+
+### 5.11 Per-policy comparison + delivery — *off-wire REST resource (decided)*
+
+**Finance is an off-wire batch artifact**, not a telemetry change (integrated decision, frontend-reviewer consult): a new REST resource
+
+```
+GET /api/finance/compare?policies=…&scenario=…
+→ { per policy π : { View I & II : { P50/P90/P99 of IRR, NPV(r_base), LCOE, LCOS, payback, [equity IRR, min DSCR] },
+                     cash_flow_series, npv_vs_r_curve, sensitivity_surface },
+    provenance : { checkpoint_id, weather_mode, M, discount_rate, escalation_assumptions, scenario_id, code_version } }
+joined to operating runs by (policy_id, checkpoint_id, scenario_id)
+```
+
+- It composes **on top of** the LOCKED D13 real-money identity (operating cost → annual OPEX line, no double-count) and does **not** touch the LOCKED `eval_compare` (Kind 3) per-step wire — finance is a different shape/cadence (aggregate, batch), so a REST resource avoids a telemetry version bump.
+- **Provenance travels with every result** (checkpoint-id, weather-mode/M, discount & escalation assumptions, scenario-id) so the E UI can **refuse to compare results computed under mismatched assumptions** (e.g. different discount rate or weather mode) — a correctness guard, not cosmetics.
+- **Comparison semantics:** all §11 policies share CAPEX and the same scenario, differing only in dispatch (P2). Headline discriminator = **NPV at r_base** and **incremental-battery NPV vs no-battery** (View II). **Economic optimality gap** = `(NPV_oracle − NPV_π)/|NPV_oracle|` with the **DP-oracle as the economic ceiling** — the ¥ analog of §11.4's optimality gap, so the §11 information-set ladder re-expresses directly in money: RL must beat MPC's NPV and approach the oracle's.
+
+### 5.12 Limitations & assumptions (honest)
+
+1. **Single weather draw in v1 (M=1)** — absolute IRR/NPV are point estimates; the *distribution* arrives only when the §12 generator feeds M>1. **Mitigated by design:** the schema is already ensemble/exceedance-shaped (§5.9), so this is a *data* gap, not an *architecture* one. Relative policy ranking is robust at M=1.
+2. **Price model = TOU+spread (+ flat/indexed/spot contracts)** — no forward-market/PPA-structure risk modeling, no negative-price dynamics beyond the §3 penalty.
+3. **Deterministic availability** — no forced-outage stochastics; a flat `availability_factor` knob is the only hook.
+4. **Simplified financing** — single amortizing loan toggle; no sculpting/DSRA/refinancing/tranches.
 5. **Simplified tax** — straight-line depreciation, single rate, no VAT/deferred tax/incentive timing.
-6. **Overnight + simple-phasing CAPEX** — no detailed S-curve or cost-overrun distribution (captured only via the tornado CAPEX swing).
-7. **Replacement = discrete EOL param-reset** — real continuous battery augmentation is modeled as a step.
-8. **Real-option value ignored** — operational flexibility, repowering, capacity expansion unvalued (v2).
+6. **Overnight + simple-phasing CAPEX** — cost-overrun risk captured only via the tornado CAPEX swing.
+7. **Replacement = discrete EOL param-reset** — continuous battery augmentation modeled as a step.
+8. **Real-option value ignored** — flexibility/repowering/expansion unvalued (v2).
 
-### 5.11 Decisions requested at the Fable gate (→ USER summary)
+### 5.13 Decisions requested at the Fable gate (→ USER summary)
 
-1. **Accounting rulings (§5.1, §5.9):** confirm `c_degradation`/`c_curtail`/`c_voll` are **memo-only** (cash impact of wear flows through replacement CAPEX), and finance is a **separate offline rollup** (preferred: a finance REST artifact, not a per-step wire change).
-2. **Base case (§5.6):** pre-tax, all-equity unlevered as the base, with tax & debt as reported toggles — or does the USER want levered-after-tax as the headline?
-3. **Discount rate (§5.5/5.7):** base WACC for a Gansu utility-scale renewable project (China utility-scale ≈ nominal 7–9% / real 5–7%) — confirm a default + the sweep range, or USER-specify.
-4. **Horizon (§5.4):** 20-yr base + 10-yr variant (battery replacement ~yr 10–12) — confirm both.
-5. **Dual view (§5.0):** confirm reporting **both** absolute project economics and incremental-battery economics, with incremental-vs-no-battery as the per-policy headline.
-6. **Econ defaults (§5.2):** source Chinese 2024/25 benchmark CAPEX/OPEX (cited as assumptions) for the placeholder values, or leave fully configurable with no shipped defaults?
-7. **Currency/basis:** all **¥ (RMB), nominal** — confirm.
+1. **Accounting rulings (§5.4):** confirm `c_degradation`/`c_curtail`/`c_voll` are **memo-only** (wear's cash impact flows through replacement CAPEX).
+2. **Base case (§5.8b):** pre-tax, all-equity unlevered, with tax & debt as reported toggles — or levered-after-tax as the headline?
+3. **Discount rate (§5.8/5.10):** base WACC for a Gansu utility-scale renewable (China ≈ nominal 7–9% / real 5–7%) — confirm a default + sweep range, or USER-specify.
+4. **Horizon (§5.6):** 20-yr base + 10-yr variant (battery replacement ~yr 10–12) — confirm both.
+5. **Dual view (§5.2):** confirm reporting **both** absolute and incremental-battery economics, with incremental-vs-no-battery as the per-policy headline.
+6. **Revenue streams (§5.3):** confirm the multi-product set for the USER's site (electricity always; H2 and aluminum if the §8 composition includes electrolyzer/offtake) and each stream's price-model type (flat/tou/indexed/spot).
+7. **Econ defaults (§5.7):** ship Chinese 2024/25 benchmark CAPEX/OPEX (cited as assumptions) as placeholders, or leave fully configurable with no shipped defaults?
+8. **Ensemble target (§5.9):** confirm exceedance reporting at **P50/P90/P99**, and that v1 ships M=1 with the ensemble schema in place (Monte-Carlo over §12 as the immediate follow-on).
+9. **Currency/basis:** all **¥ (RMB), nominal** — confirm.
