@@ -306,3 +306,7 @@ def validate(message: dict | str | bytes) -> list[str]:
     # train_metrics: no additional checks
 
     return errs
+
+
+# Alias: tests import validate_message (contract §6 + telemetry skill name)
+validate_message = validate
