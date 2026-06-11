@@ -87,7 +87,7 @@ def actor_forward(
     (b) **Parity / serving path** — ``params`` is a ``CheckpointData``;
         ``norm_obs`` is a RAW (107,) observation (normalisation happens inside).
         Returns: squashed (6,) action — ``tanh(mean[0])`` for a_bat, ``sigmoid(mean[1:6])``
-        for fractions, with ``mean`` clipped to ±20 to match ``actor_forward_numpy``.
+        for fractions, with ``mean`` clipped to ±8 to match ``actor_forward_numpy``.
 
     Architecture: Input(107) → Dense(256, ReLU) → Dense(256, ReLU) → Dense(12)
     """
