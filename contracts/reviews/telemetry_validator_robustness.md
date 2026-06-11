@@ -52,3 +52,40 @@ wiring + telemetryStore.frameErrors API + the FrameError UI). Currently 54/74 gr
 implementation — expected gate state.
 
 **Verdict: APPROVE** (stage-1 gate). Should ship before the task #23 real-checkpoint cutover.
+
+---
+
+## Stage-2 implementation audit — PR #53 @ `ab49fc4` (wsClient-gate version) — **REQUEST_CHANGES**
+
+- **Reviewer:** frontend-reviewer · **Date:** 2026-06-11
+
+### Correct (no findings)
+- **wsClient §10 gate.** `validate()` called in `handleMessage` for data frames only
+  (`!isControlFrame`); control frames (status/error) bypass. try/catch → `validate_threw` drop
+  (no propagation); `ok:false` → drop + `console.warn(kind/seq/errors)` + `pushFrameError`;
+  `ok:true` + warnings → dispatch AND record. Existing envelope checks (JSON / kind / payload /
+  version) preserved. **The PR #46 crash path is closed** — missing `payload.battery` →
+  `ok:false` → dropped → never dispatched. My wrong-type reviewer test passes against this.
+- **telemetryStore §13.** `FrameError {ts_utc,kind,seq,errors[]}`; `frameErrors:[]` initial;
+  `pushFrameError` prepends + caps at 10 (`next.length = FRAME_ERRORS_CAP`); `clearHistory`
+  resets. Correct.
+- 75/75 telemetry_validator tests; 704/704 overall (engineer-reported).
+
+### MUST-FIX
+1. **`FrameErrorBanner` is built but NOT mounted → the §13.3 "MUST render" surfacing is dead.**
+   `git grep FrameErrorBanner` finds no usage outside the component file; LiveDashboard / SiteView /
+   AlertList / App are untouched. Dropped frames are recorded in `telemetryStore.frameErrors` but
+   never displayed → the operator never sees that frames were dropped (A2 defeated). Contract §13.3
+   requires `frameErrors` to be **rendered** (AlertList or a FrameErrorBanner adjacent to it).
+   **Fix:** mount `<FrameErrorBanner />` in the dashboard (SiteView/LiveDashboard, adjacent to
+   AlertList) + add a render-integration test (non-empty frameErrors → `frame-error-0` visible with
+   kind/seq/error; empty → no nodes). There is currently **no banner render-test anywhere**.
+
+### Observation (not my area — flag to team-lead/backend-reviewer)
+- The diff vs `main` includes unrelated training files (`src/energy_go/training/*`,
+  `training_pipeline.*`, `pyproject.toml`, `ci.yml`). Likely branch-base divergence rather than
+  scope creep, but worth a glance to ensure this PR isn't carrying unintended changes.
+
+**Verdict: REQUEST_CHANGES.** The drop/safety is correct and well-tested; mount the banner +
+add the render-integration test so the dropped-frame surfacing actually reaches the operator,
+then re-request.
