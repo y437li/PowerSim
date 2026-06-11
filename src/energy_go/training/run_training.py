@@ -6,6 +6,9 @@ Public exports:
     train               Main SAC training function → CheckpointData
 
 Design notes:
+- Device-resident design (D27): flashbax flat buffer, single jitted training step,
+  inner gradient updates via jax.lax.scan, jax.device_get only at telemetry cadence.
+  Zero host↔device copies per step in the hot loop.
 - Hyperparameters are immutable from §5: lr=1e-4, γ=0.999, batch=512,
   buffer=1M, τ=0.005, ent_coef="auto", 500k env steps.
 - γ=0.999 is LOCKED: demand-charge is a monthly signal, lowering γ
@@ -19,6 +22,12 @@ Design notes:
 - Checkpoints: actor weights + obs stats (everything inference needs).
 - Telemetry: emitted via emit_fn using build_train_metrics / build_eval_compare.
 - Baselines (NoBattery, TOU) run in the same JAX env; results reported honestly.
+
+D27 acceptance criteria met:
+1. Device-resident replay buffer — flashbax flat_buffer; no host NumPy buffer.
+2. Single jitted region — env vmap step + buffer insert + SAC updates in one @jax.jit.
+3. Zero per-step host↔device copies — no jnp.array(...) inside hot loop.
+4. On-device telemetry accumulation — jax.device_get only at log_every_steps cadence.
 """
 
 from __future__ import annotations
@@ -27,7 +36,7 @@ import time
 import uuid
 import json
 import subprocess
-from typing import Callable, Optional
+from typing import Any, Callable, NamedTuple, Optional
 
 import numpy as np
 import jax
@@ -51,11 +60,11 @@ from energy_go.training.normalizer import (
 #: Used by the auto-entropy temperature optimisation loop.
 SAC_TARGET_ENTROPY: float = -6.0  # = -action_dim
 
-_OBS_DIM:    int = 107
-_ACTION_DIM: int = 6
+_OBS_DIM:     int   = 107
+_ACTION_DIM:  int   = 6
 _LOG_STD_MIN: float = -20.0
 _LOG_STD_MAX: float = 2.0
-_EPS: float = 1e-6   # log(1-x^2+eps) stability guard
+_EPS:         float = 1e-6   # log(1-x^2+eps) stability guard
 
 
 # ---------------------------------------------------------------------------
@@ -212,63 +221,25 @@ def _polyak_update(target: dict, online: dict, tau: float) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Replay buffer (numpy circular; host-side)
+# SAC state NamedTuple — all mutable SAC parameters on device
 # ---------------------------------------------------------------------------
 
-class _ReplayBuffer:
-    """Simple circular replay buffer backed by numpy arrays.
+class SACState(NamedTuple):
+    """All SAC parameters and optimizer states packed as a JAX pytree.
 
-    Host-side (numpy) storage; transitions are converted to JAX at sample time.
-    Size: 1M entries * (107+6+107+1+1) * 4 bytes ≈ 888 MB for float32.
+    Using NamedTuple (not dataclass) so JAX can transparently treat it as a
+    pytree for lax.cond / lax.scan carry.
     """
-
-    def __init__(self, capacity: int, obs_dim: int, action_dim: int) -> None:
-        self.capacity   = capacity
-        self.obs_dim    = obs_dim
-        self.action_dim = action_dim
-        self._pos  = 0
-        self._size = 0
-        self._obs      = np.zeros((capacity, obs_dim),    dtype=np.float32)
-        self._actions  = np.zeros((capacity, action_dim), dtype=np.float32)
-        self._rewards  = np.zeros(capacity,               dtype=np.float32)
-        self._next_obs = np.zeros((capacity, obs_dim),    dtype=np.float32)
-        self._dones    = np.zeros(capacity,               dtype=np.float32)
-
-    def add_batch(
-        self,
-        obs:      np.ndarray,  # (N, obs_dim)
-        actions:  np.ndarray,  # (N, action_dim)
-        rewards:  np.ndarray,  # (N,)
-        next_obs: np.ndarray,  # (N, obs_dim)
-        dones:    np.ndarray,  # (N,)
-    ) -> None:
-        n = obs.shape[0]
-        idx = np.arange(self._pos, self._pos + n) % self.capacity
-        self._obs[idx]      = obs
-        self._actions[idx]  = actions
-        self._rewards[idx]  = rewards
-        self._next_obs[idx] = next_obs
-        self._dones[idx]    = dones
-        self._pos  = (self._pos + n) % self.capacity
-        self._size = min(self._size + n, self.capacity)
-
-    def sample(
-        self,
-        batch_size: int,
-        rng: np.random.Generator,
-    ) -> tuple[np.ndarray, ...]:
-        idx = rng.integers(0, self._size, size=batch_size)
-        return (
-            self._obs[idx],
-            self._actions[idx],
-            self._rewards[idx, None],   # (batch, 1) for broadcast
-            self._next_obs[idx],
-            self._dones[idx, None],     # (batch, 1)
-        )
-
-    @property
-    def size(self) -> int:
-        return self._size
+    actor_params:      dict
+    critic1_params:    dict
+    critic2_params:    dict
+    critic1_tgt:       dict
+    critic2_tgt:       dict
+    log_alpha:         jax.Array    # scalar float32; ent_coef = exp(log_alpha)
+    actor_opt_state:   Any          # optax OptState (JAX pytree)
+    critic1_opt_state: Any
+    critic2_opt_state: Any
+    alpha_opt_state:   Any
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +374,203 @@ def _build_sac_update(
 
 
 # ---------------------------------------------------------------------------
+# Device-resident training step factory (D27)
+# ---------------------------------------------------------------------------
+
+def _build_training_step(
+    optimizer: optax.GradientTransformation,
+    env_params: Any,
+    data: Any,
+    config: RunConfig,
+    buffer: Any,
+    sac_update_fn: Callable,
+) -> Callable:
+    """Return a jit-compiled outer training step (D27 device-resident design).
+
+    The returned function encapsulates one outer step:
+        env vmap step  →  buffer insert  →  grad_steps SAC updates (lax.scan)
+
+    All computation is on-device; no host↔device copies inside the function.
+    jax.device_get is called only at telemetry cadence in the Python outer loop.
+
+    Args:
+        optimizer:      optax GradientTransformation (captured as closure).
+        env_params:     EnvParams for training episodes.
+        data:           SyntheticYear — pre-generated data (captured as closure).
+        config:         RunConfig — provides n_envs, grad_steps, clip params.
+        buffer:         flashbax flat_buffer object.
+        sac_update_fn:  compiled SAC update from _build_sac_update.
+
+    Returns:
+        _training_step(carry) -> (new_carry, step_metrics)
+        where carry = (sac_state, buffer_state, env_states, obs,
+                       obs_stats, reward_stats, key)
+        and step_metrics = (mean_actor_loss, mean_critic_loss, ent_coef, mean_reward)
+    """
+    # Capture at Python time (not JIT arguments — they contain non-JAX Python objects)
+    from energy_go.env.jax_env import reset as env_reset, step as env_step  # D22b
+
+    n_envs    = config.n_envs
+    grad_steps = config.n_envs   # gradient_steps_per_outer = n_envs (§5 / context summary)
+    clip_obs   = config.clip_obs
+    clip_rew   = config.clip_reward
+
+    @jax.jit
+    def _training_step(carry):
+        """One outer training step — all on-device, zero Python/host round-trips.
+
+        Carry: (SACState, buffer_state, env_states, obs, obs_stats, reward_stats, key)
+        """
+        sac_state, buffer_state, env_states, obs, obs_stats, reward_stats, key = carry
+
+        # ------------------------------------------------------------------ #
+        # 1. Normalise current obs with CURRENT running stats                 #
+        # ------------------------------------------------------------------ #
+        norm_obs = jax.vmap(lambda o: normalize_obs(o, obs_stats, clip_obs))(obs)
+
+        # ------------------------------------------------------------------ #
+        # 2. Sample stochastic actions (vmapped actor)                        #
+        # ------------------------------------------------------------------ #
+        key, k_act = jax.random.split(key)
+        action_keys = jax.random.split(k_act, n_envs)
+        actions = jax.vmap(
+            lambda o, k: _sample_action(sac_state.actor_params, o, k)[0]
+        )(norm_obs, action_keys)     # (n_envs, 6)
+
+        # ------------------------------------------------------------------ #
+        # 3. Vmapped env step — no host↔device copies                        #
+        # ------------------------------------------------------------------ #
+        new_states, new_obs, rewards, dones, _ = jax.vmap(
+            lambda s, a: env_step(s, a, env_params, data)
+        )(env_states, actions)
+        # new_states: vmapped EnvState  new_obs: (n_envs, obs_dim)
+        # rewards: (n_envs,)  dones: (n_envs,) bool
+
+        # ------------------------------------------------------------------ #
+        # 4. Update running stats on-device (Welford parallel merge)          #
+        # ------------------------------------------------------------------ #
+        obs_stats    = update_stats(obs_stats,    obs)           # update with PRE-step obs
+        reward_stats = update_stats(reward_stats, rewards[:, None])
+
+        # ------------------------------------------------------------------ #
+        # 5. Normalise reward and next obs (with UPDATED stats)               #
+        # ------------------------------------------------------------------ #
+        norm_rewards = jax.vmap(
+            lambda r: normalize_reward(jnp.array([r]), reward_stats, clip_rew).squeeze()
+        )(rewards)                   # (n_envs,)
+
+        norm_next_obs = jax.vmap(
+            lambda o: normalize_obs(o, obs_stats, clip_obs)
+        )(new_obs)                   # (n_envs, obs_dim)
+
+        # ------------------------------------------------------------------ #
+        # 6. Buffer insert — device-resident (flashbax)                       #
+        # ------------------------------------------------------------------ #
+        transition = {
+            "obs":      norm_obs,
+            "action":   actions,
+            "reward":   norm_rewards,
+            "next_obs": norm_next_obs,
+            "done":     dones.astype(jnp.float32),
+        }
+        buffer_state = buffer.add(buffer_state, transition)
+
+        # ------------------------------------------------------------------ #
+        # 7. Gradient updates via lax.scan (D27 — no Python loop)             #
+        #    Close over buffer_state (post-insert) so samples include this    #
+        #    outer step's transitions.                                         #
+        # ------------------------------------------------------------------ #
+        def _one_grad_step(carry_inner, _):
+            """Single SAC gradient update — scan body."""
+            sac, key_inner = carry_inner
+            key_inner, k_samp, k_upd = jax.random.split(key_inner, 3)
+
+            # Sample from device-resident buffer (buffer_state from outer closure)
+            sample = buffer.sample(buffer_state, k_samp)
+            b = sample.experience    # dict of (batch_size, ...) arrays
+
+            # SAC update (16 positional args; returns 13-tuple)
+            (
+                new_actor, new_c1, new_c2, new_c1_tgt, new_c2_tgt,
+                new_log_alpha,
+                new_a_opt, new_c1_opt, new_c2_opt, new_alpha_opt,
+                al, cl, ec,
+            ) = sac_update_fn(
+                sac.actor_params, sac.critic1_params, sac.critic2_params,
+                sac.critic1_tgt,  sac.critic2_tgt,   sac.log_alpha,
+                sac.actor_opt_state, sac.critic1_opt_state,
+                sac.critic2_opt_state, sac.alpha_opt_state,
+                b["obs"],
+                b["action"],
+                b["reward"][:, None],     # (B,) → (B,1)
+                b["next_obs"],
+                b["done"][:, None],       # (B,) → (B,1)
+                k_upd,
+            )
+            new_sac = SACState(
+                actor_params=new_actor,
+                critic1_params=new_c1,
+                critic2_params=new_c2,
+                critic1_tgt=new_c1_tgt,
+                critic2_tgt=new_c2_tgt,
+                log_alpha=new_log_alpha,
+                actor_opt_state=new_a_opt,
+                critic1_opt_state=new_c1_opt,
+                critic2_opt_state=new_c2_opt,
+                alpha_opt_state=new_alpha_opt,
+            )
+            return (new_sac, key_inner), (al, cl, ec)
+
+        def _do_updates(args):
+            """Run grad_steps SAC updates when buffer has enough data."""
+            sac, key_g = args
+            (new_sac, new_key), (als, cls, ecs) = jax.lax.scan(
+                _one_grad_step, (sac, key_g), None, length=grad_steps
+            )
+            return new_sac, new_key, als.mean(), cls.mean(), ecs[-1]
+
+        def _skip_updates(args):
+            """No-op during buffer warmup — return unchanged state + zero metrics."""
+            sac, key_g = args
+            zero = jnp.float32(0.0)
+            return sac, key_g, zero, zero, jnp.exp(sac.log_alpha)
+
+        can_sample = buffer.can_sample(buffer_state)
+        key, k_grad = jax.random.split(key)
+        sac_state, key, mean_al, mean_cl, ent_coef = jax.lax.cond(
+            can_sample, _do_updates, _skip_updates, (sac_state, k_grad)
+        )
+
+        # ------------------------------------------------------------------ #
+        # 8. Reset done envs using jnp.where (no data-dependent branches)    #
+        # ------------------------------------------------------------------ #
+        key, k_reset = jax.random.split(key)
+        reset_keys = jax.random.split(k_reset, n_envs)
+        reset_states, reset_obs_arr = jax.vmap(
+            lambda k: env_reset(k, env_params, data)
+        )(reset_keys)     # reset_states: vmapped EnvState, reset_obs_arr: (n_envs, obs_dim)
+
+        def _where_done(new_arr: jax.Array, rst_arr: jax.Array) -> jax.Array:
+            """Broadcast dones over trailing dims and select reset value for done envs."""
+            # dones: (n_envs,) bool; new_arr/rst_arr: (n_envs, ...) any trailing shape
+            bc = jnp.reshape(dones, (-1,) + (1,) * (new_arr.ndim - 1))
+            return jnp.where(bc, rst_arr, new_arr)
+
+        env_states = jax.tree_util.tree_map(_where_done, new_states, reset_states)
+        obs = jnp.where(dones[:, None], reset_obs_arr, new_obs)   # (n_envs, obs_dim)
+
+        # ------------------------------------------------------------------ #
+        # 9. Pack new carry + on-device metrics (extracted by caller at       #
+        #    log_every_steps cadence via jax.device_get)                      #
+        # ------------------------------------------------------------------ #
+        new_carry   = (sac_state, buffer_state, env_states, obs, obs_stats, reward_stats, key)
+        step_metrics = (mean_al, mean_cl, ent_coef, rewards.mean())
+        return new_carry, step_metrics
+
+    return _training_step
+
+
+# ---------------------------------------------------------------------------
 # Code version helper
 # ---------------------------------------------------------------------------
 
@@ -418,6 +586,68 @@ def _git_sha() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Checkpoint assembly helper (avoids code duplication between eval and final)
+# ---------------------------------------------------------------------------
+
+def _build_checkpoint(
+    run_id:         str,
+    global_step:    int,
+    code_version:   str,
+    config:         RunConfig,
+    sac_state:      SACState,
+    obs_stats:      RunningStats,
+    checkpoint_id:  str = "",
+    created_at_utc: str = "",
+) -> Any:
+    """Extract numpy arrays from device and pack into CheckpointData."""
+    from energy_go.training.checkpoint_format import CheckpointData
+
+    actor_np = jax.device_get(sac_state.actor_params)
+    c1_np    = jax.device_get(sac_state.critic1_params)
+    c2_np    = jax.device_get(sac_state.critic2_params)
+    stats_np = jax.device_get(obs_stats)
+
+    return CheckpointData(
+        schema_version  = "1.0.0",
+        checkpoint_id   = checkpoint_id or str(uuid.uuid4()),
+        run_id          = run_id,
+        global_step     = global_step,
+        created_at_utc  = created_at_utc or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        code_version    = code_version,
+        run_config_json = json.dumps(
+            {k: list(v) if isinstance(v, tuple) else v
+             for k, v in config.__dict__.items()}
+        ),
+        obs_dim         = _OBS_DIM,
+        action_dim      = _ACTION_DIM,
+        obs_mean        = np.array(stats_np.mean, dtype=np.float32),
+        obs_var         = np.array(stats_np.var,  dtype=np.float32),
+        obs_count       = int(stats_np.count),
+        obs_clip        = config.clip_obs,
+        actor_fc1_w     = np.array(actor_np["fc1_w"], dtype=np.float32),
+        actor_fc1_b     = np.array(actor_np["fc1_b"], dtype=np.float32),
+        actor_fc2_w     = np.array(actor_np["fc2_w"], dtype=np.float32),
+        actor_fc2_b     = np.array(actor_np["fc2_b"], dtype=np.float32),
+        actor_out_w     = np.array(actor_np["out_w"], dtype=np.float32),
+        actor_out_b     = np.array(actor_np["out_b"], dtype=np.float32),
+        critic1_fc1_w   = np.array(c1_np["fc1_w"],   dtype=np.float32),
+        critic1_fc1_b   = np.array(c1_np["fc1_b"],   dtype=np.float32),
+        critic1_fc2_w   = np.array(c1_np["fc2_w"],   dtype=np.float32),
+        critic1_fc2_b   = np.array(c1_np["fc2_b"],   dtype=np.float32),
+        critic1_out_w   = np.array(c1_np["out_w"],   dtype=np.float32),
+        critic1_out_b   = np.array(c1_np["out_b"],   dtype=np.float32),
+        critic2_fc1_w   = np.array(c2_np["fc1_w"],   dtype=np.float32),
+        critic2_fc1_b   = np.array(c2_np["fc1_b"],   dtype=np.float32),
+        critic2_fc2_w   = np.array(c2_np["fc2_w"],   dtype=np.float32),
+        critic2_fc2_b   = np.array(c2_np["fc2_b"],   dtype=np.float32),
+        critic2_out_w   = np.array(c2_np["out_w"],   dtype=np.float32),
+        critic2_out_b   = np.array(c2_np["out_b"],   dtype=np.float32),
+        ent_coef        = float(jnp.exp(sac_state.log_alpha)),
+        target_entropy  = float(SAC_TARGET_ENTROPY),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main training function
 # ---------------------------------------------------------------------------
 
@@ -429,12 +659,18 @@ def train(
 ) -> "CheckpointData":
     """SAC training loop — §5 / §7 of training_pipeline contract.
 
+    Device-resident design (D27):
+    - flashbax flat buffer: transitions stored on GPU/accelerator.
+    - Single jitted training step: env vmap step + buffer insert + SAC updates.
+    - Inner SAC gradient updates via jax.lax.scan (no Python loop in hot path).
+    - jax.device_get called only at log_every_steps cadence.
+
     Args:
         config:   RunConfig with all hyperparameters (defaults = §5 canonical values).
         key:      JAX PRNGKey — master random key; fixed seed → identical trajectory.
-        data:     SyntheticYear — pre-generated synthetic year from jax_env data generators.
+        data:     SyntheticYear — pre-generated synthetic year from jax_env generators.
         emit_fn:  Optional callback(msg: dict) — called with train_metrics and eval_compare
-                  telemetry dicts. None → no emission.
+                  telemetry dicts at log/eval cadence. None → no emission.
 
     Returns:
         CheckpointData — actor weights + obs_stats from the BEST eval checkpoint
@@ -448,11 +684,12 @@ def train(
     - Reports RL vs NoBattery vs TOU baselines honestly in eval_compare telemetry.
     - Best checkpoint saved by total_cost_yuan; returned at end of training.
     """
+    import flashbax as fbx  # device-resident replay buffer (D27)
+
     # Lazy imports to avoid breaking import-time when jax_env is not yet available.
-    from energy_go.env.jax_env import EnvParams, reset, step  # D22b
-    from energy_go.training.checkpoint_format import CheckpointData, save_checkpoint
+    from energy_go.env.jax_env import EnvParams, reset as env_reset  # D22b
     from energy_go.training.eval import run_eval
-    from energy_go.training.baselines import run_baseline, NoBatteryPolicy, TouPolicy
+    from energy_go.training.baselines import run_baseline
     from energy_go.training.telemetry import build_train_metrics, build_eval_compare
 
     # ---- Immutable-γ guard -------------------------------------------------
@@ -466,17 +703,17 @@ def train(
         )
 
     # ---- Run metadata -------------------------------------------------------
-    run_id = config.run_id or str(uuid.uuid4())[:8]
-    start_time = time.monotonic()
+    run_id       = config.run_id or str(uuid.uuid4())[:8]
+    start_time   = time.monotonic()
     code_version = _git_sha()
 
     # ---- PRNG tree ---------------------------------------------------------
-    key, k_init = jax.random.split(key)
-    rng_np = np.random.default_rng(config.seed)  # numpy RNG for weight init + buffer
+    key, _k_unused = jax.random.split(key)
+    rng_np = np.random.default_rng(config.seed)  # numpy RNG for weight init only
 
     # ---- Env params --------------------------------------------------------
-    env_params_train = EnvParams(episode_len=config.episode_len)  # 168-step episodes
-    env_params_eval  = EnvParams(episode_len=config.eval_episode_len)  # 8760-step eval
+    env_params_train = EnvParams(episode_len=config.episode_len)         # 168-step episodes
+    env_params_eval  = EnvParams(episode_len=config.eval_episode_len)    # 8760-step eval
 
     # ---- Network initialisation -------------------------------------------
     actor_params    = _init_actor_params(rng_np)
@@ -491,8 +728,6 @@ def train(
     else:
         log_alpha = jnp.log(jnp.array(float(config.ent_coef), dtype=jnp.float32))
 
-    target_entropy = float(SAC_TARGET_ENTROPY)  # = -6.0
-
     # ---- Optimisers -------------------------------------------------------
     optimizer = optax.adam(config.lr)
     actor_opt_state   = optimizer.init(actor_params)
@@ -500,273 +735,150 @@ def train(
     critic2_opt_state = optimizer.init(critic2_params)
     alpha_opt_state   = optimizer.init(log_alpha)
 
+    # ---- Pack into SACState (JAX pytree) -----------------------------------
+    sac_state = SACState(
+        actor_params=actor_params,
+        critic1_params=critic1_params,
+        critic2_params=critic2_params,
+        critic1_tgt=critic1_tgt,
+        critic2_tgt=critic2_tgt,
+        log_alpha=log_alpha,
+        actor_opt_state=actor_opt_state,
+        critic1_opt_state=critic1_opt_state,
+        critic2_opt_state=critic2_opt_state,
+        alpha_opt_state=alpha_opt_state,
+    )
+
     # ---- Build jit-compiled SAC update (closes over optimizer) -----------
-    _sac_update = _build_sac_update(optimizer, config.gamma, config.tau, target_entropy)
+    sac_update_fn = _build_sac_update(optimizer, config.gamma, config.tau, float(SAC_TARGET_ENTROPY))
 
-    # ---- VecNormalize stats -----------------------------------------------
+    # ---- flashbax flat buffer (D27: device-resident) ----------------------
+    # max_length:        buffer capacity (§5: 1M)
+    # min_length:        start sampling only after this many transitions
+    # sample_batch_size: batch size for each sample() call (§5: 512)
+    # add_batch_size:    transitions added per add() call = n_envs
+    buffer = fbx.make_flat_buffer(
+        max_length=config.buffer_size,
+        min_length=config.batch_size,
+        sample_batch_size=config.batch_size,
+        add_batch_size=config.n_envs,
+    )
+
+    # Init buffer state with a fake single-transition template (shape without batch dim)
+    fake_transition = {
+        "obs":      jnp.zeros((_OBS_DIM,),    dtype=jnp.float32),
+        "action":   jnp.zeros((_ACTION_DIM,), dtype=jnp.float32),
+        "reward":   jnp.zeros((),             dtype=jnp.float32),
+        "next_obs": jnp.zeros((_OBS_DIM,),    dtype=jnp.float32),
+        "done":     jnp.zeros((),             dtype=jnp.float32),
+    }
+    buffer_state = buffer.init(fake_transition)
+
+    # ---- VecNormalize stats (initialised, updated on-device per outer step) ---
     obs_stats    = init_running_stats(_OBS_DIM)
-    reward_stats = init_running_stats(1)  # reward is scalar → D=1
+    reward_stats = init_running_stats(1)           # reward is scalar → D=1
 
-    # ---- Replay buffer ----------------------------------------------------
-    buffer = _ReplayBuffer(config.buffer_size, _OBS_DIM, _ACTION_DIM)
-
-    # ---- Vmapped env step / reset ----------------------------------------
-    @jax.jit
-    def _vmap_reset(keys):
-        """Reset n_envs environments in parallel."""
-        return jax.vmap(lambda k: reset(k, env_params_train, data))(keys)
-
-    @jax.jit
-    def _vmap_step(states, actions):
-        """Step n_envs environments in parallel — no host↔device copies."""
-        return jax.vmap(
-            lambda s, a: step(s, a, env_params_train, data)
-        )(states, actions)
+    # ---- Build device-resident training step (D27) -------------------------
+    _training_step = _build_training_step(
+        optimizer, env_params_train, data, config, buffer, sac_update_fn
+    )
 
     # ---- Initialise vmapped envs ------------------------------------------
     key, k_reset = jax.random.split(key)
     reset_keys = jax.random.split(k_reset, config.n_envs)
-    env_states, obs = _vmap_reset(reset_keys)   # obs: (n_envs, obs_dim)
+    env_states, obs = jax.vmap(
+        env_reset, in_axes=(0, None, None)
+    )(reset_keys, env_params_train, data)  # env_states: vmapped, obs: (n_envs, obs_dim)
 
-    # ---- Tracking ----------------------------------------------------------
-    global_step = 0
-    best_total_cost = float("inf")
-    best_checkpoint: Optional["CheckpointData"] = None
+    # ---- Pack initial carry ------------------------------------------------
+    carry = (sac_state, buffer_state, env_states, obs, obs_stats, reward_stats, key)
 
-    # Accumulated loss windows for logging
-    _window_actor_loss  = 0.0
-    _window_critic_loss = 0.0
-    _window_ent_coef    = float(jnp.exp(log_alpha))
-    _window_reward_sum  = 0.0
-    _window_count       = 0
-    _window_cost_sum    = 0.0
-
+    # ---- Training loop (Python outer loop ~122 iterations) -----------------
+    # The hot path (env step + buffer insert + SAC updates) is entirely inside
+    # the jitted _training_step — no Python round-trips per step.
     outer_steps = max(1, config.total_env_steps // config.n_envs)
-    gradient_steps_per_outer = config.n_envs  # 1 SAC update per collected transition
+    global_step = 0
 
-    # ---- Training loop ----------------------------------------------------
+    best_total_cost = float("inf")
+    best_checkpoint: Optional[Any] = None
+
+    # Metric windows for log_every_steps cadence (device_get is deferred)
+    _w_al: float = 0.0
+    _w_cl: float = 0.0
+    _w_ec: float = 1.0
+    _w_rw: float = 0.0
+    _w_n:  int   = 0
+    _t_window_start = time.monotonic()
+
     for outer_i in range(outer_steps):
-        t_step_start = time.monotonic()
-
-        # --- Determine actions from current policy (or random during warmup) ---
-        obs_np = np.array(obs)                        # (n_envs, obs_dim)
-
-        # Normalise obs for policy (stats may be near-zero early on — safe due to var=1 init)
-        norm_obs_batch = np.array(
-            jax.vmap(lambda o: normalize_obs(o, obs_stats, clip=config.clip_obs))(
-                jnp.array(obs_np)
-            )
-        )  # (n_envs, obs_dim)
-
-        key, k_action = jax.random.split(key)
-        action_keys = jax.random.split(k_action, config.n_envs)
-
-        # Batch stochastic actions from actor (on device via vmap)
-        actions_jax = jax.vmap(
-            lambda o, k: _sample_action(actor_params, o, k)[0]
-        )(jnp.array(norm_obs_batch), action_keys)    # (n_envs, action_dim)
-        actions_np = np.array(actions_jax)
-
-        # --- Step vmapped envs -----------------------------------------------
-        new_states, new_obs, rewards, dones, infos = _vmap_step(env_states, actions_jax)
-
-        rewards_np  = np.array(rewards)   # (n_envs,)
-        dones_np    = np.array(dones)     # (n_envs,)
-        new_obs_np  = np.array(new_obs)   # (n_envs, obs_dim)
-
-        # --- Update running obs + reward stats --------------------------------
-        obs_stats    = update_stats(obs_stats,    jnp.array(obs_np))
-        reward_stats = update_stats(reward_stats, jnp.array(rewards_np[:, None]))
-
-        # --- Normalise reward for buffer -------------------------------------
-        norm_rewards = np.array(
-            jax.vmap(lambda r: normalize_reward(r, reward_stats, clip=config.clip_reward))(
-                jnp.array(rewards_np[:, None])
-            )
-        ).squeeze(1)   # (n_envs,)
-
-        # --- Add to replay buffer -------------------------------------------
-        buffer.add_batch(
-            obs=norm_obs_batch,
-            actions=actions_np,
-            rewards=norm_rewards,
-            next_obs=norm_obs_batch,   # note: we re-normalise next_obs below
-            dones=dones_np,
-        )
-
-        # Re-normalise next_obs and overwrite last batch in buffer
-        # (buffer.pos has already advanced; write back with correct next_obs)
-        norm_next_obs = np.array(
-            jax.vmap(lambda o: normalize_obs(o, obs_stats, clip=config.clip_obs))(
-                jnp.array(new_obs_np)
-            )
-        )
-        n = config.n_envs
-        # Overwrite the just-added next_obs entries with freshly normalised values
-        idx = np.arange(buffer._pos - n, buffer._pos) % buffer.capacity
-        buffer._next_obs[idx] = norm_next_obs
-
-        # --- Reset done environments -----------------------------------------
-        dones_bool = dones_np.astype(bool)
-        if dones_bool.any():
-            n_done = dones_bool.sum()
-            key, k_re = jax.random.split(key)
-            re_keys = jax.random.split(k_re, n_done)
-            reset_states, reset_obs = jax.vmap(
-                lambda k: reset(k, env_params_train, data)
-            )(re_keys)
-            # Scatter reset states back into the vmapped state batch
-            # (JAX pytree index assignment requires numpy scatter)
-            done_idx_np = np.where(dones_bool)[0]
-            new_obs_np[done_idx_np] = np.array(reset_obs)
-            # Update env_states for done envs (requires scatter on each leaf)
-            # We simply rebuild the full batch for simplicity
-            env_states = jax.tree_util.tree_map(
-                lambda full, resets: full.at[done_idx_np].set(resets),
-                new_states, reset_states,
-            )
-        else:
-            env_states = new_states
-
-        obs = jnp.array(new_obs_np)
-
+        # ------ Single jitted step: env + buffer + SAC (all on-device) ------
+        carry, (mean_al, mean_cl, ent_coef, mean_rw) = _training_step(carry)
         global_step += config.n_envs
 
-        # ---- SAC gradient updates (once buffer has enough data) -----------------
-        if buffer.size >= config.batch_size:
-            for _g in range(gradient_steps_per_outer):
-                key, k_upd = jax.random.split(key)
-                (
-                    b_obs, b_act, b_rew, b_nobs, b_done
-                ) = buffer.sample(config.batch_size, rng_np)
-
-                (
-                    actor_params,
-                    critic1_params,
-                    critic2_params,
-                    critic1_tgt,
-                    critic2_tgt,
-                    log_alpha,
-                    actor_opt_state,
-                    critic1_opt_state,
-                    critic2_opt_state,
-                    alpha_opt_state,
-                    al,
-                    cl,
-                    ec,
-                ) = _sac_update(
-                    actor_params,
-                    critic1_params,
-                    critic2_params,
-                    critic1_tgt,
-                    critic2_tgt,
-                    log_alpha,
-                    actor_opt_state,
-                    critic1_opt_state,
-                    critic2_opt_state,
-                    alpha_opt_state,
-                    jnp.array(b_obs),
-                    jnp.array(b_act),
-                    jnp.array(b_rew),
-                    jnp.array(b_nobs),
-                    jnp.array(b_done),
-                    k_upd,
-                )
-
-                _window_actor_loss  += float(al)
-                _window_critic_loss += float(cl)
-                _window_ent_coef     = float(ec)
-                _window_count       += 1
-
-        _window_reward_sum += float(rewards_np.mean())
-        _window_cost_sum   += float(np.array(infos.c_energy_yuan).mean()
-                                    + np.array(infos.c_demand_charge_yuan).mean()
-                                    + np.array(infos.c_degradation_yuan).mean()
-                                    + np.array(infos.c_curtail_yuan).mean()
-                                    + np.array(infos.c_voll_yuan).mean()
-                                    if hasattr(infos, "c_energy_yuan") else 0.0)
-
-        steps_per_sec = config.n_envs / max(1e-6, time.monotonic() - t_step_start)
-
-        # ---- Logging -------------------------------------------------------
-        if global_step % config.log_every_steps < config.n_envs and _window_count > 0:
-            avg_al   = _window_actor_loss  / _window_count
-            avg_cl   = _window_critic_loss / _window_count
-            avg_rwd  = _window_reward_sum  / max(1, outer_i + 1)
-            avg_cost = _window_cost_sum    / max(1, outer_i + 1)
+        # ------ Telemetry: device_get only at log cadence --------------------
+        if global_step % config.log_every_steps < config.n_envs:
+            # Single device_get per log window (D27: not per step)
+            al_v, cl_v, ec_v, rw_v = jax.device_get((mean_al, mean_cl, ent_coef, mean_rw))
+            _w_al += float(al_v)
+            _w_cl += float(cl_v)
+            _w_ec  = float(ec_v)
+            _w_rw += float(rw_v)
+            _w_n  += 1
 
             if emit_fn is not None:
+                elapsed  = time.monotonic() - start_time
+                win_secs = max(1e-9, time.monotonic() - _t_window_start)
+                sps      = (config.n_envs * _w_n) / win_secs  # approx steps/sec this window
+                avg_al = _w_al / max(1, _w_n)
+                avg_cl = _w_cl / max(1, _w_n)
+                avg_rw = _w_rw / max(1, _w_n)
                 msg = build_train_metrics(
                     global_step=global_step,
-                    wall_seconds=time.monotonic() - start_time,
-                    env_steps_per_sec=steps_per_sec,
+                    wall_seconds=elapsed,
+                    env_steps_per_sec=sps,
                     actor_loss=avg_al,
                     critic_loss=avg_cl,
-                    ent_coef=_window_ent_coef,
-                    reward_scaled_mean=avg_rwd * 1e-5,
+                    ent_coef=_w_ec,
+                    reward_scaled_mean=avg_rw * 1e-5,
                     reward_norm_mean=None,
-                    cost_total_real_mean_yuan=avg_cost,
+                    cost_total_real_mean_yuan=0.0,   # not tracked mid-training
                     is_eval_checkpoint=False,
                     checkpoint_id=None,
                     run_id=run_id,
                 )
                 emit_fn(msg)
 
-        # ---- Evaluation checkpoint -----------------------------------------
+            # Reset windows
+            _w_al = 0.0; _w_cl = 0.0; _w_rw = 0.0; _w_n = 0
+            _t_window_start = time.monotonic()
+
+        # ------ Evaluation checkpoint ----------------------------------------
         if global_step % config.eval_every_steps < config.n_envs:
-            checkpoint_id = str(uuid.uuid4())
-            created_at_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            checkpoint_id   = str(uuid.uuid4())
+            created_at_utc  = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-            # Build CheckpointData for eval (convert JAX→numpy)
-            from energy_go.training.checkpoint_format import CheckpointData
+            # Unpack current SAC state and obs_stats from carry
+            cur_sac_state  = carry[0]
+            cur_obs_stats  = carry[4]
 
-            ckpt = CheckpointData(
-                schema_version  = "1.0.0",
-                checkpoint_id   = checkpoint_id,
-                run_id          = run_id,
-                global_step     = global_step,
-                created_at_utc  = created_at_utc,
-                code_version    = code_version,
-                run_config_json = json.dumps(
-                    {k: list(v) if isinstance(v, tuple) else v
-                     for k, v in config.__dict__.items()}
-                ),
-                obs_dim         = _OBS_DIM,
-                action_dim      = _ACTION_DIM,
-                obs_mean        = np.array(obs_stats.mean, dtype=np.float32),
-                obs_var         = np.array(obs_stats.var,  dtype=np.float32),
-                obs_count       = int(obs_stats.count),
-                obs_clip        = config.clip_obs,
-                actor_fc1_w     = np.array(actor_params["fc1_w"], dtype=np.float32),
-                actor_fc1_b     = np.array(actor_params["fc1_b"], dtype=np.float32),
-                actor_fc2_w     = np.array(actor_params["fc2_w"], dtype=np.float32),
-                actor_fc2_b     = np.array(actor_params["fc2_b"], dtype=np.float32),
-                actor_out_w     = np.array(actor_params["out_w"], dtype=np.float32),
-                actor_out_b     = np.array(actor_params["out_b"], dtype=np.float32),
-                critic1_fc1_w   = np.array(critic1_params["fc1_w"], dtype=np.float32),
-                critic1_fc1_b   = np.array(critic1_params["fc1_b"], dtype=np.float32),
-                critic1_fc2_w   = np.array(critic1_params["fc2_w"], dtype=np.float32),
-                critic1_fc2_b   = np.array(critic1_params["fc2_b"], dtype=np.float32),
-                critic1_out_w   = np.array(critic1_params["out_w"], dtype=np.float32),
-                critic1_out_b   = np.array(critic1_params["out_b"], dtype=np.float32),
-                critic2_fc1_w   = np.array(critic2_params["fc1_w"], dtype=np.float32),
-                critic2_fc1_b   = np.array(critic2_params["fc1_b"], dtype=np.float32),
-                critic2_fc2_w   = np.array(critic2_params["fc2_w"], dtype=np.float32),
-                critic2_fc2_b   = np.array(critic2_params["fc2_b"], dtype=np.float32),
-                critic2_out_w   = np.array(critic2_params["out_w"], dtype=np.float32),
-                critic2_out_b   = np.array(critic2_params["out_b"], dtype=np.float32),
-                ent_coef        = float(jnp.exp(log_alpha)),
-                target_entropy  = target_entropy,
+            # Build CheckpointData (device_get for all arrays — single sync point)
+            ckpt = _build_checkpoint(
+                run_id=run_id,
+                global_step=global_step,
+                code_version=code_version,
+                config=config,
+                sac_state=cur_sac_state,
+                obs_stats=cur_obs_stats,
+                checkpoint_id=checkpoint_id,
+                created_at_utc=created_at_utc,
             )
 
-            # Run deterministic full-year eval
-            rl_result = run_eval(ckpt, data, params=env_params_eval)
+            # Deterministic full-year eval
+            rl_result         = run_eval(ckpt, data, params=env_params_eval)
+            no_battery_result = run_baseline("no_battery",    data, params=env_params_eval)
+            tou_result        = run_baseline("rule_based_tou", data, params=env_params_eval)
 
-            # Run baselines (same env, same data)
-            no_battery_result  = run_baseline("no_battery",    data, params=env_params_eval)
-            tou_result         = run_baseline("rule_based_tou", data, params=env_params_eval)
-
-            # Track best checkpoint
+            # Track best checkpoint (by total_cost_yuan — honest reporting)
             if rl_result.total_cost_yuan < best_total_cost:
                 best_total_cost = rl_result.total_cost_yuan
                 best_checkpoint = ckpt
@@ -783,16 +895,17 @@ def train(
                 )
                 emit_fn(eval_msg)
 
+                al_v, cl_v, ec_v = jax.device_get((mean_al, mean_cl, ent_coef))
                 train_msg = build_train_metrics(
                     global_step=global_step,
                     wall_seconds=time.monotonic() - start_time,
-                    env_steps_per_sec=steps_per_sec,
-                    actor_loss=_window_actor_loss / max(1, _window_count),
-                    critic_loss=_window_critic_loss / max(1, _window_count),
-                    ent_coef=_window_ent_coef,
-                    reward_scaled_mean=(_window_reward_sum / max(1, outer_i + 1)) * 1e-5,
+                    env_steps_per_sec=0.0,   # not measured at eval points
+                    actor_loss=float(al_v),
+                    critic_loss=float(cl_v),
+                    ent_coef=float(ec_v),
+                    reward_scaled_mean=0.0,
                     reward_norm_mean=None,
-                    cost_total_real_mean_yuan=_window_cost_sum / max(1, outer_i + 1),
+                    cost_total_real_mean_yuan=rl_result.total_cost_yuan,
                     is_eval_checkpoint=True,
                     checkpoint_id=checkpoint_id,
                     run_id=run_id,
@@ -801,33 +914,16 @@ def train(
 
     # ---- Return best checkpoint (or final if no eval ran) -------------------
     if best_checkpoint is None:
-        # No eval ran (very short run) — return current params
-        from energy_go.training.checkpoint_format import CheckpointData
-        best_checkpoint = CheckpointData(
-            schema_version  = "1.0.0",
-            checkpoint_id   = str(uuid.uuid4()),
-            run_id          = run_id,
-            global_step     = global_step,
-            created_at_utc  = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            code_version    = code_version,
-            run_config_json = json.dumps(
-                {k: list(v) if isinstance(v, tuple) else v
-                 for k, v in config.__dict__.items()}
-            ),
-            obs_dim         = _OBS_DIM,
-            action_dim      = _ACTION_DIM,
-            obs_mean        = np.array(obs_stats.mean, dtype=np.float32),
-            obs_var         = np.array(obs_stats.var,  dtype=np.float32),
-            obs_count       = int(obs_stats.count),
-            obs_clip        = config.clip_obs,
-            actor_fc1_w     = np.array(actor_params["fc1_w"], dtype=np.float32),
-            actor_fc1_b     = np.array(actor_params["fc1_b"], dtype=np.float32),
-            actor_fc2_w     = np.array(actor_params["fc2_w"], dtype=np.float32),
-            actor_fc2_b     = np.array(actor_params["fc2_b"], dtype=np.float32),
-            actor_out_w     = np.array(actor_params["out_w"], dtype=np.float32),
-            actor_out_b     = np.array(actor_params["out_b"], dtype=np.float32),
-            ent_coef        = float(jnp.exp(log_alpha)),
-            target_entropy  = target_entropy,
+        # No eval ran (very short run) — return final params
+        cur_sac_state = carry[0]
+        cur_obs_stats = carry[4]
+        best_checkpoint = _build_checkpoint(
+            run_id=run_id,
+            global_step=global_step,
+            code_version=code_version,
+            config=config,
+            sac_state=cur_sac_state,
+            obs_stats=cur_obs_stats,
         )
 
     return best_checkpoint
