@@ -12,6 +12,10 @@ All submodule imports are **deferred** via PEP 562 module __getattr__ so that
 `from energy_go.training.checkpoint_format import ...` (used by the serving
 layer) works on JAX-free serving boxes.  JAX-dependent symbols are only
 materialised when actually accessed.
+
+Note: `from energy_go.training import *` materialises all __all__ names and
+therefore still requires JAX.  Serving code must use the direct submodule
+import (`from energy_go.training.checkpoint_format import ...`), not import *.
 """
 
 __all__ = [
