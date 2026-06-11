@@ -108,6 +108,32 @@ def ws_client(work_dir):
 # Canonical-checkpoint fixture (checkpoint_format.md §4 / task #23 cutover)
 # ---------------------------------------------------------------------------
 
+def _make_policy_npz(path: Path, obs_dim: int = 107, action_dim: int = 6) -> None:
+    """Write a stray legacy-format policy.npz (w_0/b_0 keys) for discovery robustness tests.
+
+    The serving layer no longer loads these; tests use them only to verify that stray
+    non-canonical files in a run dir are ignored by the canonical discovery algorithm.
+    """
+    rng = np.random.default_rng(42)
+    hidden = 64
+    np.savez(
+        path,
+        w_0=rng.standard_normal((obs_dim, hidden)).astype(np.float32),
+        b_0=rng.standard_normal(hidden).astype(np.float32),
+        w_1=rng.standard_normal((hidden, action_dim)).astype(np.float32),
+        b_1=np.zeros(action_dim, dtype=np.float32),
+    )
+
+
+def _make_normalization_npz(path: Path, obs_dim: int = 107) -> None:
+    """Write a stray legacy normalization.npz (obs_mean / obs_std keys) for robustness tests."""
+    np.savez(
+        path,
+        obs_mean=np.zeros(obs_dim, dtype=np.float32),
+        obs_std=np.ones(obs_dim, dtype=np.float32),
+    )
+
+
 def _make_canonical_checkpoint(run_dir: Path, run_id: str = "run_001",
                                 global_step: int = 500_000) -> Path:
     """Create a valid canonical checkpoint using save_checkpoint.
@@ -125,9 +151,11 @@ def _make_canonical_checkpoint(run_dir: Path, run_id: str = "run_001",
     ckpt = CheckpointData(
         schema_version="1.0.0",
         checkpoint_id="a1b2c3d4-0000-0000-0000-000000000001",
-        run_config_json='{"run_id":"run_001","site_config_id":"gansu"}',
+        run_id=run_id,
         global_step=global_step,
+        created_at_utc="2026-06-11T00:00:00Z",
         code_version="test0000",
+        run_config_json='{"run_id":"run_001","site_config_id":"gansu"}',
         obs_dim=107,
         action_dim=6,
         obs_count=global_step,
@@ -872,9 +900,11 @@ class TestPolicyCutover:
         ckpt_data = CheckpointData(
             schema_version="1.0.0",
             checkpoint_id=f"cutover-test-{seed:04d}-0000-000000000001",
-            run_config_json='{"run_id":"' + run_id + '"}',
+            run_id=run_id,
             global_step=global_step,
+            created_at_utc="2026-06-11T00:00:00Z",
             code_version="test0000",
+            run_config_json='{"run_id":"' + run_id + '"}',
             obs_dim=107,
             action_dim=6,
             obs_count=global_step,
@@ -964,9 +994,11 @@ class TestPolicyCutover:
         ckpt_data = CheckpointData(
             schema_version="1.0.0",
             checkpoint_id="d28-clip-test-0000-0000-000000000001",
-            run_config_json='{}',
+            run_id="d28_test",
             global_step=1,
+            created_at_utc="2026-06-11T00:00:00Z",
             code_version="test0000",
+            run_config_json='{}',
             obs_dim=107, action_dim=6, obs_count=1,
             obs_mean=np.zeros(107, dtype=np.float32),
             obs_var=np.ones(107, dtype=np.float32),
@@ -1140,7 +1172,7 @@ class TestPolicyCutover:
           4. Produce env_step frames that pass validate() == []
         """
         frames = []
-        with canonical_ws_client.websocket_connect("/ws/inference") as ws:
+        with ws_client.websocket_connect("/ws/inference") as ws:
             ws.receive_text(timeout=5)  # ready
             ws.send_text(_start_cmd())
             while len(frames) < 3:
@@ -1172,9 +1204,11 @@ class TestReviewerPolicyCutover:
         ckpt_data = CheckpointData(
             schema_version="1.0.0",
             checkpoint_id="reviewer-clip-0000-0000-000000000001",
-            run_config_json="{}",
+            run_id="reviewer_clip_test",
             global_step=1,
+            created_at_utc="2026-06-11T00:00:00Z",
             code_version="test0000",
+            run_config_json="{}",
             obs_dim=107, action_dim=6, obs_count=1,
             obs_mean=np.zeros(107, dtype=np.float32),
             obs_var=np.ones(107, dtype=np.float32),
