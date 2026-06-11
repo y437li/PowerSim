@@ -406,6 +406,20 @@ else
     info "Environment up to date. Nothing to do."
 fi
 
+# On ARM macOS, verify jax/jaxlib is actually importable after install.
+# arch -arm64 may have given us ARM64 Python, but uv can still resolve the
+# x86_64 jaxlib wheel (e.g. when uv itself runs under Rosetta and uses x86
+# platform tags for pip resolution).  x86_64 jaxlib uses AVX instructions
+# that are not available on Apple Silicon (Rosetta 2 does not translate AVX),
+# so the import crashes with SIGILL.  Detecting it here lets the caller skip
+# (exit 2 → pytest.skip) rather than fail at the final assert.
+if [[ "$OS" == "Darwin" ]] && [[ "$ARCH" == "arm64" || "$ARCH" == "aarch64" ]]; then
+    if [[ "$EXTRAS" == *"jax"* ]]; then
+        ".venv/bin/python" -c "import jax" 2>/dev/null \
+            || die 2 "jaxlib installed but fails to import on ARM (AVX/architecture mismatch). uv resolved an x86_64 wheel despite ARM64 Python — likely uv itself runs under Rosetta. Remediation: Reinstall uv as a native arm64 binary — 'curl -LsSf https://astral.sh/uv/install.sh | arch -arm64 sh' — then re-run this script."
+    fi
+fi
+
 # ── frontend build ────────────────────────────────────────────────────────────
 if [[ "$SERVER_TYPE" == "dev" || "$SERVER_TYPE" == "serving" || "$SERVER_TYPE" == "full" ]]; then
     if [[ -f "package.json" ]]; then
