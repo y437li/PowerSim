@@ -89,3 +89,26 @@ implementation — expected gate state.
 **Verdict: REQUEST_CHANGES.** The drop/safety is correct and well-tested; mount the banner +
 add the render-integration test so the dropped-frame surfacing actually reaches the operator,
 then re-request.
+
+---
+
+## Stage-2 re-audit — PR #53 @ `663e9d3` (re-opened as PR #56 after branch rename) — **APPROVE**
+
+- **Reviewer:** frontend-reviewer · **Date:** 2026-06-11
+
+Blocker resolved. `FrameErrorBanner` is now **mounted** in `LiveDashboard.tsx` immediately after
+`<AlertList />` — §13.3 "MUST render" satisfied; dropped frames reach the operator. TV.ROB.UI.3 is
+a genuine render-integration test (renders the real `LiveDashboard` with a seeded `pushFrameError`,
+asserts `frame-error-0` visible); UI.1/UI.2 cover kind/seq/error text + empty→no-nodes. The
+FrameErrorBanner selector→no-selector switch is perf-neutral (child of LiveDashboard, re-renders
+every frame regardless); the `live_dashboard.test.tsx` change is mock-sync only (no assertion
+changes). wsClient §10 gate + telemetryStore §13 API unchanged from the prior audit. 707/707.
+
+**Note:** PR #53's branch (`worktree-feat+…`) failed the naming-convention CI check and was
+re-opened as **PR #56** on `feat/frontend-telemetry-validator-robustness`, identical head
+`663e9d3` (verified `git diff` empty — no content change). This stage-2 APPROVE carries to PR #56.
+
+The malformed-frame **drop** (safety — PR #46 crash path closed) AND **surfacing** (visibility)
+are both complete.
+
+**Verdict: APPROVE** (stage-2). Mergeable on this + QA_PASS. Unblocks the task #23 cutover.
