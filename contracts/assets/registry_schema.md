@@ -54,6 +54,9 @@ Each entry is the **value** in the `assets` map (see §2). The map key IS the as
 | `animation_hooks.rotor_node` | `string` | opt | Three.js mesh/group node name within the GLB to spin for wind-driven rotation. |
 | `animation_hooks.soc_fill_mesh` | `string` | opt | Mesh whose `scale.y` reflects `calcSocFill` output [0,1]. |
 | `animation_hooks.irradiance_material` | `string` | opt | Material name whose `emissiveIntensity` reflects `calcEmissive` output [0,1]. |
+| `animation_hooks.h2_fill_mesh` | `string` | opt | Mesh whose `scale.y` = `h2_level_kg / h2_tank_capacity_kg` ∈ [0,1] (forward-spec v1.0.1). |
+| `animation_hooks.activity_material` | `string` | opt | Material whose `emissiveIntensity` = `current_load_mw / base_mw` ∈ [0,1] (forward-spec v1.0.1). |
+| `animation_hooks.flame_node` | `string` | opt | Node whose `visible` = `p_dispatch_mw > ALERT_EPSILON` (forward-spec v1.0.1). |
 
 ### 1.1 `AssetType` enum
 
@@ -66,6 +69,11 @@ Each entry is the **value** in the `assets` map (see §2). The map key IS the as
 | `"grid_connection"` | Generic grid connection element (pylons, switchgear) | `grid/` |
 | `"site_element"` | Site infrastructure (terrain, buildings, roads) | `site/` |
 | `"effect"` | Visual effect material / shader (power-flow tubes etc.) | `effects/` |
+| `"gas_turbine"` | Gas combustion turbine hall + enclosure | `gas/` |
+| `"electrolyzer"` | H₂ electrolyzer skid + pressurised storage tank | `electrolyzers/` |
+| `"load_building"` | Load-archetype building / facility | `loads/` |
+
+_Rows 8–10 added in v1.0.1 (contracts/assets/composable_3d.md, PR #38). Additive — no re-LOCK required._
 
 ---
 
@@ -102,12 +110,27 @@ These four entries are the minimum needed for the Gansu site config (REBUILD_SPE
 
 ---
 
-## 4. Future entries (§8 asset library)
+## 4. §8 entries (v1.0.1)
 
-When gas turbines, electrolyzers, and load archetypes from REBUILD_SPEC §8 are added:
+Added in `schema_version` `"1.0.1"` (contracts/assets/composable_3d.md, PR #38).
+All 9 IDs satisfy `^[a-z0-9][a-z0-9.-]*$` and are verbatim config-YAML usable.
+
+| ID | Type | File | Dims (W×H×D m) | Animation hook |
+|---|---|---|---|---|
+| `gas-turbine-30mw` | `gas_turbine` | `gas/gas-turbine-30mw.glb` | 30×12×20 | `flame_node: "ExhaustFlame"` |
+| `pem-electrolyzer-20mw` | `electrolyzer` | `electrolyzers/pem-electrolyzer-20mw.glb` | 30×10×15 | `h2_fill_mesh: "H2TankFill"` |
+| `alkaline-electrolyzer-20mw` | `electrolyzer` | `electrolyzers/alkaline-electrolyzer-20mw.glb` | 30×10×18 | `h2_fill_mesh: "H2TankFill"` |
+| `load-commercial` | `load_building` | `loads/load-commercial.glb` | 50×20×40 | `activity_material: "BuildingLights"` |
+| `load-residential` | `load_building` | `loads/load-residential.glb` | 40×12×40 | `activity_material: "BuildingLights"` |
+| `load-industrial-continuous` | `load_building` | `loads/load-industrial-continuous.glb` | 80×25×60 | `activity_material: "BuildingLights"` |
+| `load-industrial-two-shift` | `load_building` | `loads/load-industrial-two-shift.glb` | 80×20×60 | `activity_material: "BuildingLights"` |
+| `load-data-center` | `load_building` | `loads/load-data-center.glb` | 50×10×35 | `activity_material: "BuildingLights"` |
+| `load-ev-fleet` | `load_building` | `loads/load-ev-fleet.glb` | 40×6×60 | `activity_material: "BuildingLights"` |
+
+Versioning rules remain:
 - New entries are **additive** (semver minor) — no re-LOCK required.
 - Removing or renaming an existing entry is a **breaking change** (semver major) — requires a new rl-architect DECISION + re-LOCK + re-review by both reviewers.
-- The IDs in the registry must exactly match the keys in the corresponding `config/asset_*.yaml` files.
+- IDs in the registry must exactly match keys in the corresponding `config/asset_*.yaml` files.
 
 ---
 
