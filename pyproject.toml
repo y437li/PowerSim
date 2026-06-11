@@ -29,15 +29,6 @@ jax-gpu-metal = [
     "jax>=0.4.25",
     "jax-metal>=0.0.5",
 ]
-# Training-only deps — never pulled by the serving image (§9.2).
-training = [
-    "optax>=0.2",
-    "flax>=0.8",
-    "orbax-checkpoint>=0.5",
-    "sbx>=0.1.1",
-    "numpy>=1.26",
-    "scipy>=1.12",
-]
 # Serving deps — no training packages (keeps the serving image minimal).
 serving = [
     "fastapi>=0.110",
@@ -57,12 +48,11 @@ dev = [
     "anyio>=4.0",
     "httpx>=0.27",
     "pytest-xdist>=3.5",
-    "optax>=0.2",
-    "flax>=0.8",
-    "orbax-checkpoint>=0.5",
-    "sbx>=0.1.1",
+    "sbx-rl>=0.19.0",
+    "flax>=0.8.0",
+    "optax>=0.2.0",
+    "flashbax>=0.1.0",
     "numpy>=1.26",
-    "scipy>=1.12",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "websockets>=12",
