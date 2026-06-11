@@ -168,6 +168,7 @@ Continuous integration runs convention checks, telemetry-schema validation again
 
 | You want… | Read |
 |---|---|
+| **To install, launch, and use the app** (operator/analyst guide) | [`user_guide/`](user_guide/index.md) |
 | The full system specification (formulas, generators, training, deployment) | [`REBUILD_SPEC.md`](REBUILD_SPEC.md) — the index; sections under [`docs/spec/`](docs/spec/) |
 | Physics & cost formulas (§3), generators (§4), training (§5), JAX architecture (§7), install/launch (§9) | `docs/spec/section_03…`, `…_04…`, `…_05…`, `…_07…`, `…_09…` |
 | Binding decisions, LOCKED contracts, open blockers | [`LINEAGE.md`](LINEAGE.md) |
