@@ -408,9 +408,14 @@ None — this contract adds new functionality.
 
 ## 10. Out of scope
 
-- Economics fields (`capex_yuan_per_mw`, WACC, PPA rate, etc.) — `economics: {}`
-  placeholder reserved in the schema; consumed only by workstream D (finance); the
-  resolver ignores it.
+- **Year-indexed price escalation (F1 ruling, PR #78 gate):** dispatch operates on
+  constant-real prices — a flat `price_table` per site, exactly as specified here.
+  Nominal price escalation (~49% by year 20) is applied in the finance layer only,
+  because escalating dispatch-time prices would shift the policy's training
+  distribution. Year-indexed escalation is therefore finance-layer only and does
+  NOT affect the resolver or `EnvParams`. The `economics: {}` section is the hook
+  point for finance-side parameters (CAPEX, O&M, degradation curve refs, PPA rates)
+  and does not affect the resolver.
 - Non-Gansu site configs — deferred; this v1.0.0 ships only the 4 Gansu entries.
 - §8 composable obs/action derivation — deferred; for non-Gansu sites `obs_dim` and
   `action_dim` would change, requiring a §8 env-logic contract. Out of scope here.
