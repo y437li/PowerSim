@@ -1,10 +1,17 @@
 # Contract: frontend/telemetry_validator
 
-**Status:** DRAFT  
+**Status:** AMENDMENT-DRAFT  
 **Area:** frontend  
 **Schema ref:** contracts/shared/telemetry_schema.md v1.0.0 (LOCKED, PR #6)  
-**Task:** #24  
-**Branch:** feat/frontend-telemetry-validator  
+**Task:** #24 (original) / #29 (robustness amendment)  
+**Branch:** feat/frontend-telemetry-validator-robustness  
+**Amendment rationale:** LINEAGE D26 — serving now deliberately forwards validation-failing
+frames at runtime (resilience-first: don't crash a multi-hour session). The frontend
+`validate()` call is therefore the **last enforcement point**. Frontend-reviewer system-coupling
+check (PR #46) confirmed the gap: `telemetryValidator.ts` was implemented but not wired into
+`wsClient.ts`, so a frame with a missing inner field (`payload.battery`) propagates to the
+store, throws in a dashboard component, and the single app-level `ErrorBoundary` (no reset
+mechanism) takes down the entire UI until manual reload.  
 
 ---
 
@@ -198,6 +205,7 @@ them through arithmetic and `JSON.parse` does not guard against hand-constructed
 
 ## §9 Unhappy paths guaranteed handled
 
+**validate() return values:**
 - `msg` is `null`, `undefined`, a string, number, or array → `not_object`
 - `schema_version` is `"2.0.0"` → `version_rejected:2.0.0`, `ok: false`
 - `schema_version` is `"1.5.0"` → `ok: true`, `warnings: ["version_forward_compat:1.5.0"]`
@@ -210,19 +218,57 @@ them through arithmetic and `JSON.parse` does not guard against hand-constructed
 - `payload.generation.gross_solar_mw` off by 5 MW → `conservation_solar:…`
 - eval_compare `policies.rl.total_cost_yuan` off by 1000 → `eval_total:rl:…`, `ok: false`
 
+**wsClient robustness (post-D26 wiring):**
+- env_step frame with `payload.battery` omitted → `ok: false` (Zod) → `onEnvStep` NOT called; `pushFrameError()` called; WS alive; next valid frame processes normally
+- env_step frame with `battery.soc: null` → `ok: false` (Zod) → same drop semantics
+- `status` frame → bypasses `validate()` entirely → `onServerStatus` called regardless
+- `validate()` throws internally → frame dropped, no exception propagated, session alive
+
 ---
 
-## §10 Integration with wsClient
+## §10 Integration with wsClient (amended — task #29)
 
-`validate()` is called by `wsClient` on every incoming message. On `ok: false`, the client
-logs the errors and does NOT dispatch to any store callback. On `ok: true`, the envelope is
-dispatched typed. This replaces the ad-hoc checks in the current wsClient (§4.3 envelope
-check, version check).
+### §10.1 Mandatory wiring
 
-> **Migration note (post-merge):** Once this module is merged, `wsClient.ts` should delegate
-> its existing version check and missing-field guard to `validate()` rather than duplicating
-> the logic. This is a non-breaking refactor and can happen in the same PR as this contract
-> or a follow-up.
+`validate()` MUST be called inside `wsClient.handleMessage` on every **data frame**
+(`kind ∈ {env_step, train_metrics, eval_compare}`) **before** any store callback is invoked.
+
+Control frames (`kind ∈ {status, error}`) and unrecognised kind values MUST bypass
+`validate()` and be handled by their dedicated dispatch paths (`onServerStatus` /
+`onServerError`).  This is required because control frames have no `payload` envelope field
+and `validate()` would always reject them with `missing_field:payload`.
+
+### §10.2 Exception safety
+
+The call to `validate()` MUST be wrapped in a `try/catch`.  Any synchronous exception thrown
+by `validate()` is treated identically to a `{ ok: false }` result: the frame is dropped,
+`pushFrameError()` is called with `errors: ["validate_threw"]`, and no dispatch callback is
+invoked.  The exception MUST NOT propagate and MUST NOT close the WebSocket connection.
+
+### §10.3 Dispatch rules
+
+| `validate()` outcome | Dispatch to store callback? | `pushFrameError()` called? |
+|----------------------|----------------------------|---------------------------|
+| `ok: true`, no warnings | ✅ Yes | ❌ No |
+| `ok: true`, warnings present | ✅ Yes | ✅ Yes (one entry; `errors = warnings`) |
+| `ok: false` | ❌ No | ✅ Yes |
+| Exception thrown | ❌ No | ✅ Yes (`errors: ["validate_threw"]`) |
+
+Structured log for any dropped frame (console.warn):
+```
+[wsClient] INVALID frame dropped kind=<kind> seq=<seq>: [<error_codes>]
+```
+
+### §10.4 Effect on consumers
+
+After this wiring the dashboard stores (`telemetryStore`, `trainingStore`) only ever receive
+frames that passed full validation.  Dashboard and 3D scene components that access fields like
+`envStep.battery.soc` can rely on the field being present and finite — no per-component
+try/catch required.
+
+The existing ad-hoc `payload === undefined` guard in `wsClient.handleMessage` MUST be kept
+for forward-compatibility (control frames still pass through that code path before the
+kind-specific branch).  For data frames it is superseded by §4.5 (`missing_field:payload`).
 
 ---
 
@@ -236,3 +282,100 @@ Tests import the golden examples from `contracts/shared/telemetry_examples/`:
 
 These files are the authoritative passing cases; if `validate()` returns `ok: false` for any
 of them, the implementation is wrong.
+
+The robustness integration tests (TV.ROB.*) live in
+`tests/frontend/telemetry_validator.test.tsx` alongside the existing unit tests.
+
+---
+
+## §12 Runtime drop semantics (post-D26)
+
+Per LINEAGE D26 the *serving* layer is resilient — it forwards validation-failing frames
+rather than terminating the stream.  The frontend's `validate()` call in `wsClient` is
+therefore the **last enforcement point**.
+
+When the frontend drops a frame (§10.3):
+- The WebSocket connection MUST remain open.
+- Store state MUST NOT change — the previous `envStep` / `history` values remain intact.
+- `pushFrameError()` MUST be called so the UI can alert the operator (§13).
+- The client MUST remain capable of processing the *next* frame correctly.
+
+This is the inverse of D26 serving behaviour: serving sends the frame on ("resilience-first");
+the frontend is the terminal consumer and drops it ("defense-in-depth").
+
+---
+
+## §13 FrameError surfacing API
+
+### §13.1 FrameError type
+
+```typescript
+export interface FrameError {
+  /** ISO-8601 timestamp: msg.ts_utc if parseable, else new Date().toISOString() */
+  ts_utc: string;
+  /** msg.kind, or "unknown" if the message was not parseable */
+  kind: string;
+  /** msg.seq, or -1 if the message was not parseable */
+  seq: number;
+  /** Validation error codes from ValidationResult.errors, or ["validate_threw"] */
+  errors: string[];
+}
+```
+
+### §13.2 telemetryStore additions
+
+`useTelemetryStore` (file: `src/stores/telemetryStore.ts`) gains two members:
+
+```typescript
+/** Ring buffer of recent frame validation failures — most-recent-first. Capacity: 10. */
+frameErrors: FrameError[];
+
+/** Prepend a new FrameError entry; trim the buffer to cap (10). */
+pushFrameError(err: FrameError): void;
+```
+
+`clearHistory()` MUST also reset `frameErrors` to `[]`.  Initial state: `frameErrors: []`.
+
+Prepend-to-front ensures `frameErrors[0]` is always the most recent error, consistent
+with the newest-first ordering of `deriveAlerts`.
+
+### §13.3 UI surfacing
+
+The `AlertList` component (or a new `FrameErrorBanner` component placed adjacent to it) MUST
+render `frameErrors` so the operator can see that invalid frames were received.
+
+Rendering requirements:
+- Each `FrameError` MUST be reachable by `data-testid="frame-error-<index>"` (0-based).
+- The rendered text MUST include the `kind`, `seq`, and at least one error code.
+- An empty `frameErrors` array MUST produce no frame-error DOM nodes.
+
+> **Implementation choice delegated to implementer:** extending `AlertList` with a separate
+> prop `frameErrors: FrameError[]`, or creating a standalone `FrameErrorBanner` component,
+> are both conformant.  The test pin is the `data-testid` requirement above.
+
+---
+
+## §14 Acceptance criteria (TV.ROB series)
+
+| ID | Test | Must verify |
+|----|------|-------------|
+| TV.ROB.1 | wsClient gate — valid env_step dispatched | Real golden A passes validate(), onEnvStep called |
+| TV.ROB.2 | wsClient gate — missing battery drops frame | `payload.battery` absent → onEnvStep NOT called |
+| TV.ROB.3 | wsClient gate — pushFrameError called on drop | frameErrors.length === 1 after invalid frame |
+| TV.ROB.4 | FrameError shape | kind, seq populated; errors contains `payload_invalid:*` |
+| TV.ROB.5 | null field drop | `battery.soc: null` → onEnvStep NOT called |
+| TV.ROB.6 | valid train_metrics dispatched | Real golden train_metrics → onTrainMetrics called |
+| TV.ROB.7 | invalid train_metrics dropped | missing global_step → onTrainMetrics NOT called |
+| TV.ROB.8 | valid eval_compare dispatched | Real golden eval_compare → onEvalCompare called |
+| TV.ROB.9 | status bypass | status frame → onServerStatus called (no payload → bypass confirmed) |
+| TV.ROB.10 | session survives bad frame | invalid → valid → valid frame dispatched correctly |
+| TV.ROB.11 | store state preserved | envStep unchanged after invalid frame |
+| TV.ROB.12 | no false positives | valid env_step → frameErrors stays empty |
+| TV.ROB.13 | exception safety — no dispatch | validate() throws → onEnvStep NOT called, no thrown exception |
+| TV.ROB.14 | exception safety — pushFrameError | validate() throws → frameErrors[0].errors === ["validate_threw"] |
+| TV.ROB.15 | initial state | frameErrors: [] on fresh store |
+| TV.ROB.16 | prepend ordering | second pushFrameError → newest at index 0 |
+| TV.ROB.17 | ring buffer cap | 11th push evicts oldest; length stays 10 |
+| TV.ROB.18 | clearHistory resets errors | clearHistory() → frameErrors: [] |
+| TV.ROB.19 | golden pipeline A | env_step_a.json end-to-end: validate ok:true → dispatched with correct run_id, seq |
+| TV.ROB.20 | golden pipeline B | env_step_b.json end-to-end: validate ok:true → dispatched |
