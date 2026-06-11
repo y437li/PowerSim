@@ -571,6 +571,7 @@ class TestPolicyEvalResultIdentity:
         assert r.soc_violations_count == 5
         assert r.soc_violation_mwh == pytest.approx(2.5, abs=1e-6)
 
+    @pytest.mark.slow  # D30: calls generate_year() + run_baseline() (jax.jit + lax.scan over 8760 steps)
     def test_no_battery_degradation_is_zero_in_result(self):
         # Matches the baseline test: NoBattery → degradation_yuan=0 (p_bat_ch=p_bat_dis=0)
         # No battery throughput → C_deg = 10 ¥/MWh × 0 MWh = 0 ¥
