@@ -66,7 +66,19 @@ with a descriptive message if any required key is absent.
 | `code_version` | `str` | scalar | Short identifier tying the checkpoint to the codebase state that produced it. Convention: the first 8 characters of the git commit SHA at training time (e.g. `"5cc25b5a"`), or `"unknown"` if not determinable. Enables the dashboard eval-vs-baseline panel to display the exact policy provenance and lets the user reproduce a result. |
 | `run_config_json` | `str` | scalar | JSON-serialised `RunConfig` (all fields). **Must include** `seed` (for reproducibility) and `site_config_id` (e.g. `"site_gansu"` — the site YAML used for training). See `contracts/training/training_pipeline.md` §3 for the full RunConfig schema, which contains both fields. |
 
-### 4.2 VecNormalize observation statistics
+### 4.2 Architecture identity
+
+These keys let a consumer (serving layer, harness) reconstruct the observation normalisation
+and action post-processing without importing `energy_go.training` or hardcoding constants.
+
+| Key | dtype | shape | Description |
+|-----|-------|-------|-------------|
+| `obs_dim` | `int64` | scalar | Observation dimensionality: always `107` per §2.1. Loaded by serving to validate `obs_mean`/`obs_var` shapes and to construct the correct input buffer. |
+| `action_dim` | `int64` | scalar | Action dimensionality: always `6` per §2.2 ("Energy Router"). Loaded by serving to recover the `action → physical-dispatch` mapping described in §6. |
+
+> **Why record these?** If the site config ever adds observation dimensions (e.g. §10 Tier 1 enhancements), the checkpoint already carries the correct `obs_dim` for the policy it was trained with — the serving layer does not need to parse a separate config file to know the obs shape.
+
+### 4.3 VecNormalize observation statistics
 
 Saved at the moment the checkpoint is written. Consumers apply these BEFORE passing obs to the actor.
 
@@ -84,14 +96,15 @@ Saved at the moment the checkpoint is written. Consumers apply these BEFORE pass
 > ```
 > This is identical to `energy_go.training.normalizer.normalize_obs()` with `clip=obs_clip`.
 
-### 4.3 Actor MLP weights
+### 4.4 Actor MLP weights
 
 The actor is a 2-hidden-layer MLP (§5 training_pipeline contract §5.2):
 ```
-Input(107) → Dense(256, ReLU) → Dense(256, ReLU) → Dense(2)
+Input(107) → Dense(256, ReLU) → Dense(256, ReLU) → Dense(12)
 ```
-Output Dense(2) splits into `(mean, log_std_raw)`; `log_std = clip(log_std_raw, -5, 2)`.
-Deterministic eval action: `tanh(mean(norm_obs))`.
+Output Dense(12) splits into `(mean(6), log_std_raw(6))`; `log_std = clip(log_std_raw, -5, 2)`.
+Deterministic eval action: per-component squash of `mean` — `tanh(mean[0])` for `a_bat`,
+`sigmoid(mean[1:6])` for the 5 fractions. See §6 for the full inference recipe.
 
 Keys use the naming convention `actor_<layer>_<param>`:
 
@@ -101,8 +114,8 @@ Keys use the naming convention `actor_<layer>_<param>`:
 | `actor_fc1_b` | `float32` | `(256,)` | Layer 1 bias |
 | `actor_fc2_w` | `float32` | `(256, 256)` | Layer 2 weight matrix |
 | `actor_fc2_b` | `float32` | `(256,)` | Layer 2 bias |
-| `actor_out_w` | `float32` | `(256, 2)` | Output layer weight (2 outputs: mean + log_std_raw) |
-| `actor_out_b` | `float32` | `(2,)` | Output layer bias |
+| `actor_out_w` | `float32` | `(256, 12)` | Output layer weight (12 outputs: mean(6) + log_std_raw(6)) |
+| `actor_out_b` | `float32` | `(12,)` | Output layer bias |
 
 > **Matrix convention:** weights are stored in `(in_features, out_features)` order so that
 > `y = x @ W + b` — same convention as Flax's default `Dense` layer. Transposing in storage
@@ -112,7 +125,7 @@ Keys use the naming convention `actor_<layer>_<param>`:
 > would require custom serialisation. Flat keys with a consistent `actor_<layer>_<param>`
 > pattern are unambiguous and require no schema metadata.
 
-### 4.4 Optional: critic weights (for resuming training)
+### 4.5 Optional: critic weights (for resuming training)
 
 These keys are OPTIONAL (not required for inference). A serving-layer consumer MUST NOT
 fail if they are absent. A training-resume loader SHOULD fail loudly if they are absent
@@ -120,7 +133,7 @@ when resuming is requested.
 
 | Key | dtype | shape | Description |
 |-----|-------|-------|-------------|
-| `critic1_fc1_w` | `float32` | `(108, 256)` | Critic Q1 layer 1 (input dim = 107 obs + 1 action = 108) |
+| `critic1_fc1_w` | `float32` | `(113, 256)` | Critic Q1 layer 1 (input dim = 107 obs + 6 action = 113) |
 | `critic1_fc1_b` | `float32` | `(256,)` | |
 | `critic1_fc2_w` | `float32` | `(256, 256)` | |
 | `critic1_fc2_b` | `float32` | `(256,)` | |
@@ -128,7 +141,7 @@ when resuming is requested.
 | `critic1_out_b` | `float32` | `(1,)` | |
 | `critic2_*` | `float32` | same as critic1 | Second Q-network (clipped double-Q) |
 | `ent_coef` | `float32` | scalar | Current entropy coefficient value (for resume) |
-| `target_entropy` | `float32` | scalar | Target entropy = −action_dim = −1.0 (for resume) |
+| `target_entropy` | `float32` | scalar | Target entropy = −action_dim = −6.0 (for resume; action_dim=6 per §2.2) |
 
 ---
 
@@ -164,7 +177,7 @@ def load_checkpoint(path: str | Path) -> CheckpointData:
 ### 5.1 `CheckpointData` type
 
 ```python
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import numpy as np
 
 @dataclass
@@ -178,35 +191,41 @@ class CheckpointData:
     code_version:    str    # git SHA prefix or "unknown"
     run_config_json: str    # JSON string; must carry seed + site_config_id
 
-    # VecNormalize obs stats (numpy, shape (107,) and scalar)
-    obs_mean:   np.ndarray     # float32, (107,)
-    obs_var:    np.ndarray     # float32, (107,)
-    obs_count:  int
-    obs_clip:   float          # =10.0
+    # Architecture identity (§4.2)
+    obs_dim:    int = 107   # observation dimensionality (always 107 for Energy GO v1)
+    action_dim: int = 6     # action dimensionality (always 6 per §2.2 "Energy Router")
 
-    # Actor MLP weights (numpy float32)
-    actor_fc1_w: np.ndarray    # (107, 256)
-    actor_fc1_b: np.ndarray    # (256,)
-    actor_fc2_w: np.ndarray    # (256, 256)
-    actor_fc2_b: np.ndarray    # (256,)
-    actor_out_w: np.ndarray    # (256, 2)
-    actor_out_b: np.ndarray    # (2,)
+    # VecNormalize obs stats (numpy, shape (obs_dim,) and scalar)
+    obs_mean:   np.ndarray = field(default_factory=lambda: np.zeros(107, dtype=np.float32))
+    obs_var:    np.ndarray = field(default_factory=lambda: np.ones(107,  dtype=np.float32))
+    obs_count:  int = 0
+    obs_clip:   float = 10.0
+
+    # Actor MLP weights (numpy float32); shapes correspond to Dense(12) output layer:
+    # 12 = 2 * action_dim = mean(6) + log_std_raw(6)
+    actor_fc1_w: np.ndarray = field(default=None)    # (107, 256)
+    actor_fc1_b: np.ndarray = field(default=None)    # (256,)
+    actor_fc2_w: np.ndarray = field(default=None)    # (256, 256)
+    actor_fc2_b: np.ndarray = field(default=None)    # (256,)
+    actor_out_w: np.ndarray = field(default=None)    # (256, 12)  ← 12 = 2 * action_dim
+    actor_out_b: np.ndarray = field(default=None)    # (12,)
 
     # Optional critic weights (None if not saved / inference-only checkpoint)
-    critic1_fc1_w: np.ndarray | None = None
+    # Critic input dim = obs_dim + action_dim = 113
+    critic1_fc1_w: np.ndarray | None = None    # (113, 256)
     critic1_fc1_b: np.ndarray | None = None
     critic1_fc2_w: np.ndarray | None = None
     critic1_fc2_b: np.ndarray | None = None
     critic1_out_w: np.ndarray | None = None
     critic1_out_b: np.ndarray | None = None
-    critic2_fc1_w: np.ndarray | None = None
+    critic2_fc1_w: np.ndarray | None = None    # (113, 256)
     critic2_fc1_b: np.ndarray | None = None
     critic2_fc2_w: np.ndarray | None = None
     critic2_fc2_b: np.ndarray | None = None
     critic2_out_w: np.ndarray | None = None
     critic2_out_b: np.ndarray | None = None
-    ent_coef:      float | None = None
-    target_entropy: float | None = None
+    ent_coef:       float | None = None
+    target_entropy: float | None = None    # = -action_dim = -6.0
 ```
 
 ---
@@ -222,21 +241,43 @@ import numpy as np
 def actor_forward_numpy(checkpoint: CheckpointData, raw_obs: np.ndarray) -> np.ndarray:
     """Deterministic actor action from a raw (107,) observation.
 
-    Returns: action scalar in (-1, 1) (after tanh).
+    Returns: action (6,) — per-component squash applied:
+        action[0]   = tanh(mean[0])       # a_bat  ∈ (-1, 1)
+        action[1:6] = sigmoid(mean[1:6])  # fractions ∈ (0, 1)
     """
     # Step 1: normalise obs with VecNormalize stats
     std = np.sqrt(checkpoint.obs_var + 1e-8)
-    norm_obs = np.clip((raw_obs - checkpoint.obs_mean) / std, -checkpoint.obs_clip, checkpoint.obs_clip)
+    norm_obs = np.clip(
+        (raw_obs - checkpoint.obs_mean) / std,
+        -checkpoint.obs_clip,
+        checkpoint.obs_clip,
+    )
 
     # Step 2: MLP forward pass — y = ReLU(x @ W + b)
     h1 = np.maximum(0.0, norm_obs @ checkpoint.actor_fc1_w + checkpoint.actor_fc1_b)   # (256,)
-    h2 = np.maximum(0.0, h1      @ checkpoint.actor_fc2_w + checkpoint.actor_fc2_b)   # (256,)
-    out = h2 @ checkpoint.actor_out_w + checkpoint.actor_out_b                         # (2,)
+    h2 = np.maximum(0.0, h1       @ checkpoint.actor_fc2_w + checkpoint.actor_fc2_b)   # (256,)
+    out = h2 @ checkpoint.actor_out_w + checkpoint.actor_out_b                          # (12,)
 
-    # Step 3: extract mean; apply tanh (deterministic eval policy)
-    mean = out[0]
-    return np.tanh(mean)   # scalar in (-1, 1)
+    # Step 3: split mean(6) from log_std_raw(6); apply per-component squash
+    mean = out[:6]  # first 6 outputs are the mean vector
+    # Per-component squash per §2.2 "Energy Router" action space:
+    a_bat     = np.tanh(mean[0:1])            # a_bat ∈ (-1, 1)
+    fractions = 1.0 / (1.0 + np.exp(-mean[1:6]))  # sigmoid; fractions ∈ (0, 1)
+    return np.concatenate([a_bat, fractions])  # (6,)
 ```
+
+> **Action → physical dispatch mapping** (for serving consumers):
+> Once `action = actor_forward_numpy(checkpoint, raw_obs)` returns a `(6,)` vector, the
+> mapping to physical quantities is defined in `contracts/env/jax_env_core.md` §5.3.2:
+> - `action[0]` (`a_bat`) × `p_bat_max_mw` (98.16 MW) → battery charge/discharge setpoint
+> - `action[1]` (`f_sol→load`) × solar power → solar-to-load flow
+> - `action[2]` (`f_sol→bat`)  × solar power → solar-to-battery flow  (sum with [1] clipped to 1)
+> - `action[3]` (`f_wind→load`) × wind power → wind-to-load flow
+> - `action[4]` (`f_wind→bat`)  × wind power → wind-to-battery flow   (sum with [3] clipped to 1)
+> - `action[5]` (`f_bat→load`)  × battery discharge → battery-to-load flow (remainder → grid)
+>
+> The env handles renormalisation when `action[1]+action[2] > 1` or `action[3]+action[4] > 1`.
+> The `site_config_id` in `run_config_json` (§4.1) resolves `p_bat_max_mw` and the site YAML.
 
 This NumPy recipe MUST produce actions identical (within float32 tolerance, atol=1e-5) to
 `energy_go.training.run_training.actor_forward()` applied with JAX.

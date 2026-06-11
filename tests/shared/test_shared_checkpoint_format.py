@@ -37,14 +37,17 @@ import jax.numpy as jnp
 # ---------------------------------------------------------------------------
 
 def _make_random_weights(rng: np.random.RandomState) -> dict:
-    """Draw random actor MLP weights matching the shapes in §4.3."""
+    """Draw random actor MLP weights matching the shapes in §4.4.
+
+    actor_out_w is (256, 12) — 12 = 2 * action_dim(6) = mean(6) + log_std_raw(6).
+    """
     return dict(
         actor_fc1_w = rng.randn(107, 256).astype(np.float32),
         actor_fc1_b = rng.randn(256).astype(np.float32),
         actor_fc2_w = rng.randn(256, 256).astype(np.float32),
         actor_fc2_b = rng.randn(256).astype(np.float32),
-        actor_out_w = rng.randn(256, 2).astype(np.float32),
-        actor_out_b = rng.randn(2).astype(np.float32),
+        actor_out_w = rng.randn(256, 12).astype(np.float32),  # 12 = 2 * action_dim(6)
+        actor_out_b = rng.randn(12).astype(np.float32),
     )
 
 
@@ -141,7 +144,52 @@ class TestMetadataKeys:
 
 
 # ---------------------------------------------------------------------------
-# §4.2 — VecNormalize obs stats shapes and dtypes
+# §4.2 — Architecture identity: obs_dim and action_dim
+# ---------------------------------------------------------------------------
+
+class TestArchitectureIdentity:
+    """obs_dim and action_dim keys allow consumers to recover obs/action geometry — §4.2."""
+
+    def test_obs_dim_is_107(self):
+        # obs_dim must be 107 — the 107-dim observation vector from §2.1 / jax_env_core §5.4
+        rng = np.random.RandomState(0)
+        ckpt = _make_checkpoint(rng)
+        assert ckpt.obs_dim == 107, f"obs_dim={ckpt.obs_dim}, expected 107"
+
+    def test_action_dim_is_6(self):
+        # action_dim must be 6 — the "Energy Router" action space §2.2
+        rng = np.random.RandomState(0)
+        ckpt = _make_checkpoint(rng)
+        assert ckpt.action_dim == 6, f"action_dim={ckpt.action_dim}, expected 6"
+
+    def test_obs_dim_round_trips(self, tmp_path):
+        # obs_dim must survive save/load
+        rng = np.random.RandomState(0)
+        ckpt = _make_checkpoint(rng)
+        path = tmp_path / "ckpt_dims.npz"
+        save_checkpoint(ckpt, path)
+        loaded = load_checkpoint(path)
+        assert int(loaded.obs_dim)    == 107, f"obs_dim after round-trip: {loaded.obs_dim}"
+        assert int(loaded.action_dim) ==   6, f"action_dim after round-trip: {loaded.action_dim}"
+
+    def test_obs_mean_shape_matches_obs_dim(self):
+        # obs_mean.shape[0] must equal obs_dim
+        rng = np.random.RandomState(0)
+        ckpt = _make_checkpoint(rng)
+        assert ckpt.obs_mean.shape == (ckpt.obs_dim,), \
+            f"obs_mean shape {ckpt.obs_mean.shape} != (obs_dim={ckpt.obs_dim},)"
+
+    def test_actor_out_w_cols_match_2x_action_dim(self):
+        # actor_out_w.shape == (256, 2*action_dim): mean(6) + log_std_raw(6) = 12
+        rng = np.random.RandomState(0)
+        ckpt = _make_checkpoint(rng)
+        expected_out_cols = 2 * ckpt.action_dim  # = 12
+        assert ckpt.actor_out_w.shape == (256, expected_out_cols), \
+            f"actor_out_w shape {ckpt.actor_out_w.shape} != (256, {expected_out_cols})"
+
+
+# ---------------------------------------------------------------------------
+# §4.3 — VecNormalize obs stats shapes and dtypes
 # ---------------------------------------------------------------------------
 
 class TestObsStatsShapes:
@@ -189,15 +237,19 @@ class TestObsStatsShapes:
 # ---------------------------------------------------------------------------
 
 class TestActorWeightShapes:
-    """Every weight key must have the exact shape from §4.3 and dtype float32."""
+    """Every weight key must have the exact shape from §4.4 and dtype float32.
+
+    actor_out_w: (256, 12) — 12 = 2 * action_dim(6), for mean(6) + log_std_raw(6).
+    Critic fc1: input dim = obs_dim(107) + action_dim(6) = 113.
+    """
 
     EXPECTED_SHAPES = {
         "actor_fc1_w": (107, 256),
         "actor_fc1_b": (256,),
         "actor_fc2_w": (256, 256),
         "actor_fc2_b": (256,),
-        "actor_out_w": (256, 2),
-        "actor_out_b": (2,),
+        "actor_out_w": (256, 12),   # 12 = 2 * action_dim(6): mean(6) + log_std_raw(6)
+        "actor_out_b": (12,),
     }
 
     @pytest.mark.parametrize("key,expected", EXPECTED_SHAPES.items())
@@ -304,15 +356,39 @@ class TestRoundTrip:
 # ---------------------------------------------------------------------------
 
 class TestActorForwardNumpy:
-    """Pure-NumPy actor forward pass — §6."""
+    """Pure-NumPy actor forward pass — §6.
 
-    def test_output_in_range_minus_1_to_1(self):
-        # tanh output is always in (-1, 1) for any finite input
+    actor_forward_numpy returns a (6,) action:
+        action[0]   = tanh(mean[0])       a_bat  ∈ (-1, 1)
+        action[1:6] = sigmoid(mean[1:6])  fractions ∈ (0, 1)
+    """
+
+    def test_output_shape_is_6(self):
+        # actor_forward_numpy must return a (6,) array — §2.2 "Energy Router" action space
         rng = np.random.RandomState(10)
         ckpt = _make_checkpoint(rng)
         obs = rng.randn(107).astype(np.float32)
         action = actor_forward_numpy(ckpt, obs)
-        assert -1.0 < float(action) < 1.0, f"action {action} out of (-1, 1)"
+        assert action.shape == (6,), f"actor_forward_numpy output shape {action.shape} != (6,)"
+
+    def test_a_bat_in_open_tanh_range(self):
+        # action[0] = tanh(mean[0]) ∈ (-1, 1)
+        rng = np.random.RandomState(10)
+        ckpt = _make_checkpoint(rng)
+        obs = rng.randn(107).astype(np.float32)
+        action = actor_forward_numpy(ckpt, obs)
+        a_bat = float(action[0])
+        assert -1.0 < a_bat < 1.0, f"a_bat {a_bat} out of open (-1, 1) (tanh squash)"
+
+    def test_fractions_in_open_sigmoid_range(self):
+        # action[1:6] = sigmoid(mean[1:6]) ∈ (0, 1)
+        rng = np.random.RandomState(10)
+        ckpt = _make_checkpoint(rng)
+        obs = rng.randn(107).astype(np.float32)
+        action = actor_forward_numpy(ckpt, obs)
+        fractions = action[1:6]
+        assert np.all(fractions > 0.0) and np.all(fractions < 1.0), \
+            f"fractions {fractions} out of open (0, 1) (sigmoid squash)"
 
     def test_deterministic_on_fixed_obs(self):
         # Same checkpoint + same obs → same action every call
@@ -321,15 +397,22 @@ class TestActorForwardNumpy:
         obs = rng.randn(107).astype(np.float32)
         a1 = actor_forward_numpy(ckpt, obs)
         a2 = actor_forward_numpy(ckpt, obs)
-        assert float(a1) == pytest.approx(float(a2), abs=1e-10)
+        np.testing.assert_array_equal(a1, a2, err_msg="actor_forward_numpy not deterministic")
 
     def test_manual_forward_matches_api(self):
-        """Verify the API matches the documented recipe (§6) — manual computation."""
+        """Verify the API matches the documented recipe (§6) — manual computation.
+
+        Manual recipe:
+          out = h2 @ actor_out_w + actor_out_b   shape (12,)
+          mean = out[:6]
+          action[0]   = tanh(mean[0])
+          action[1:6] = sigmoid(mean[1:6])
+        """
         rng = np.random.RandomState(12)
         ckpt = _make_checkpoint(rng)
         obs = np.ones(107, dtype=np.float32)
 
-        # Step 1: normalise obs per §4.2 recipe
+        # Step 1: normalise obs per §4.3 recipe
         # std = sqrt(obs_var + 1e-8)
         std = np.sqrt(ckpt.obs_var + 1e-8)
         norm_obs = np.clip((obs - ckpt.obs_mean) / std, -ckpt.obs_clip, ckpt.obs_clip)
@@ -339,39 +422,44 @@ class TestActorForwardNumpy:
         h1 = np.maximum(0.0, norm_obs @ ckpt.actor_fc1_w + ckpt.actor_fc1_b)
         # h2 = ReLU(h1 @ fc2_w + fc2_b)          — shape (256,)
         h2 = np.maximum(0.0, h1 @ ckpt.actor_fc2_w + ckpt.actor_fc2_b)
-        # out = h2 @ out_w + out_b               — shape (2,); [0]=mean, [1]=log_std_raw
+        # out = h2 @ out_w + out_b               — shape (12,); first 6 = mean
         out = h2 @ ckpt.actor_out_w + ckpt.actor_out_b
-        # Step 3: tanh(mean)
-        expected_action = np.tanh(out[0])
+        # Step 3: per-component squash
+        mean = out[:6]
+        expected_a_bat = np.tanh(mean[0])
+        expected_fractions = 1.0 / (1.0 + np.exp(-mean[1:6]))  # sigmoid
 
         api_action = actor_forward_numpy(ckpt, obs)
-        assert float(api_action) == pytest.approx(float(expected_action), abs=1e-6)
+        assert float(api_action[0]) == pytest.approx(float(expected_a_bat), abs=1e-6), \
+            f"a_bat mismatch: {api_action[0]} vs {expected_a_bat}"
+        np.testing.assert_allclose(api_action[1:6], expected_fractions, atol=1e-6,
+                                   err_msg="fractions mismatch in manual forward vs API")
 
     def test_numpy_jax_parity(self):
-        """actor_forward_numpy and actor_forward_jax agree to atol=1e-5 — §7."""
-        # This pins the cross-implementation parity requirement from §7.
+        """actor_forward_numpy and actor_forward_jax agree to atol=1e-5 — §7.
+
+        Both return a (6,) action; compared element-wise.
+        """
         rng = np.random.RandomState(13)
         ckpt = _make_checkpoint(rng)
         obs = rng.randn(107).astype(np.float32)
 
-        numpy_action = float(actor_forward_numpy(ckpt, obs))
+        numpy_action = actor_forward_numpy(ckpt, obs)  # (6,)
 
         # Build a Flax param dict that actor_forward_jax expects from the CheckpointData
         # (conversion is part of the training module — tested here as integration)
-        jax_action = float(actor_forward_jax(ckpt, jnp.array(obs)))
+        jax_action = np.array(actor_forward_jax(ckpt, jnp.array(obs)))  # (6,)
 
-        assert numpy_action == pytest.approx(jax_action, abs=1e-5), (
-            f"NumPy action {numpy_action} and JAX action {jax_action} differ by "
-            f"{abs(numpy_action - jax_action):.2e} (threshold 1e-5)"
-        )
+        np.testing.assert_allclose(numpy_action, jax_action, atol=1e-5,
+                                   err_msg="NumPy vs JAX actor_forward parity failed (atol=1e-5)")
 
     def test_zero_obs_produces_finite_action(self):
-        # obs = all-zeros should produce a finite action (no NaN or Inf)
+        # obs = all-zeros should produce a finite (6,) action (no NaN or Inf)
         rng = np.random.RandomState(14)
         ckpt = _make_checkpoint(rng)
         obs = np.zeros(107, dtype=np.float32)
         action = actor_forward_numpy(ckpt, obs)
-        assert np.isfinite(float(action)), "all-zero obs produced non-finite action"
+        assert np.all(np.isfinite(action)), f"all-zero obs produced non-finite action: {action}"
 
 
 # ---------------------------------------------------------------------------
@@ -463,13 +551,13 @@ class TestCriticWeights:
     """Optional critic keys are persisted when present and absent otherwise — §4.4."""
 
     CRITIC_SHAPES = {
-        "critic1_fc1_w": (108, 256),   # 107 obs + 1 action = 108 inputs
+        "critic1_fc1_w": (113, 256),   # 107 obs + 6 action = 113 inputs (§5.3)
         "critic1_fc1_b": (256,),
         "critic1_fc2_w": (256, 256),
         "critic1_fc2_b": (256,),
         "critic1_out_w": (256, 1),
         "critic1_out_b": (1,),
-        "critic2_fc1_w": (108, 256),
+        "critic2_fc1_w": (113, 256),   # same as critic1 (clipped double-Q)
         "critic2_fc1_b": (256,),
         "critic2_fc2_w": (256, 256),
         "critic2_fc2_b": (256,),
@@ -484,7 +572,7 @@ class TestCriticWeights:
     def test_critic_weights_round_trip(self, tmp_path):
         rng = np.random.RandomState(30)
         critic_w = self._make_critic_weights(rng)
-        ckpt = _make_checkpoint(rng, **critic_w, ent_coef=0.18, target_entropy=-1.0)
+        ckpt = _make_checkpoint(rng, **critic_w, ent_coef=0.18, target_entropy=-6.0)
         path = tmp_path / "ckpt_with_critic.npz"
         save_checkpoint(ckpt, path)
         loaded = load_checkpoint(path)
@@ -495,24 +583,38 @@ class TestCriticWeights:
                 err_msg=f"Critic weight {key} differs after round-trip",
             )
 
+    def test_critic_fc1_input_dim_is_113(self, tmp_path):
+        # critic1_fc1_w must have shape (113, 256): 107 obs + 6 action = 113 inputs (§5.3)
+        rng = np.random.RandomState(33)
+        critic_w = self._make_critic_weights(rng)
+        ckpt = _make_checkpoint(rng, **critic_w)
+        path = tmp_path / "ckpt_critic_dim.npz"
+        save_checkpoint(ckpt, path)
+        loaded = load_checkpoint(path)
+        assert loaded.critic1_fc1_w.shape == (113, 256), \
+            f"critic1_fc1_w shape {loaded.critic1_fc1_w.shape} != (113, 256)"
+        assert loaded.critic2_fc1_w.shape == (113, 256), \
+            f"critic2_fc1_w shape {loaded.critic2_fc1_w.shape} != (113, 256)"
+
     def test_ent_coef_round_trip(self, tmp_path):
         rng = np.random.RandomState(31)
-        ckpt = _make_checkpoint(rng, ent_coef=0.18, target_entropy=-1.0)
+        ckpt = _make_checkpoint(rng, ent_coef=0.18, target_entropy=-6.0)
         path = tmp_path / "ckpt_entcoef.npz"
         save_checkpoint(ckpt, path)
         loaded = load_checkpoint(path)
         assert float(loaded.ent_coef) == pytest.approx(0.18, rel=1e-5)
-        assert float(loaded.target_entropy) == pytest.approx(-1.0, abs=1e-6)
+        assert float(loaded.target_entropy) == pytest.approx(-6.0, abs=1e-6)
 
-    def test_target_entropy_is_negative_one(self, tmp_path):
-        # SAC target entropy = −action_dim = −1.0 (single action, §5 training_pipeline §5.3)
-        # target_entropy = −1.0 is the only valid value for this env
+    def test_target_entropy_is_negative_six(self, tmp_path):
+        # SAC target entropy = −action_dim = −6.0 (action_dim=6 per §2.2 "Energy Router")
+        # §5 training_pipeline §6.1.5: target_entropy = -action_dim = -6.0
+        # target_entropy = −6.0 is the only valid value for this env
         rng = np.random.RandomState(32)
-        ckpt = _make_checkpoint(rng, target_entropy=-1.0)
+        ckpt = _make_checkpoint(rng, target_entropy=-6.0)
         path = tmp_path / "ckpt_te.npz"
         save_checkpoint(ckpt, path)
         loaded = load_checkpoint(path)
-        assert float(loaded.target_entropy) == pytest.approx(-1.0, abs=1e-6)
+        assert float(loaded.target_entropy) == pytest.approx(-6.0, abs=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -556,24 +658,29 @@ class TestFileFormat:
 
 # reviewer: obs_var=0 edge case — normalize must not divide by zero (eps guard)
 def test_obs_var_zero_does_not_nan():
-    """When obs_var is exactly zero for a dimension, normalize must not produce NaN.
-    The eps=1e-8 guard in the inference recipe (§6: std = sqrt(var + 1e-8)) prevents this."""
+    """When obs_var is exactly zero for all dimensions, normalize must not produce NaN.
+    The eps=1e-8 guard in the inference recipe (§6: std = sqrt(var + 1e-8)) prevents this.
+    actor_forward_numpy returns a (6,) action — all elements must be finite.
+    """
     rng = np.random.RandomState(50)
     ckpt = _make_checkpoint(rng)
-    # Force obs_var[0] = 0.0
+    # Force obs_var = 0 for all dimensions
     ckpt_zero_var = CheckpointData(**{
         **ckpt.__dict__,
         "obs_var": np.zeros(107, dtype=np.float32),
     })
     obs = np.zeros(107, dtype=np.float32)
     action = actor_forward_numpy(ckpt_zero_var, obs)
-    assert np.isfinite(float(action)), "obs_var=0 produced NaN/Inf action"
+    assert action.shape == (6,), f"obs_var=0: action shape {action.shape} != (6,)"
+    assert np.all(np.isfinite(action)), f"obs_var=0 produced NaN/Inf action: {action}"
 
 
 # reviewer: obs normalisation in inference recipe is clipped — extreme obs stays in [-10, 10]
 def test_inference_recipe_clips_extreme_obs():
     """Verifies the clip step is present in actor_forward_numpy (§6 step 1).
-    An obs value far from the mean must produce a normalised value of exactly ±obs_clip."""
+    An obs value far from the mean must produce a normalised value of exactly ±obs_clip.
+    actor_forward_numpy returns a (6,) action — all elements must be finite.
+    """
     rng = np.random.RandomState(51)
     ckpt = _make_checkpoint(rng, obs_clip=10.0)
     # Set obs_mean=0, obs_var=1 so normalised = obs / std ≈ obs
@@ -585,15 +692,16 @@ def test_inference_recipe_clips_extreme_obs():
     # obs[0] = 999 → normalised = 999/sqrt(1+1e-8) ≈ 999 → clipped to 10
     obs = np.zeros(107, dtype=np.float32)
     obs[0] = 999.0
-    # To verify clip: manually compute normalised[0] before fc1
+    # Verify clip: manually compute normalised[0] before fc1
     std = np.sqrt(np.ones(107, dtype=np.float32) + 1e-8)
     norm = np.clip((obs - ckpt_unit.obs_mean) / std, -10.0, 10.0)
     assert float(norm[0]) == pytest.approx(10.0, rel=1e-5), (
         "Clip not applied: normalised obs[0] should be 10.0 not 999"
     )
-    # The action must still be finite (the network sees clipped input)
+    # The action must be a (6,) finite vector (the network sees clipped input)
     action = actor_forward_numpy(ckpt_unit, obs)
-    assert np.isfinite(float(action))
+    assert action.shape == (6,), f"action shape {action.shape} != (6,)"
+    assert np.all(np.isfinite(action)), f"extreme obs produced non-finite action: {action}"
 
 
 # reviewer: critic input is obs‖action concat (108 dims) — weight shape (108,256) not (107,256)
