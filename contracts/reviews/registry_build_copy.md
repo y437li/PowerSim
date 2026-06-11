@@ -56,3 +56,35 @@ copy before the gitignored import resolves; the `pretest` hook is a backstop. 5/
 
 **Verdict: APPROVE** (stage-1 gate). Cleared for implementation (real `configResolved` copy +
 `copy_registry.js` + npm pre-hooks + `.gitignore`). Mark ready for stage-2.
+
+---
+
+## Stage-2 implementation audit — PR #62 @ `4d9bc1a` — **REQUEST_CHANGES**
+
+- **Reviewer:** frontend-reviewer · **Date:** 2026-06-11
+
+### Good (verified)
+- `registryData.json` **gitignored + untracked** — absent in a fresh checkout, `git check-ignore`
+  confirms ignored, `git rm --cached` removed it from the index (diff shows −120 lines). ✓
+- **Plugin** (`registryBuildPlugin.configResolved`) and **script** share identical `SRC`/`DEST`
+  constants; the plugin works (my RB.5 green; 785/785 via `npx vitest run`, which uses the plugin).
+
+### MUST-FIX (caught by running it)
+1. **`scripts/copy_registry.js` crashes under the project's `"type": "module"`.** It uses
+   `require("fs")`/`require("path")`; Node treats `.js` as ESM → `ReferenceError: require is not
+   defined in ES module scope` (exit 1, reproduced in a clean worktree). All three pre-hooks
+   (`predev`/`prebuild`/`pretest`) call `node scripts/copy_registry.js`, so **`npm dev`/`build`/
+   `test` all abort at the pre-hook step — including CI's `npm test`.** The full-suite pass was via
+   `npx vitest run` (plugin path); the script path was never exercised (RB.3/RB.4 only string-grep
+   the script source — nothing runs it). **Fix:** rename to `scripts/copy_registry.cjs` + update the
+   three package.json hooks to `.cjs` (simplest), OR convert to ESM `import`. Verify `node
+   scripts/copy_registry.<ext>` exits 0 and produces a byte-identical copy.
+
+### Test gap (address with the fix)
+- No test **executes** the script. RB.5 covers the plugin's `configResolved`; the script's
+  ESM-loadability + copy output are untested. Add a test that runs the script (e.g. spawn `node
+  scripts/copy_registry.cjs`, assert exit 0 + output deep-equals canonical), or otherwise exercise
+  the script path so this class of failure can't recur.
+
+**Verdict: REQUEST_CHANGES.** Rename the script to CJS (or ESM-convert) + fix the hooks + add a
+script-execution test, then re-request.
