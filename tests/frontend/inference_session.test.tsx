@@ -230,6 +230,65 @@ describe("§IS1–§IS5 — WsClient send() and server frame routing", () => {
     expect(onServerError).toHaveBeenCalledOnce();
     expect(onServerError.mock.calls[0][0]).toMatchObject({ kind: "error", code: "policy_not_found" });
   });
+
+  // reviewer (frontend-reviewer): the §1.3 payload-guard relaxation MUST be kind-specific.
+  // status/error frames (no payload) are dispatched, but env_step/train_metrics WITHOUT a
+  // payload MUST still be discarded — that guard is load-bearing per D18 (a malformed env_step
+  // with no payload reaching telemetryStore would crash the dashboard). A careless relaxation
+  // that skips the guard for ALL kinds would pass §IS4/§IS5 yet reopen the D18 hole.
+  it("reviewer §1.3 — env_step WITHOUT a payload is still discarded (onEnvStep NOT called)", async () => {
+    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
+      "../../src/clients/wsClient"
+    );
+    const onEnvStep = vi.fn();
+    createWsClient({
+      url: "ws://localhost/ws/inference",
+      onEnvStep,
+      onTrainMetrics: vi.fn(),
+      onEvalCompare: vi.fn(),
+      onStatusChange: vi.fn(),
+    }).connect();
+    // env_step envelope missing the `payload` wrapper → must be dropped by the guard.
+    mockWsInstance.onmessage?.({
+      data: JSON.stringify({ kind: "env_step", schema_version: "1.0.0", seq: 0, run_id: "r" }),
+    } as MessageEvent);
+    expect(onEnvStep).not.toHaveBeenCalled();
+  });
+
+  it("reviewer §1.3 — train_metrics WITHOUT a payload is still discarded (onTrainMetrics NOT called)", async () => {
+    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
+      "../../src/clients/wsClient"
+    );
+    const onTrainMetrics = vi.fn();
+    createWsClient({
+      url: "ws://localhost/ws/inference",
+      onEnvStep: vi.fn(),
+      onTrainMetrics,
+      onEvalCompare: vi.fn(),
+      onStatusChange: vi.fn(),
+    }).connect();
+    mockWsInstance.onmessage?.({
+      data: JSON.stringify({ kind: "train_metrics", schema_version: "1.0.0", seq: 0, run_id: "r" }),
+    } as MessageEvent);
+    expect(onTrainMetrics).not.toHaveBeenCalled();
+  });
+
+  it("reviewer §1.3 — status frame (no payload) IS dispatched (relaxation works for control frames)", async () => {
+    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
+      "../../src/clients/wsClient"
+    );
+    const onServerStatus = vi.fn();
+    createWsClient({
+      url: "ws://localhost/ws/inference",
+      onEnvStep: vi.fn(),
+      onTrainMetrics: vi.fn(),
+      onEvalCompare: vi.fn(),
+      onStatusChange: vi.fn(),
+      onServerStatus,
+    }).connect();
+    mockWsInstance.onmessage?.({ data: JSON.stringify(STATUS_READY) } as MessageEvent);
+    expect(onServerStatus).toHaveBeenCalledOnce();
+  });
 });
 
 // ─── §IS6–§IS7: restClient.getLatestRun() ────────────────────────────────────
