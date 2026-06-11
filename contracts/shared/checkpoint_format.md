@@ -41,6 +41,9 @@ Naming convention: `checkpoint_<run_id>_step<global_step>.npz` (e.g. `checkpoint
 Every checkpoint file contains a `schema_version` string entry (numpy string array, scalar).
 Current version: **`"1.0.0"`** (semver).
 
+> **Patch clarifications (no stored-format change; `schema_version` stays `"1.0.0"`):**
+> - **D28** — §6 `actor_forward_numpy` clips `mean` to ±8.0 before the tanh/sigmoid squash to prevent float32 saturation (which would violate the OPEN action ranges and break the documented atol parity with the JAX `actor_forward`). The stored keys/shapes/dtypes are unchanged; this clarifies the consumption recipe only.
+
 Versioning rules:
 - **Patch** (1.0.x) — documentation change only; no key change.
 - **Minor** (1.x.0) — additive: new optional key added; consumers ignore unknown keys.
@@ -245,9 +248,9 @@ import numpy as np
 def actor_forward_numpy(checkpoint: CheckpointData, raw_obs: np.ndarray) -> np.ndarray:
     """Deterministic actor action from a raw (107,) observation.
 
-    Returns: action (6,) — per-component squash applied:
-        action[0]   = tanh(mean[0])       # a_bat  ∈ (-1, 1)
-        action[1:6] = sigmoid(mean[1:6])  # fractions ∈ (0, 1)
+    Returns: action (6,) — mean clipped to ±8.0 (D28) then per-component squash:
+        action[0]   = tanh(clip(mean[0], -8, 8))       # a_bat  ∈ (-1, 1)
+        action[1:6] = sigmoid(clip(mean[1:6], -8, 8))  # fractions ∈ (0, 1)
     """
     # Step 1: normalise obs with VecNormalize stats
     std = np.sqrt(checkpoint.obs_var + 1e-8)
@@ -264,6 +267,11 @@ def actor_forward_numpy(checkpoint: CheckpointData, raw_obs: np.ndarray) -> np.n
 
     # Step 3: split mean(6) from log_std_raw(6); apply per-component squash
     mean = out[:6]  # first 6 outputs are the mean vector
+    # Clip mean to ±8.0 BEFORE the squash (D28): float32 tanh/sigmoid saturate to
+    # exactly ±1.0 / 0.0 / 1.0 for |x| ≳ 8.7, which would violate the OPEN ranges
+    # below and diverge from the JAX actor_forward (which clips identically). The
+    # clip preserves a_bat ∈ (-1,1) / fractions ∈ (0,1) and the atol parity guarantee.
+    mean = np.clip(mean, -8.0, 8.0)
     # Per-component squash per §2.2 "Energy Router" action space:
     a_bat     = np.tanh(mean[0:1])            # a_bat ∈ (-1, 1)
     fractions = 1.0 / (1.0 + np.exp(-mean[1:6]))  # sigmoid; fractions ∈ (0, 1)
