@@ -18,6 +18,29 @@ jobs:
         with:
           python-version: "3.11"
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python 3.11 via uv (acceptance-test toolchain)
+        # install_app.sh uses `uv venv --python 3.11`; without this step uv cannot
+        # locate CPython 3.11 and exits 3 (dependency install failed) before any
+        # port-binding logic can run, causing test_acceptance_launch_exit5 to see
+        # exit 3 instead of exit 5.
+        run: uv python install 3.11
+
+      - name: Regenerate package-lock.json for Linux
+        # package-lock.json is committed from macOS and omits @rollup/rollup-linux-x64-gnu.
+        # npm ci inside install_app.sh (acceptance test) fails with exit 3 on Linux unless
+        # the lock is regenerated here.  The Frontend-tests step already does this; this
+        # pre-step makes the lock Linux-compatible before the Python acceptance tests copy
+        # it from REPO_ROOT into their tmp dirs.
+        run: |
+          if [ -f package.json ]; then
+            rm -f package-lock.json
+            npm install --package-lock-only --ignore-scripts
+          fi
+
       - name: Telemetry schema validation (golden examples)
         shell: bash
         run: |
