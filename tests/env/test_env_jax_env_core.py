@@ -958,3 +958,72 @@ class TestReviewerAddedJaxCore:
         params = EnvParams(episode_len=8760)
         new_state, _, _, _, _ = step(state, _zero_action(), params, data)
         assert float(new_state.month_peak) == pytest.approx(0.0, abs=1e-6)
+
+
+# ===========================================================================
+# Reviewer-added (backend-reviewer, PR #33 §3.3 EnvInfo amendment @ 43a4958)
+# ===========================================================================
+class TestReviewerPerSourceFlowIdentities:
+    """Verify the 13 additive per-source EnvInfo fields satisfy the §3.3 invariants:
+        p_export    == p_sol_to_grid + p_wind_to_grid + p_bat_to_grid
+        p_curtailed == p_sol_curtailed + p_wind_curtailed + p_bat_curtailed
+        p_import    == p_grid_to_bat + p_grid_to_load
+    plus battery energy conservation under PCC curtailment. Hand-derived scenarios.
+    """
+
+    def _data(self, t, wind, irr, temp, load):
+        # reviewer: single-step controlled data (zeros elsewhere), shape (8760,4).
+        return (
+            jnp.zeros((8760, 4), dtype=jnp.float32)
+            .at[t, 0].set(wind).at[t, 1].set(irr)
+            .at[t, 2].set(temp).at[t, 3].set(load)
+        )
+
+    def test_export_decomposition_identity(self):
+        # reviewer: §3.3 invariant — p_export == sol_to_grid + wind_to_grid + bat_to_grid.
+        # reviewer: high wind(12 m/s, rated) + solar(1000 W/m²), tiny load, export capped at 200.
+        params = EnvParams(grid_max_export_mw=200.0)
+        data = self._data(12, 12.0, 1000.0, 25.0, 5.0)
+        _, _, _, _, info = step(_state(soc=0.5, t=12), _zero_action(), params, data)
+        lhs = float(info.p_sol_to_grid_mw) + float(info.p_wind_to_grid_mw) + float(info.p_bat_to_grid_mw)
+        assert abs(float(info.p_export_mw) - lhs) < 1e-3
+        assert abs(float(info.p_export_mw) - 200.0) < 1e-3  # cap binds
+
+    def test_curtailment_sums_to_aggregate(self):
+        # reviewer: §3.3 invariant — p_curtailed == sol_curt + wind_curt + bat_curt.
+        params = EnvParams(grid_max_export_mw=200.0)
+        data = self._data(12, 12.0, 1000.0, 25.0, 5.0)
+        _, _, _, _, info = step(_state(soc=0.5, t=12), _zero_action(), params, data)
+        assert float(info.p_curtailed_mw) > 0.0  # export cap binds → curtailment
+        parts = (float(info.p_sol_curtailed_mw) + float(info.p_wind_curtailed_mw)
+                 + float(info.p_bat_curtailed_mw))
+        assert abs(float(info.p_curtailed_mw) - parts) < 1e-3
+        # all non-negative (scale_exp <= 1)
+        assert float(info.p_sol_curtailed_mw) >= -1e-6
+        assert float(info.p_wind_curtailed_mw) >= -1e-6
+        assert float(info.p_bat_curtailed_mw) >= -1e-6
+
+    def test_import_decomposition_identity(self):
+        # reviewer: §3.3 invariant — p_import == p_grid_to_bat + p_grid_to_load.
+        # reviewer: charge from grid (a_bat=0.5, no renewables) + load=50; uncapped (99.08 < 400),
+        # reviewer: so independent of the F-IMPORT priority bug — pure decomposition check.
+        data = self._data(12, 0.0, 0.0, 25.0, 50.0)
+        _, _, _, _, info = step(_state(soc=0.5, t=12), _action(a_bat=0.5), GANSU, data)
+        assert abs(
+            float(info.p_import_mw)
+            - (float(info.p_grid_to_bat_mw) + float(info.p_grid_to_load_mw))
+        ) < 1e-3
+
+    def test_battery_curtailed_and_conservation_under_export_cap(self):
+        # reviewer: confirms the §3.3 design note (battery IS curtailable; harness F1).
+        # reviewer: soc=0.7, a_bat=-1 full discharge, f_bl=0 → all to grid; max_export=20.
+        # reviewer: P_dis = min(98.16, (0.7-0.2)*294.5*0.97=142.84) = 98.16; bat_to_grid_pre=98.16;
+        # reviewer: scale_exp=20/98.16 → bat_to_grid=20, bat_curtailed=78.16.
+        # reviewer: conservation: bat_to_load(0) + bat_to_grid(20) + bat_curtailed(78.16) == p_bat_dis(98.16).
+        params = EnvParams(grid_max_export_mw=20.0)
+        data = self._data(12, 0.0, 0.0, 25.0, 5.0)
+        _, _, _, _, info = step(_state(soc=0.7, t=12), _action(a_bat=-1.0, f_bl=0.0), params, data)
+        assert float(info.p_bat_curtailed_mw) > 0.0
+        lhs = (float(info.p_bat_to_load_mw) + float(info.p_bat_to_grid_mw)
+               + float(info.p_bat_curtailed_mw))
+        assert abs(lhs - float(info.p_bat_dis_mw)) < 1e-3
