@@ -60,3 +60,46 @@ design (no `src/` impl yet) and become green under QA after implementation.
 
 - `live_dashboard.md` and `live_dashboard.test.tsx` carry the executable bit (mode 100755). Prefer
   `chmod 644` on the next commit — cosmetic, does not gate.
+
+---
+
+## Stage-2 implementation audit — PR #34 (marked ready)
+
+- **Reviewer:** frontend-reviewer
+- **Date:** 2026-06-10
+
+### Round 1 @ commit `9f0779d` — **REQUEST_CHANGES**
+1. **[BLOCKER] PriceTimeline TOU bands on the wrong axis.** `ReferenceArea`s shaded the y-axis at
+   price levels (0/350/535/700/900 ¥/MWh) instead of x-axis time-of-day windows per §2.4;
+   `sim_time_utc` dropped. The visible chart never showed *when* critical-peak occurs; the C1 test
+   passed only via the hidden `<li>` proxy. Classic green-test/wrong-display.
+2. **[should] Price line flat `#1d4ed8`**, not tier-coloured per §2.4.
+3. **[note]** `lastMessageTsUtc={null}` — acceptable (contract requires no live stale-detection).
+
+### Round 2 @ commit `1f55207` — **APPROVE**
+- **Finding 1 resolved.** New `computeBandSegments(history)` (`touSchedule.ts`) groups contiguous
+  same-tier steps via minute-aware `getTouTier(hour_of_day*60 + minute_of_hour)` (D8) and returns
+  `BandSegment{tier,x1,x2}` step-index spans. `PriceTimeline` rewritten: `ReferenceArea x1/x2` from
+  those segments — true x-axis time bands, no y-stripes. `hour_of_day`/`minute_of_hour` are LOCKED
+  sim-clock wire fields (telemetry.ts:109–110), equivalent to and cleaner than parsing
+  `sim_time_utc`. 6 new tests pin explicit x1/x2 incl. the D8 guard (11:00=660min → critical_peak,
+  not mid) — geometry now tested at the data level, closing the `<li>`-proxy gap.
+- **Finding 2 resolved.** Tier-coloured line: one `<Line>` per `BandSegment`,
+  `stroke=getTouColor(seg.tier).text`, with a bridge point to avoid inter-segment gaps.
+- **Contract §2.4 + §1 change reviewed:** legitimate refinement/strengthening — explicitly
+  prohibits y-axis stripes, documents x-axis step-index geometry + `computeBandSegments`/`BandSegment`,
+  and pins the 11:00→critical_peak D8 guard. Frontend-only contract (not the LOCKED shared schema);
+  no weakening.
+
+### Open should-fix (non-blocking, recorded for follow-up)
+- **Single-hour TOU bands render zero-width/invisible.** `x1`/`x2` are inclusive step indices, so a
+  1-step tier run (the morning critical-peak is exactly one step at Δt=1h — `x1===x2`) produces a
+  zero-width `ReferenceArea` → not visibly shaded over a 7-day window. Data/position are correct and
+  the tier-coloured line still conveys the hour, so this is a visibility-polish defect, not a
+  data-correctness error. **Recommend:** render the band x2 to the next segment boundary
+  (`nextSeg.x1`, or `lastStep+1` clamped to dataMax) so single-hour bands (esp. morning
+  critical-peak) are visible; keep `computeBandSegments` inclusive-step data semantics. No test can
+  catch this (jsdom has no SVG layout) — audit-only.
+
+**Verdict: APPROVE** (stage-2). Mergeable on reviewer APPROVE + QA_PASS. Engineer reports 459/459
+passing; QA confirms green.
