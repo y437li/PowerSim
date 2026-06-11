@@ -196,26 +196,17 @@ class InteractiveEnv:
         price_buy = f(info.price_buy_yuan_per_mwh)
         tier = _tariff_tier(price_buy)
 
-        # Load cap constraint: compare pre-cap expected flows vs load_mw
+        # Read renewable + battery discharge for conservation checks below
         p_pv = f(info.p_pv_mw)
         p_wind = f(info.p_wind_mw)
         p_bat_dis = f(info.p_bat_dis_mw)
 
-        # Replicate fraction renorm (mirrors jax_env §step 1)
-        f_sl_raw = action_clipped[1]
-        f_sb_raw = action_clipped[2]
-        f_wl_raw = action_clipped[3]
-        s_solar = f_sl_raw + f_sb_raw
-        f_sl = f_sl_raw / s_solar if s_solar > 1.0 else f_sl_raw
-        s_wind = f_wl_raw + action_clipped[4]
-        f_wl = f_wl_raw / s_wind if s_wind > 1.0 else f_wl_raw
-        f_bl = action_clipped[5]
-
-        pre_cap_sum = p_pv * f_sl + p_wind * f_wl + p_bat_dis * f_bl
         load_mw_val = float(self._data[int(state.t), 3])
-        constraint_load_capped = pre_cap_sum > load_mw_val + _CONSERVATION_TOL
 
-        # Export cap: non-zero curtailment
+        # Load cap constraint: derived directly from EnvInfo signal (§1 no-recompute rule)
+        constraint_load_capped = bool(info.load_capped)
+
+        # Export cap: non-zero curtailment (sum of exposed per-source curtailment fields)
         total_curtailed = (
             f(info.p_sol_curtailed_mw)
             + f(info.p_wind_curtailed_mw)
@@ -223,8 +214,11 @@ class InteractiveEnv:
         )
         constraint_export_capped = total_curtailed > _CONSERVATION_TOL
 
-        # Import cap: load unserved
-        constraint_import_capped = f(info.p_load_unserved_mw) > _CONSERVATION_TOL
+        # Import cap: load unserved OR cap reduced grid_to_bat with load fully served
+        constraint_import_capped = (
+            f(info.p_load_unserved_mw) > _CONSERVATION_TOL
+            or bool(info.import_cap_active)
+        )
 
         # SOC violation
         constraint_soc_clipped = f(info.soc_violation_mwh) > 0.0
