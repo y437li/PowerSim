@@ -780,18 +780,28 @@ class TestImportLimit:
         assert result.c_voll_yuan == pytest.approx(0.0, abs=1e-9)
 
     def test_import_limit_shed_branch_bat_exceeds_grid(self):  # reviewer: M6
-        """M6: STEP 8 branch where grid_max_import < p_g2b → load fully shed.
+        """M6: import cap binds AND load_deficit > max_import → LOAD-FIRST (§3.6 row 9).
 
-        Contract STEP 8 pseudocode (lines 386-389):
-          if grid_max_import_mw < p_g2b:
-              p_g2b_actual = grid_max_import_mw   # battery charge capped at grid limit
-              grid_to_load = 0                     # no grid capacity left for load
-        So: load_unserved == load, grid_to_load_mw == 0.
+        Updated for the F-IMPORT fix (dc87b65). §3.6 row 9 is "load served first,
+        then battery charging reduced, then load shed." The old battery-first branch
+        this test used to assert ("grid_max_import < p_g2b → battery gets all headroom,
+        load fully shed") was WRONG and has been removed from both impls. This test now
+        pins the correct load-first behavior and must FAIL against a battery-first regression.
 
         Setup: grid_max_import=50 MW, a_bat=1.0 (full charge from grid, p_g2b=98.16 MW),
-        no RE, load=60 MW.
-        p_g2b (98.16) > grid_max_import (50) → grid gives 50 MW to battery, 0 to load.
-        load_unserved = 60 MW.
+        no RE, load=60 MW. Battery is charging → no bat→load.
+
+        Load-first derivation:
+          load_deficit     = 60 − 0 (no RE, no bat→load)            = 60 MW
+          grid_to_load     = min(load_deficit, max_import) = min(60,50) = 50 MW   (load first)
+          load_unserved    = max(0, 60 − 50)                        = 10 MW   (only remainder shed)
+          headroom_for_bat = max(0, max_import − grid_to_load) = max(0,50−50) = 0 MW
+          p_g2b_actual     = min(p_g2b, headroom) = min(98.16, 0)   = 0 MW    (battery zeroed)
+          p_import         = grid_to_load + p_g2b_actual = 50 + 0    = 50 MW
+          c_voll           = 20000 ¥/MWh × 10 MW × 1 h              = 200,000 ¥
+
+        OLD (wrong) battery-first values now rejected: bat=50, grid_to_load=0,
+        load_unserved=60, c_voll=1,200,000.
         """
         params_tight = GansuParams(grid_max_import_mw=50.0)
         action = np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0])  # full charge, no RE
@@ -801,21 +811,22 @@ class TestImportLimit:
 
         result = env_step(state, action, weather, load, params_tight)
 
-        # Battery charge draws up to grid_max_import
-        assert result.grid_to_bat_mw == pytest.approx(50.0, rel=1e-5), (
-            f"M6: grid_to_bat_mw={result.grid_to_bat_mw:.2f} ≠ 50 MW "
-            "(grid_max_import fully used by battery)")
-        # No grid capacity left for load
-        assert result.grid_to_load_mw == pytest.approx(0.0, abs=1e-9), (
-            f"M6: grid_to_load_mw={result.grid_to_load_mw:.4f} ≠ 0 "
-            "(branch: grid_max_import < p_g2b → grid_to_load = 0)")
-        # All load is shed
-        assert result.load_unserved_mw == pytest.approx(load, rel=1e-5), (
-            f"M6: load_unserved_mw={result.load_unserved_mw:.2f} ≠ load={load}")
-        # C_VOLL = 60 × 20000 × 1 = 1,200,000 ¥
-        assert result.c_voll_yuan == pytest.approx(load * 20_000.0 * 1.0, rel=1e-5), (
-            f"M6: c_voll_yuan={result.c_voll_yuan:.2f} ≠ {load * 20_000.0:.2f}")
-        # Import limit respected
+        # Battery charging zeroed — load consumed the full import headroom first
+        assert result.grid_to_bat_mw == pytest.approx(0.0, abs=1e-9), (
+            f"M6: grid_to_bat_mw={result.grid_to_bat_mw:.4f} ≠ 0 "
+            "(load-first: headroom_for_bat = max_import − grid_to_load = 0)")
+        # Load served up to the import cap (50 of the 60 MW deficit)
+        assert result.grid_to_load_mw == pytest.approx(50.0, rel=1e-5), (
+            f"M6: grid_to_load_mw={result.grid_to_load_mw:.4f} ≠ 50 "
+            "(load-first: grid_to_load = min(deficit, max_import) = 50)")
+        # Only the remainder (60 − 50) is shed — NOT the full load
+        assert result.load_unserved_mw == pytest.approx(10.0, rel=1e-5), (
+            f"M6: load_unserved_mw={result.load_unserved_mw:.4f} ≠ 10 "
+            "(load-first: max(0, 60 − 50) = 10, not the full 60)")
+        # C_VOLL = 10 MW × 20000 ¥/MWh × 1 h = 200,000 ¥
+        assert result.c_voll_yuan == pytest.approx(200_000.0, rel=1e-5), (
+            f"M6: c_voll_yuan={result.c_voll_yuan:.2f} ≠ 200000 (10 × 20000)")
+        # Import limit respected (unchanged from the old expectation)
         assert result.p_import_mw == pytest.approx(50.0, rel=1e-5)
 
 

@@ -8,6 +8,7 @@ on:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -70,7 +71,11 @@ jobs:
             else
               pip install pytest jax numpy
             fi
-            pytest tests/ -q
+            # D30: JAX tests that jit/vmap full-year trajectories are marked @pytest.mark.slow
+            # and excluded from CI (-m "not slow") to avoid OOM on ubuntu-latest (2 GB RAM
+            # runners hit SIGTERM at ~40-60 min when xdist workers each JIT-compile the
+            # full 8760-step synthetic year).  The full suite (including slow) runs locally.
+            pytest tests/ -q -m "not slow"
           else
             echo "No Python tests yet — skipping"
           fi

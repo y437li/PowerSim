@@ -785,11 +785,16 @@ def train(
     # min_length:        start sampling only after this many transitions
     # sample_batch_size: batch size for each sample() call (§5: 512)
     # add_batch_size:    transitions added per add() call = n_envs
-    buffer = fbx.make_flat_buffer(
+    # make_item_buffer (not make_flat_buffer): each stored item is a COMPLETE
+    # transition dict incl. precomputed next_obs, so sample().experience is the
+    # dict pytree directly. make_flat_buffer would wrap samples in an
+    # ExperiencePair(first, second) NamedTuple (sample_sequence_length=2), which
+    # breaks dict indexing — the integration bug caught by the task #25 tests.
+    buffer = fbx.make_item_buffer(
         max_length=config.buffer_size,
         min_length=config.batch_size,
         sample_batch_size=config.batch_size,
-        add_batch_size=config.n_envs,
+        add_batches=True,
     )
 
     # Init buffer state with a fake single-transition template (shape without batch dim)
