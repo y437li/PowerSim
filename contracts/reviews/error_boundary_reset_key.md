@@ -30,3 +30,25 @@ Developer EB.RK.1–7 + my EB.RK.8. Cleared for implementation (ErrorBoundary pr
 + App.tsx wiring). Mark ready for stage-2.
 
 **Verdict: APPROVE** (stage-1 gate).
+
+---
+
+## Stage-2 implementation audit — PR #54 @ `e8de034` — **APPROVE**
+
+- **Reviewer:** frontend-reviewer · **Date:** 2026-06-11 · No findings.
+
+- **`getDerivedStateFromProps` matches §2.3 exactly.** Branch 1 (`hasError && key !== prevKey`) →
+  reset (`hasError:false, error:null, prevResetKey:key`); branch 2 (`key !== prevKey`, reached only
+  when `!hasError`) → advance `prevResetKey` only; else → null. The implicit `!hasError` on branch 2
+  is sound (branch 1 already handled the errored case).
+- **First-mount init is correct.** On first render `getDerivedStateFromProps` advances
+  `prevResetKey` from `undefined` to the initial key (`""`), so a crash on that key does NOT
+  spuriously self-reset — the exact case my reviewer EB.RK.8 guards; it passes.
+- `getDerivedStateFromError` returns `Partial<ErrorBoundaryState>` (merges cleanly), correctly
+  leaving `prevResetKey` to the props handler. `prevResetKey` initial `undefined` (§2.2). Render /
+  fallback unchanged (§4).
+- **App.tsx** wires `resetKey={runId ?? ""}` via a `useTelemetryStore((s)=>s.runId)` selector (App
+  re-renders only on runId change). §3 satisfied.
+- 8/8 GREEN incl. EB.RK.8; 691/691.
+
+**Verdict: APPROVE** (stage-2). Mergeable on this + QA_PASS. Closes the A4 follow-up (task #30).
