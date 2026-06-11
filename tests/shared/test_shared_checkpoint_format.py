@@ -56,7 +56,9 @@ def _make_checkpoint(rng: np.random.RandomState, **overrides) -> CheckpointData:
         checkpoint_id   = "a1b2c3d4-0000-0000-0000-000000000001",
         run_id          = "test-run-001",
         global_step     = 500_000,
-        run_config_json = json.dumps(RunConfig().__dict__),
+        created_at_utc  = "2026-06-10T14:03:00Z",
+        code_version    = "5cc25b5a",
+        run_config_json = json.dumps(vars(RunConfig())),
         obs_mean   = rng.randn(107).astype(np.float32),
         obs_var    = np.abs(rng.randn(107).astype(np.float32)) + 1e-3,  # var > 0
         obs_count  = 1_024_000,
@@ -94,6 +96,43 @@ class TestMetadataKeys:
         assert "gamma" in cfg_dict
         assert cfg_dict["gamma"] == pytest.approx(0.999)
         assert "lr" in cfg_dict
+
+    def test_run_config_json_carries_seed(self):
+        # run_config_json must carry seed for reproducibility (§4.1 provenance)
+        rng = np.random.RandomState(0)
+        ckpt = _make_checkpoint(rng)
+        cfg_dict = json.loads(ckpt.run_config_json)
+        assert "seed" in cfg_dict, "run_config_json must carry 'seed' for reproducibility"
+        assert isinstance(cfg_dict["seed"], int)
+
+    def test_run_config_json_carries_site_config_id(self):
+        # run_config_json must carry site_config_id for UI provenance (§4.1)
+        rng = np.random.RandomState(0)
+        ckpt = _make_checkpoint(rng)
+        cfg_dict = json.loads(ckpt.run_config_json)
+        assert "site_config_id" in cfg_dict, (
+            "run_config_json must carry 'site_config_id' (e.g. 'site_gansu') "
+            "for eval-vs-baseline provenance display"
+        )
+        assert isinstance(cfg_dict["site_config_id"], str)
+        assert len(cfg_dict["site_config_id"]) > 0
+
+    def test_created_at_utc_is_iso8601(self):
+        # created_at_utc must be a non-empty ISO-8601 string (§4.1)
+        # Full parsing requires stdlib; just verify it ends in Z (UTC) and has T separator
+        rng = np.random.RandomState(0)
+        ckpt = _make_checkpoint(rng)
+        ts = ckpt.created_at_utc
+        assert isinstance(ts, str), "created_at_utc must be a string"
+        assert "T" in ts, f"created_at_utc '{ts}' missing 'T' separator — not ISO-8601"
+        assert ts.endswith("Z"), f"created_at_utc '{ts}' must end in 'Z' (UTC)"
+
+    def test_code_version_is_nonempty_string(self):
+        # code_version is a git SHA prefix or "unknown" (§4.1)
+        rng = np.random.RandomState(0)
+        ckpt = _make_checkpoint(rng)
+        assert isinstance(ckpt.code_version, str)
+        assert len(ckpt.code_version) > 0, "code_version must not be empty"
 
     def test_global_step_is_nonnegative(self):
         rng = np.random.RandomState(0)
@@ -194,6 +233,8 @@ class TestRoundTrip:
         assert loaded.checkpoint_id  == ckpt.checkpoint_id
         assert loaded.run_id         == ckpt.run_id
         assert loaded.global_step    == ckpt.global_step
+        assert loaded.created_at_utc == ckpt.created_at_utc
+        assert loaded.code_version   == ckpt.code_version
         assert json.loads(loaded.run_config_json) == json.loads(ckpt.run_config_json)
 
     def test_obs_stats_round_trip(self, tmp_path):

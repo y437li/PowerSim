@@ -59,10 +59,12 @@ with a descriptive message if any required key is absent.
 | Key | dtype | shape | Description |
 |-----|-------|-------|-------------|
 | `schema_version` | `str` | scalar | `"1.0.0"` |
-| `checkpoint_id` | `str` | scalar | UUID v4 string, e.g. `"a1b2c3d4-…"`. Ties `train_metrics` telemetry to this checkpoint. |
+| `checkpoint_id` | `str` | scalar | UUID v4 string, e.g. `"a1b2c3d4-…"`. Ties `train_metrics` and `eval_compare` telemetry to this checkpoint; serves as the join key between the artifact, the training dashboard, and the serving layer (see §8.1 cross-contract note). |
 | `run_id` | `str` | scalar | Training run identifier (matches telemetry envelope `run_id`). |
 | `global_step` | `int64` | scalar | Environment steps consumed when this checkpoint was written. |
-| `run_config_json` | `str` | scalar | JSON-serialised `RunConfig` (all fields). Consumers read this to know the hyperparameters. |
+| `created_at_utc` | `str` | scalar | ISO-8601 UTC wall-clock timestamp of when this checkpoint was written, e.g. `"2026-06-10T14:03:00Z"`. Enables chronological ordering of checkpoints across runs in the training dashboard and run-history view. **Must be the actual write time, not the start of the training run.** |
+| `code_version` | `str` | scalar | Short identifier tying the checkpoint to the codebase state that produced it. Convention: the first 8 characters of the git commit SHA at training time (e.g. `"5cc25b5a"`), or `"unknown"` if not determinable. Enables the dashboard eval-vs-baseline panel to display the exact policy provenance and lets the user reproduce a result. |
+| `run_config_json` | `str` | scalar | JSON-serialised `RunConfig` (all fields). **Must include** `seed` (for reproducibility) and `site_config_id` (e.g. `"site_gansu"` — the site YAML used for training). See `contracts/training/training_pipeline.md` §3 for the full RunConfig schema, which contains both fields. |
 
 ### 4.2 VecNormalize observation statistics
 
@@ -169,10 +171,12 @@ import numpy as np
 class CheckpointData:
     # Metadata
     schema_version:  str
-    checkpoint_id:   str
+    checkpoint_id:   str    # UUID v4; join key for telemetry + serving (§8.1)
     run_id:          str
     global_step:     int
-    run_config_json: str       # JSON string; deserialise with RunConfig(**json.loads(...))
+    created_at_utc:  str    # ISO-8601 UTC write time, e.g. "2026-06-10T14:03:00Z"
+    code_version:    str    # git SHA prefix or "unknown"
+    run_config_json: str    # JSON string; must carry seed + site_config_id
 
     # VecNormalize obs stats (numpy, shape (107,) and scalar)
     obs_mean:   np.ndarray     # float32, (107,)
@@ -262,6 +266,22 @@ Specifically:
 | `serving-engineer` | Consumer | `load_checkpoint(path)` at serving startup; calls `actor_forward_numpy()` |
 | `training-engineer` | Consumer | `load_checkpoint(path)` to resume training (optional critic weights needed) |
 | `env-harness-engineer` | Consumer | `load_checkpoint(path)` to run eval/replay in the harness UI |
+
+### 8.1 Cross-contract coordination note (for rl-architect at lock time)
+
+`checkpoint_id` (§4.1) currently "ties `train_metrics` telemetry to this checkpoint". For the
+dashboard eval-vs-baseline panel to display the exact trained policy for a live inference run,
+the following joins need to work end-to-end:
+
+- `eval_compare.checkpoint_id` → the artifact at `<run_id>/checkpoint_<checkpoint_id>.npz`
+- serving REST run-history endpoint → surfaces `checkpoint_id` + `created_at_utc` + `code_version` for the policy-picker UI
+- serving inference websocket → emits `checkpoint_id` per-step so the 3D scene and cost dashboard know which policy is running
+
+The `eval_compare` telemetry payload already carries `checkpoint_id` (LOCKED schema §Kind 3).
+The serving contract (`contracts/serving/rest_api.md`) and the harness contract should
+surface the same trio. **No change to this file required** — this note flags the coordination
+for rl-architect to verify at lock time that the join key is consistent across the three
+locked/in-flight contracts.
 
 ---
 
