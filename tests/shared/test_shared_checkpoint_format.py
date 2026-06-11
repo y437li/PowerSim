@@ -756,16 +756,15 @@ def test_inference_recipe_clips_extreme_obs():
     assert np.all(np.isfinite(action)), f"extreme obs produced non-finite action: {action}"
 
 
-# reviewer: critic input is obs‖action concat (108 dims) — weight shape (108,256) not (107,256)
-def test_critic_fc1_input_dim_is_108():
-    """Critic Q-network input = obs (107) ‖ action (1) = 108 dims.
-    actor_fc1_w input dim is 107; critic1_fc1_w input dim is 108 (§4.4)."""
+def test_critic_fc1_input_dim_is_113():
+    """Critic Q-network input = obs (107) ‖ action (6) = 113 dims.
+    actor_fc1_w input dim is 107; critic1_fc1_w input dim is 113 (§4.4, §5.3)."""
     rng = np.random.RandomState(52)
     critic_shapes = TestCriticWeights.CRITIC_SHAPES
-    # critic1_fc1_w shape is (108, 256) not (107, 256)
-    assert critic_shapes["critic1_fc1_w"][0] == 108, (
-        "Critic input dim must be 108 = 107 obs + 1 action"
+    # critic1_fc1_w shape is (113, 256) not (107, 256)
+    assert critic_shapes["critic1_fc1_w"][0] == 113, (
+        "Critic input dim must be 113 = 107 obs + 6 action"
     )
     assert critic_shapes["critic1_fc1_w"] != TestActorWeightShapes.EXPECTED_SHAPES["actor_fc1_w"], (
-        "Critic and actor fc1 weights have the same shape — critic input must be 108, not 107"
+        "Critic and actor fc1 weights have the same shape — critic input must be 113, not 107"
     )

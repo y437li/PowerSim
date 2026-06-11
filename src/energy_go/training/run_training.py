@@ -111,8 +111,9 @@ def actor_forward(
             "out_b": jnp.array(params.actor_out_b),
         }
         mean, _ = actor_forward(p, n_obs)
-        # Clip before squash — same threshold as actor_forward_numpy (parity guarantee)
-        mc = jnp.clip(mean, -20.0, 20.0)
+        # Clip before squash — ±8.0 matches actor_forward_numpy threshold (parity guarantee).
+        # tanh(8.0) ≈ 0.99999976 < 1.0 in float32; tanh(9.0) = 1.0 exactly.
+        mc = jnp.clip(mean, -8.0, 8.0)
         return jnp.concatenate([jnp.tanh(mc[:1]), jax.nn.sigmoid(mc[1:])])  # (6,)
 
     # --- Normal dict path ---

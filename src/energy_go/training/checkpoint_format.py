@@ -378,12 +378,12 @@ def actor_forward_numpy(checkpoint: CheckpointData, raw_obs: np.ndarray) -> np.n
     out = h2 @ checkpoint.actor_out_w + checkpoint.actor_out_b  # (12,)
 
     # Step 3: split mean(6) from log_std_raw(6); clip before squash.
-    # float32 saturates: tanh/sigmoid of very large values give exactly ±1.0/0.0,
-    # violating the open-range contract (action[0] ∈ (-1,1), fractions ∈ (0,1)).
-    # Clip at ±20: tanh(20) ≈ 0.9999999... and sigmoid(20) ≈ 0.9999999... in float64,
-    # but stay strictly inside (-1,1) / (0,1) in float32 at this threshold.
+    # float32 saturates: tanh(x)==1.0 exactly for |x| ≳ 8.7 in float32.
+    # (tanh(8.0) ≈ 0.99999976 < 1.0; tanh(9.0) = 1.0 exactly in float32.)
+    # Violates the open-range contract (action[0] ∈ (-1,1), fractions ∈ (0,1)).
+    # Clip pre-squash mean to ±8.0 — safe threshold confirmed by backend-reviewer.
     mean         = out[:6]
-    mean_clipped = np.clip(mean, -20.0, 20.0)
+    mean_clipped = np.clip(mean, -8.0, 8.0)
     a_bat     = np.tanh(mean_clipped[0:1])                   # a_bat ∈ (-1, 1) open
     fractions = 1.0 / (1.0 + np.exp(-mean_clipped[1:6]))    # sigmoid ∈ (0, 1) open
     return np.concatenate([a_bat, fractions]).astype(np.float32)  # (6,)
