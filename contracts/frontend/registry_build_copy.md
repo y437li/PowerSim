@@ -21,10 +21,24 @@ changes, a developer must manually copy it or `app_integration §T9` (deep-equal
 ## Solution
 
 Replace the hand-maintained copy with an **auto-generated copy** produced by a Vite plugin
-that fires at `configResolved` time (before any transform). This covers all invocation paths:
-`vite dev`, `vite build`, and `vitest run` (Vitest runs inside Vite).
+that fires at `configResolved` time (before any transform).
+
+**Coverage note:** this project has a **separate `vitest.config.ts`** (uses `vitest/config`,
+not `vite`). `vitest run` loads `vitest.config.ts`, not `vite.config.ts`. The plugin must
+therefore be registered in **both** config files to cover all invocation paths:
+
+| Invocation | Config loaded | Plugin needed in |
+|------------|---------------|-----------------|
+| `vite dev` | `vite.config.ts` | `vite.config.ts` |
+| `vite build` | `vite.config.ts` | `vite.config.ts` |
+| `npm run dev/build` | `vite.config.ts` | `vite.config.ts` |
+| `npx vitest run` | `vitest.config.ts` | `vitest.config.ts` |
+| `npm test` (via pretest hook) | `vitest.config.ts` | `vitest.config.ts` |
 
 A standalone copy script is provided for CI pre-build steps and manual invocation outside Vite.
+
+The `test:` block inside `vite.config.ts` is redundant (Vitest uses `vitest.config.ts`) and
+must be removed to avoid config confusion.
 
 ---
 
@@ -45,13 +59,24 @@ export const registryBuildPlugin = {
 };
 ```
 
-The plugin is added to `vite.config.ts`'s `plugins` array:
+The plugin is added to **both** config files:
 
+**`vite.config.ts`** (covers `vite dev` and `vite build`):
 ```typescript
 import { registryBuildPlugin } from "./src/config/registryBuildPlugin";
 // ...
 plugins: [react(), registryBuildPlugin],
 ```
+
+**`vitest.config.ts`** (covers `npx vitest run` and `npm test`):
+```typescript
+import { registryBuildPlugin } from "./src/config/registryBuildPlugin";
+// ...
+plugins: [react(), registryBuildPlugin],
+```
+
+The `test:` block inside `vite.config.ts` must be removed — Vitest uses `vitest.config.ts`
+exclusively; the duplicate `test:` key in `vite.config.ts` only causes confusion.
 
 ---
 
@@ -111,3 +136,4 @@ All tests live in `tests/frontend/registry_build_copy.test.ts`.
 | RB.2 | `registryBuildPlugin.configResolved` is a function | `true` |
 | RB.3 | `scripts/copy_registry.js` mentions the source path | contains `"assets/3d/registry.json"` |
 | RB.4 | `scripts/copy_registry.js` mentions the dest path | contains `"src/config/registryData.json"` |
+| RB.5 (reviewer) | calling `configResolved()` produces a `src/config/registryData.json` that deep-equals `assets/3d/registry.json` | `expect(copied).toEqual(canonical)` |
