@@ -37,3 +37,27 @@ Developer scene_graph suite + the 5 extend regression tests. Cleared for impleme
 `extend(THREE)` addition in Effect 1). Mark ready for stage-2.
 
 **Verdict: APPROVE** (stage-1 gate).
+
+---
+
+## Stage-2 implementation audit — PR #57 @ `0df481b` — **APPROVE**
+
+- **Reviewer:** frontend-reviewer · **Date:** 2026-06-11 · No findings.
+
+Code audit (the part I can definitively verify for this jsdom-blind bug):
+- `import * as THREE from "three"` added (SiteScene.tsx:19).
+- Effect 1 IIFE: `const { createRoot, extend } = await import("@react-three/fiber")` →
+  `if (cancelled) return` → **`extend(THREE)` → `createRoot(canvas)` → `render(<SceneContent>)`**.
+  Correct order (§6 req 21), inside the try/catch, after the cancelled-guard (no leaked
+  extend/root on a cancelled mount). `if (!containerEl) return` → extend skipped when null (req 22).
+  Full THREE namespace passed — the canonical fix for "X is not part of the THREE namespace".
+- 52/52, incl. the 5 extend regression tests.
+
+**Real-browser render:** the definitive confirmation is the §8 manual-QA check (jsdom mocks R3F, so
+unit tests can only confirm `extend` is *called* with the right args/order, not that the real R3F
+namespace registers). 3d-assets-engineer reported before/after browser verification (namespace error
+before, clean lights+GLBs after) — strong signal; QA owns the formal §8 manual render.
+
+**Verdict: APPROVE** (stage-2). Mergeable on this + QA_PASS (incl. the §8 browser render). Should
+land before any real demo run — without it the scene crashes the browser despite all jsdom tests
+passing.
