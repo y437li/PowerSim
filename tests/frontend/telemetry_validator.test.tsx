@@ -1016,3 +1016,42 @@ describe("TV.ROB — full golden-fixture wsClient pipeline (validate-telemetry s
     expect(dispatched["run_id"]).toBe((ENV_STEP_B as any).run_id);
   });
 });
+
+// ─── reviewer (frontend-reviewer): wrong-TYPE field through the wsClient gate ──
+// TV.ROB.2 covers a missing field and TV.ROB.5 covers null; a wrong-TYPE field (a string
+// where a number is required — a realistic serving-encoder bug) is a DISTINCT Zod rejection
+// path that must ALSO be dropped before dispatch. Completes the missing/null/wrong-type matrix
+// for the D26 gate.
+describe("reviewer — wsClient drops a wrong-type field (Zod type rejection, §10.1)", () => {
+  let mockWs: MockWsInstance;
+  beforeEach(() => {
+    mockWs = makeMockWsInstance();
+    vi.stubGlobal("WebSocket", vi.fn().mockImplementation(() => mockWs));
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+
+  it("reviewer — env_step with battery.soc as a string → validate() rejects → onEnvStep NOT dispatched", async () => {
+    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
+      "../../src/clients/wsClient"
+    );
+    const onEnvStep = vi.fn();
+    createWsClient({
+      url: "ws://localhost/ws/test",
+      onEnvStep,
+      onTrainMetrics: vi.fn(),
+      onEvalCompare: vi.fn(),
+      onStatusChange: vi.fn(),
+    }).connect();
+    // battery.soc as the string "0.5" — valid JSON, wrong type. Zod must reject before dispatch.
+    const p = (ENV_STEP_A as any).payload;
+    const badFrame = {
+      ...(ENV_STEP_A as any),
+      payload: { ...p, battery: { ...p.battery, soc: "0.5" } },
+    };
+    mockWs.onmessage?.({ data: JSON.stringify(badFrame) } as MessageEvent);
+    expect(onEnvStep).not.toHaveBeenCalled();
+  });
+});
