@@ -100,30 +100,34 @@ This is a request on the **eval/env path** (jax-env + training owners): expose t
 CAPEX per device-model instance, summed over the site, keyed by the **same device-model ID** as B's physics facet:
 
 ```
-generators:  CAPEX_i = capacity_kw_i · capex_per_kw_yuan_i
-battery:     CAPEX_i = energy_kwh_i · capex_energy_per_kwh_yuan_i + power_kw_i · capex_power_per_kw_yuan_i
+generators:  CAPEX_i = capacity_mw_i · capex_yuan_per_mw_i
+battery:     CAPEX_i = energy_mwh_i · capex_energy_yuan_per_mwh_i + power_mw_i · capex_power_yuan_per_mw_i
 grid/fixed:  CAPEX_i = capex_lump_sum_yuan_i
 Total_overnight_CAPEX = (Σ_i CAPEX_i)·(1 + soft_cost_fraction)
 ```
 
-**Construction:** default overnight at t=0; optional phasing over `T_c=max_i(construction_months)` (IDC capitalized only if debt on, §5.9b). COD=year 0; ops y=1…N. **Replacement (degradation-driven, the INV-DEG cash channel):** device reaches `lifetime_years` or `cycle_life_full_equiv`/`eol_soh_threshold` → C resets params, D books `replacement_cost_fraction·CAPEX_i` that year (≈ one battery replacement in 20 yr, **policy-dependent**). **Terminal (year N):** `Σ_i residual_value_fraction_i·CAPEX_i − Σ_i decommissioning_cost_yuan_i`; optional Gordon continuing-value.
+**Construction:** default overnight at t=0; optional phasing over `T_c=max_i(construction_months)` (IDC capitalized only if debt on, §5.9b). COD=year 0; ops y=1…N. **Replacement (degradation-driven, the INV-DEG cash channel):** device reaches `lifetime_years` or `cycle_life_full_equiv`/`eol_soh_threshold` → C resets params, D books `replacement_capex_fraction·CAPEX_i` that year (≈ one battery replacement in 20 yr, **policy-dependent**). **Terminal (year N):** `Σ_i residual_value_fraction_i·CAPEX_i − Σ_i decommissioning_yuan_i`; optional Gordon continuing-value.
 
 ### 5.7 Econ facet — *what B must carry* (D defines fields; B's schema carries them on the device ID)
 
+Units are **MW/MWh** to match B's physics facet (1 ¥/kW = 1000 ¥/MW). The `economics` block carries **money only**; the **wear/lifetime params live once in the `physics` facet** (they drive C's multi-year physical roll) and economics *references* them — no duplication.
+
+**`economics` block** (type-appropriate CAPEX; only the relevant CAPEX field(s) populated per device type):
+
 | Field | Unit | Use |
 |---|---|---|
-| `capex_per_kw_yuan` | ¥/kW | gen overnight CAPEX |
-| `capex_energy_per_kwh_yuan` / `capex_power_per_kw_yuan` | ¥/kWh, ¥/kW | battery two-part CAPEX |
+| `capex_yuan_per_mw` | ¥/MW | gen overnight CAPEX (wind/solar/gas) |
+| `capex_energy_yuan_per_mwh` / `capex_power_yuan_per_mw` | ¥/MWh, ¥/MW | battery two-part CAPEX |
 | `capex_lump_sum_yuan` | ¥ | grid/fixed infra |
-| `opex_fixed_per_kw_year_yuan` | ¥/kW·yr | fixed O&M |
-| `opex_var_per_mwh_yuan` | ¥/MWh | variable O&M (≠ D13 `c_degradation`) |
-| `lifetime_years` · `cycle_life_full_equiv` · `eol_soh_threshold` | yr · cycles · frac | replacement triggers + depreciation |
-| `replacement_cost_fraction` · `residual_value_fraction` | frac | replacement / salvage |
-| `degradation_pct_per_year` | %/yr | capacity fade — **shared w/ B physics; D references** |
-| `construction_months` · `decommissioning_cost_yuan` | months · ¥ | phasing / terminal |
+| `opex_fixed_yuan_per_mw_year` | ¥/MW·yr | fixed O&M |
+| `opex_var_yuan_per_mwh` | ¥/MWh | variable O&M (**≠ D13 `c_degradation`** dispatch proxy) |
+| `replacement_capex_fraction` · `residual_value_fraction` | frac | replacement / salvage |
+| `construction_months` · `decommissioning_yuan` | months · ¥ | phasing / terminal |
 | *(tax)* `depreciation_years` · `depreciation_method` | yr · enum | tax layer |
 
-The env build-step **ignores** the `econ:` block (never enters jitted `step`); it exists solely for D's offline calc. Recommended home: an `econ:` block beside `physics:` on the same device-model ID in B's `config/device_models.yaml`.
+**Referenced from the `physics` facet (single source — not duplicated in economics):** `degradation_pct_per_year` (%/yr capacity fade), `lifetime_years` (calendar EOL), and storage `cycle_life_full_equiv` (cycles) · `eol_soh_threshold` (frac) — these drive both C's degradation roll and D's replacement timing.
+
+The env build-step **ignores** the `economics` block (never enters jitted `step`); it exists solely for D's **off-wire** finance calc (feeds the REST `/api/finance/compare` resource). Home: an `economics:` block beside `physics:` on the same device-model ID in B's `config/device_models.yaml` (advisory-only at schema v1.0.0).
 
 ### 5.8 Metrics — exact formulas (¥; on annual CF(y), y=0…N)
 
