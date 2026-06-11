@@ -332,22 +332,32 @@ esac
 check_port_free() {
     local port="$1" label="$2"
     local _in_use=0
-    if command -v lsof &>/dev/null; then
-        # Use lsof without -sTCP:LISTEN so we detect any TCP socket on this port
-        # (bound but not yet in LISTEN state, ESTABLISHED, etc.).  The LISTEN-only
-        # filter caused false-negatives when the occupying socket had been bound
-        # but not yet put into LISTEN state (e.g. during test fixture setup).
-        if lsof -iTCP:"${port}" &>/dev/null 2>&1; then
+
+    # Method 1: lsof — -sTCP:LISTEN limits to listening sockets; -nP skips slow
+    # DNS/service-name lookups.  Redirect both stdout and stderr so missing
+    # privileges don't produce noise.
+    if [[ $_in_use -eq 0 ]] && command -v lsof &>/dev/null; then
+        if lsof -iTCP:"${port}" -sTCP:LISTEN -nP 2>/dev/null | grep -q .; then
             _in_use=1
         fi
     fi
-    # On Linux, lsof may not report sockets in TCP_CLOSE state (bound but not yet
-    # listening).  Fall back to ss -a (all states) which includes bound sockets.
+    # Method 2: ss (Linux iproute2) — list only LISTEN sockets, match on source
+    # port using the `src :PORT` filter (supported on iproute2 ≥ 3.x).
+    # grep -q guarantees we get a non-zero exit when output is empty.
     if [[ $_in_use -eq 0 ]] && command -v ss &>/dev/null; then
-        if ss -Htna "sport = :${port}" 2>/dev/null | grep -q .; then
+        if ss -tlnH src :"${port}" 2>/dev/null | grep -q .; then
             _in_use=1
         fi
     fi
+    # Method 3: bash /dev/tcp connect — no external tools required.  A successful
+    # TCP handshake to 127.0.0.1:PORT proves something is listening on that port.
+    # Works even when lsof/ss filter syntax varies across distro versions.
+    if [[ $_in_use -eq 0 ]]; then
+        if ( exec 3<>/dev/tcp/127.0.0.1/"${port}" ) 2>/dev/null; then
+            _in_use=1
+        fi
+    fi
+
     if [[ $_in_use -eq 1 ]]; then
         die 5 "$label port $port is already in use. Remediation: Use --$(echo "$label" | tr '[:upper:]' '[:lower:]')-port <other-port> or stop the existing process."
     fi
