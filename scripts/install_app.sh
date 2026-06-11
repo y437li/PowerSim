@@ -326,7 +326,7 @@ check_port_free() {
         # filter caused false-negatives when the occupying socket had been bound
         # but not yet put into LISTEN state (e.g. during test fixture setup).
         if lsof -iTCP:"${port}" &>/dev/null 2>&1; then
-            die 5 "$label port $port is already in use. Remediation: Use --${label,,}-port <other-port> or stop the existing process."
+            die 5 "$label port $port is already in use. Remediation: Use --$(echo "$label" | tr '[:upper:]' '[:lower:]')-port <other-port> or stop the existing process."
         fi
     fi
 }
@@ -349,17 +349,41 @@ if [[ ! -d ".venv" ]]; then
     # The `|| true` lets us continue if the install fails (e.g. no internet); the venv
     # creation below falls back to any available Python.
     if [[ "$OS" == "Darwin" ]] && [[ "$ARCH" == "arm64" || "$ARCH" == "aarch64" ]]; then
-        info "ARM macOS detected — ensuring native uv-managed Python 3.11..."
-        uv python install 3.11 2>/dev/null || true
-        # UV_PYTHON_PREFERENCE=only-managed forces the freshly installed native Python.
-        # Fall back to unmanaged if no managed Python is available (e.g. offline CI).
-        UV_PYTHON_PREFERENCE=only-managed uv venv --seed --python 3.11 .venv 2>/dev/null \
-            || uv venv --seed --python 3.11 .venv \
-            || die 2 "Failed to create virtualenv. Remediation: Ensure Python 3.11 is available ('uv python install 3.11')."
+        info "ARM macOS detected — ensuring native arm64 Python 3.11..."
+        # Prefer arch -arm64 to force native ARM64 even when this script runs under
+        # Rosetta (x86_64 process context).  Without this, uv installs an x86_64
+        # Python that in turn fetches AVX-using jaxlib wheels — these crash with
+        # SIGILL on Apple Silicon because AVX is x86-only and not translated by
+        # Rosetta 2.  The arch -arm64 check is a no-op on native ARM64 terminals.
+        if arch -arm64 true 2>/dev/null; then
+            arch -arm64 uv python install 3.11 2>/dev/null || true
+            UV_PYTHON_PREFERENCE=only-managed arch -arm64 uv venv --seed --python 3.11 .venv 2>/dev/null \
+                || arch -arm64 uv venv --seed --python 3.11 .venv 2>/dev/null \
+                || uv venv --seed --python 3.11 .venv \
+                || die 2 "Failed to create virtualenv. Remediation: Ensure Python 3.11 is available ('uv python install 3.11')."
+        else
+            # arch -arm64 unavailable (uv has no ARM64 slice); fall back and let the
+            # post-venv check below detect the mismatch.
+            uv python install 3.11 2>/dev/null || true
+            UV_PYTHON_PREFERENCE=only-managed uv venv --seed --python 3.11 .venv 2>/dev/null \
+                || uv venv --seed --python 3.11 .venv \
+                || die 2 "Failed to create virtualenv. Remediation: Ensure Python 3.11 is available ('uv python install 3.11')."
+        fi
     else
         # --seed adds pip/setuptools/wheel so .venv/bin/pip is always present.
         uv venv --seed --python 3.11 .venv \
             || die 2 "Failed to create virtualenv. Remediation: Ensure Python 3.11 is available ('uv python install 3.11')."
+    fi
+fi
+
+# On ARM macOS, verify the venv Python is native arm64.  If arch -arm64 above
+# could not deliver an ARM64 Python (e.g. uv itself is x86_64-only), abort with
+# exit 2 so the caller knows to reinstall uv as a native arm64 binary.
+# An x86_64 Python on ARM would install AVX-only jaxlib wheels that crash on import.
+if [[ "$OS" == "Darwin" ]] && [[ "$ARCH" == "arm64" || "$ARCH" == "aarch64" ]]; then
+    _VENV_MACHINE="$(".venv/bin/python" -c "import platform; print(platform.machine())" 2>/dev/null || echo "unknown")"
+    if [[ "$_VENV_MACHINE" == "x86_64" ]]; then
+        die 2 "ARM host ($ARCH) but venv Python is x86_64 (Rosetta or x86_64-only uv). Installing jaxlib would deliver AVX-only binaries that crash on Apple Silicon (Rosetta 2 does not translate AVX). Remediation: Reinstall uv as a native arm64 binary — 'curl -LsSf https://astral.sh/uv/install.sh | arch -arm64 sh' — then re-run this script."
     fi
 fi
 
