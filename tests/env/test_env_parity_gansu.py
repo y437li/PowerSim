@@ -398,6 +398,7 @@ class TestJaxReferenceParity:
     # Per-formula parity: test via step() with isolated data rows
     # ------------------------------------------------------------------
 
+    @pytest.mark.slow  # builds jax_data (scope=class) and calls jax_env.step
     def test_wind_power_parity(self, jax_data, noiseless_jax_params, noiseless_ref_params):
         """wind_power output agrees to PARITY_TOL for a range of wind speeds."""
         import jax.numpy as jnp
@@ -413,6 +414,7 @@ class TestJaxReferenceParity:
             assert jax_val == pytest.approx(ref, rel=PARITY_TOL, abs=1e-6), (
                 f"wind_power at v={v}: ref={ref:.4f}, jax={jax_val:.4f}")
 
+    @pytest.mark.slow  # builds jax_data (scope=class) and calls jax_env.step
     def test_solar_power_parity(self, jax_data, noiseless_jax_params, noiseless_ref_params):
         """solar_power output agrees to PARITY_TOL for a range of (G, T) pairs."""
         import jax.numpy as jnp
@@ -439,6 +441,7 @@ class TestJaxReferenceParity:
     # Single-step full field parity
     # ------------------------------------------------------------------
 
+    @pytest.mark.slow  # builds jax_data (scope=class) and calls jax_env.step
     def test_single_step_parity(
         self, jax_data, noiseless_jax_params, noiseless_ref_params, year_data
     ):
@@ -501,6 +504,7 @@ class TestJaxReferenceParity:
     # Multi-step SOC trajectory
     # ------------------------------------------------------------------
 
+    @pytest.mark.slow  # 24-step JAX trajectory with jax_data
     def test_multi_step_soc_trajectory_parity(
         self, jax_data, noiseless_jax_params, noiseless_ref_params, year_data
     ):
@@ -536,6 +540,7 @@ class TestJaxReferenceParity:
     # Obs parity (uses get_obs directly — noiseless so forecast is deterministic)
     # ------------------------------------------------------------------
 
+    @pytest.mark.slow  # builds jax_data (scope=class) and calls jax_env.get_obs
     def test_obs_parity_single_step(
         self, jax_data, noiseless_jax_params, noiseless_ref_params, year_data
     ):
@@ -562,6 +567,7 @@ class TestJaxReferenceParity:
     # JAX compilation: jit + vmap
     # ------------------------------------------------------------------
 
+    @pytest.mark.slow  # triggers jax.jit compilation on jax_data
     def test_jit_matches_eager(self, jax_data, noiseless_jax_params):
         """jit(step) gives the same result as eager step (verifies jnp.where purity)."""
         import jax
@@ -579,6 +585,7 @@ class TestJaxReferenceParity:
         assert float(jit_ns.soc) == pytest.approx(float(eager_ns.soc), rel=1e-7), (
             "jit(step) SOC ≠ eager SOC")
 
+    @pytest.mark.slow  # triggers jax.jit(jax.vmap(...)) compilation on jax_data
     def test_vmap_over_batch(self, jax_data, noiseless_jax_params):
         """vmap(step, in_axes=(0,0,None,None)) gives identical results for equal inputs."""
         import jax
@@ -604,6 +611,7 @@ class TestJaxReferenceParity:
     # Full-year cumulative parity (decisive D11 test)
     # ------------------------------------------------------------------
 
+    @pytest.mark.slow  # 8760-step JAX trajectory — decisive D11 cross-check
     def test_full_eval_episode_parity(
         self, jax_data, noiseless_jax_params, noiseless_ref_params, year_data
     ):
@@ -650,6 +658,7 @@ class TestJaxReferenceParity:
     # Month-boundary demand-charge parity  (reviewer-added, PR #33 round-3)
     # ------------------------------------------------------------------
 
+    @pytest.mark.slow  # builds jax_data (scope=class) and calls jax_env.step at t=743
     def test_month_boundary_demand_charge_parity(
         self, jax_data, noiseless_jax_params, noiseless_ref_params
     ):

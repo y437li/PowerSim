@@ -769,6 +769,8 @@ class TestEnergyConservation:
 
 
 class TestReset:
+    pytestmark = pytest.mark.slow  # all tests use synthetic_year (full-year JAX generation)
+
     def test_reset_initial_state(self, synthetic_year):
         state, obs = reset(jax.random.PRNGKey(0), GANSU, synthetic_year, episode_start=0)
         assert float(state.soc) == pytest.approx(GANSU.soc_init, abs=1e-6)
@@ -790,6 +792,8 @@ class TestReset:
 
 
 class TestGenerateYear:
+    pytestmark = pytest.mark.slow  # all tests use synthetic_year or call generate_year directly
+
     def test_shape(self, synthetic_year):
         # (8760, 4): wind, irr, temp, load
         assert synthetic_year.shape == (8760, 4)
@@ -838,6 +842,8 @@ class TestGenerateYear:
 
 
 class TestJITAndVmap:
+    pytestmark = pytest.mark.slow  # all tests trigger jax.jit / jax.vmap compilation
+
     def test_step_jit_compiles(self, synthetic_year):
         data = synthetic_year
         state = _state()
@@ -899,6 +905,7 @@ class TestReviewerAddedJaxCore:
     demand-charge reset invariant the existing suite left loose.
     """
 
+    @pytest.mark.slow  # triggers jax.jit compilation on synthetic_year
     def test_jit_step_matches_eager(self, synthetic_year):
         # reviewer: §14 only checks jit COMPILES + output shapes, and
         # reviewer: test_fixed_seed_determinism calls step twice on the SAME state
@@ -920,6 +927,7 @@ class TestReviewerAddedJaxCore:
         assert float(j_info.p_import_mw) == pytest.approx(float(e_info.p_import_mw), rel=1e-6)
         assert jnp.allclose(j_obs, e_obs, rtol=1e-6, atol=1e-6)
 
+    @pytest.mark.slow  # triggers jax.vmap compilation on synthetic_year
     def test_vmap_step_over_batch(self, synthetic_year):
         # reviewer: vmap(step, in_axes=(0,0,None,None)) over a batch of IDENTICAL
         # reviewer: envs must give identical outputs across all lanes AND equal the
