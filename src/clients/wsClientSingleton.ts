@@ -14,9 +14,10 @@
  */
 
 import { createWsClient, type WsClient } from "./wsClient";
-import type { TelemetryEnvelope, WsStatus } from "../types/telemetry";
+import type { TelemetryEnvelope, WsStatus, ServerStatusFrame, ServerErrorFrame } from "../types/telemetry";
 import { useTelemetryStore } from "../stores/telemetryStore";
 import { useTrainingStore } from "../stores/trainingStore";
+import { inferenceSessionStore } from "../stores/inferenceSessionStore";
 
 // ─── URL constants ────────────────────────────────────────────────────────────
 
@@ -60,6 +61,11 @@ export const telemetryWsClient: WsClient = createWsClient({
   onTrainMetrics: () => {},        // /ws/inference never sends train_metrics
   onEvalCompare: () => {},          // eval_compare: no v1 consumer
   onStatusChange: handleStatusChange,
+  // Session control: route server status/error frames to inferenceSessionStore
+  onServerStatus: (frame: ServerStatusFrame) =>
+    inferenceSessionStore.getState().handleServerStatus(frame),
+  onServerError: (frame: ServerErrorFrame) =>
+    inferenceSessionStore.getState().handleServerError(frame),
 });
 
 /**
