@@ -107,9 +107,20 @@ class EnvParams(NamedTuple):
 
 All float32 scalars (MW / ¥ / fraction). Fields align with the LOCKED telemetry schema (D13, D18).
 
+**Amendment (minor, additive):** 13 per-source flow fields appended at the end of the NamedTuple
+(no existing field removed or reordered). Required by env-harness (PR #43) so it can emit
+`telemetry_schema.md`-conformant `env_step` messages without recomputing physics.
+All 13 values were already computed locally inside `step()` — this exposes them to callers.
+
+Battery-to-grid curtailment (`p_bat_curtailed_mw`) is non-zero when battery discharge pushes
+aggregate export past the PCC limit: `scale_exp` is applied proportionally to all three
+export channels (solar, wind, battery). Energy conservation: `P_dis_actual = bat_to_load + bat_to_grid + bat_curtailed`.
+The harness contract's prior assumption "bat_curtailed always 0" was incorrect; the harness
+must not assert this.
+
 ```python
 class EnvInfo(NamedTuple):
-    # Power flows (MW)
+    # ---- Aggregate power flows (MW) ----
     p_wind_mw:          jax.Array   # total wind generation
     p_pv_mw:            jax.Array   # total solar generation
     p_bat_ch_mw:        jax.Array   # battery charge power (≥0)
@@ -118,9 +129,9 @@ class EnvInfo(NamedTuple):
     p_export_mw:        jax.Array   # grid export (≥0)
     p_load_served_mw:   jax.Array   # load served (MW)
     p_load_unserved_mw: jax.Array   # unserved load (VOLL trigger)
-    p_curtailed_mw:     jax.Array   # curtailed energy (PCC export limit + bat excess)
+    p_curtailed_mw:     jax.Array   # aggregate curtailed (= sum of per-source curtailed below)
 
-    # Costs (¥ per step — each is the step's ¥ contribution)
+    # ---- Costs (¥ per step — each is the step's ¥ contribution) ----
     c_import_yuan:                  jax.Array   # C_import = price_buy × P_import × Δt
     r_export_yuan:                  jax.Array   # R_export = price_sell × P_export × Δt
     c_energy_yuan:                  jax.Array   # C_E = C_import − R_export
@@ -134,9 +145,38 @@ class EnvInfo(NamedTuple):
     penalty_yuan:                   jax.Array   # SOC violation penalty
     soc_violation_mwh:              jax.Array   # energy overshoot (MWh)
 
-    # Price
+    # ---- Price ----
     price_buy_yuan_per_mwh:   jax.Array
     price_sell_yuan_per_mwh:  jax.Array
+
+    # ---- Per-source flow breakdown (13 additive fields — amendment) ----
+    # Solar source (identity: to_load + to_bat + to_grid + curtailed == p_pv_mw)
+    p_sol_to_load_mw:    jax.Array   # solar → load after load-cap proportional scale
+    p_sol_to_bat_mw:     jax.Array   # solar → battery (after SOC-limited scale_bat)
+    p_sol_to_grid_mw:    jax.Array   # solar → grid after PCC curtailment
+    p_sol_curtailed_mw:  jax.Array   # solar curtailed at PCC (≥0; 0 when export ≤ limit)
+
+    # Wind source (identity: to_load + to_bat + to_grid + curtailed == p_wind_mw)
+    p_wind_to_load_mw:   jax.Array   # wind → load after load-cap proportional scale
+    p_wind_to_bat_mw:    jax.Array   # wind → battery (after SOC-limited scale_bat)
+    p_wind_to_grid_mw:   jax.Array   # wind → grid after PCC curtailment
+    p_wind_curtailed_mw: jax.Array   # wind curtailed at PCC (≥0)
+
+    # Battery source (discharge only; charge flows from grid/renewables appear in grid/sol/wind rows)
+    p_bat_to_load_mw:    jax.Array   # battery → load after load-cap proportional scale
+    p_bat_to_grid_mw:    jax.Array   # battery → grid after PCC curtailment (§5.3.5 — intentional)
+    p_bat_curtailed_mw:  jax.Array   # battery curtailed at PCC (≥0; non-zero when bat pushes export over limit)
+
+    # Grid source
+    p_grid_to_bat_mw:    jax.Array   # grid → battery (actual, after import cap; ≤ P_grid_to_bat_raw)
+    p_grid_to_load_mw:   jax.Array   # grid → load (after import cap)
+```
+
+**Per-source identity checks (must hold for any step output):**
+```
+p_curtailed_mw == p_sol_curtailed_mw + p_wind_curtailed_mw + p_bat_curtailed_mw
+p_import_mw == p_grid_to_bat_mw + p_grid_to_load_mw
+p_export_mw == p_sol_to_grid_mw + p_wind_to_grid_mw + p_bat_to_grid_mw
 ```
 
 ### 3.4 `SyntheticYear` type alias
@@ -378,15 +418,31 @@ P_wind_to_grid = P_wind − P_wind_to_load − P_wind_to_bat
 
 **PCC export limit (§3.6 rule #8):**
 ```
+# Save pre-curtailment values for per-source breakdown (§3.3 amendment)
+P_sol_to_grid_pre  = P_sol_to_grid
+P_wind_to_grid_pre = P_wind_to_grid
+P_bat_to_grid_pre  = P_bat_to_grid
+
 P_export_raw   = P_sol_to_grid + P_wind_to_grid + P_bat_to_grid
 scale_export   = jnp.where(P_export_raw > params.grid_max_export_mw,
                             params.grid_max_export_mw / P_export_raw, 1.0)
 P_sol_to_grid  *= scale_export
 P_wind_to_grid *= scale_export
-P_bat_to_grid  *= scale_export
+P_bat_to_grid  *= scale_export          # battery-to-grid curtailed proportionally (intentional design)
 P_export       = P_sol_to_grid + P_wind_to_grid + P_bat_to_grid
-P_curtailed    = P_export_raw − P_export    (energy curtailed at PCC)
+P_curtailed    = P_export_raw − P_export    (aggregate curtailed at PCC)
+
+# Per-source curtailment (non-negative by construction; sum == P_curtailed)
+P_sol_curtailed  = P_sol_to_grid_pre  − P_sol_to_grid
+P_wind_curtailed = P_wind_to_grid_pre − P_wind_to_grid
+P_bat_curtailed  = P_bat_to_grid_pre  − P_bat_to_grid
 ```
+
+> **Design note:** battery-to-grid power IS curtailable at the PCC. When aggregate export
+> would exceed `grid_max_export_mw`, all three channels are proportionally scaled by the
+> same `scale_export` factor. `p_bat_curtailed_mw > 0` is a valid state. Battery SOC was
+> already debited for the full `P_dis_actual`; curtailed battery energy is lost (¥800/MWh
+> penalty via C_curtail). This is the intended §5.3.5 behavior.
 
 **Grid import (§3.6 rule #9):**
 ```

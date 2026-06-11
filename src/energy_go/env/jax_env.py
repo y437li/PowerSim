@@ -104,8 +104,17 @@ class EnvParams(NamedTuple):
 
 
 class EnvInfo(NamedTuple):
-    """Per-step outputs — all float32 scalars."""
-    # Power flows (MW)
+    """Per-step outputs — all float32 scalars.
+
+    Aggregate flows (original fields):
+      p_curtailed_mw = p_sol_curtailed_mw + p_wind_curtailed_mw + p_bat_curtailed_mw
+
+    Per-source breakdown (13 additive fields, §3.3 amendment):
+      Battery-to-grid curtailment is non-zero whenever discharge pushes aggregate
+      export past the PCC limit (scale_exp applied equally to all three export channels,
+      §5.3.5). Energy conservation: P_dis_actual = bat_to_load + bat_to_grid + bat_curtailed.
+    """
+    # ---- Aggregate power flows (MW) ----
     p_wind_mw:          jax.Array
     p_pv_mw:            jax.Array
     p_bat_ch_mw:        jax.Array
@@ -114,8 +123,8 @@ class EnvInfo(NamedTuple):
     p_export_mw:        jax.Array
     p_load_served_mw:   jax.Array
     p_load_unserved_mw: jax.Array
-    p_curtailed_mw:     jax.Array
-    # Costs (¥)
+    p_curtailed_mw:     jax.Array  # aggregate = sol + wind + bat curtailed
+    # ---- Costs (¥) ----
     c_import_yuan:                jax.Array
     r_export_yuan:                jax.Array
     c_energy_yuan:                jax.Array
@@ -128,9 +137,23 @@ class EnvInfo(NamedTuple):
     cost_total_reward_basis_yuan: jax.Array
     penalty_yuan:                 jax.Array
     soc_violation_mwh:            jax.Array
-    # Prices
+    # ---- Prices ----
     price_buy_yuan_per_mwh:  jax.Array
     price_sell_yuan_per_mwh: jax.Array
+    # ---- Per-source flow breakdown (13 additive fields for telemetry/harness) ----
+    p_sol_to_load_mw:    jax.Array  # solar → load (after load cap)
+    p_sol_to_bat_mw:     jax.Array  # solar → battery (after scale_bat)
+    p_sol_to_grid_mw:    jax.Array  # solar → grid (after PCC curtailment)
+    p_sol_curtailed_mw:  jax.Array  # solar curtailed at PCC
+    p_wind_to_load_mw:   jax.Array  # wind → load (after load cap)
+    p_wind_to_bat_mw:    jax.Array  # wind → battery (after scale_bat)
+    p_wind_to_grid_mw:   jax.Array  # wind → grid (after PCC curtailment)
+    p_wind_curtailed_mw: jax.Array  # wind curtailed at PCC
+    p_bat_to_load_mw:    jax.Array  # battery discharge → load
+    p_bat_to_grid_mw:    jax.Array  # battery discharge → grid (after PCC curtailment)
+    p_bat_curtailed_mw:  jax.Array  # battery curtailed at PCC (non-zero when bat_to_grid > export headroom)
+    p_grid_to_bat_mw:    jax.Array  # grid → battery (actual, after import cap)
+    p_grid_to_load_mw:   jax.Array  # grid → load
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +394,11 @@ def step(
     # ------------------------------------------------------------------
     # STEP 6 — PCC export limit (§3.6 rule #8)
     # ------------------------------------------------------------------
+    # Save pre-curtailment per-source values for telemetry breakdown (§3.3 amendment)
+    P_sol_to_grid_pre_curt  = P_sol_to_grid
+    P_wind_to_grid_pre_curt = P_wind_to_grid
+    P_bat_to_grid_pre_curt  = P_bat_to_grid
+
     P_export_raw = P_sol_to_grid + P_wind_to_grid + P_bat_to_grid
     scale_exp = jnp.where(
         P_export_raw > params.grid_max_export_mw,
@@ -384,6 +412,11 @@ def step(
 
     P_export     = P_sol_to_grid + P_wind_to_grid + P_bat_to_grid
     P_curtailed  = P_export_raw - P_export
+
+    # Per-source curtailment breakdown (non-negative by construction, sum == P_curtailed)
+    P_sol_curtailed  = P_sol_to_grid_pre_curt  - P_sol_to_grid
+    P_wind_curtailed = P_wind_to_grid_pre_curt - P_wind_to_grid
+    P_bat_curtailed  = P_bat_to_grid_pre_curt  - P_bat_to_grid
 
     # ------------------------------------------------------------------
     # STEP 7 — Grid import (§3.6 rule #9)
@@ -490,6 +523,20 @@ def step(
         soc_violation_mwh   = violation_mwh,
         price_buy_yuan_per_mwh  = price_buy,
         price_sell_yuan_per_mwh = price_sell,
+        # Per-source flow breakdown (13 additive fields, §3.3 amendment)
+        p_sol_to_load_mw    = P_sol_to_load,
+        p_sol_to_bat_mw     = P_solar_to_bat,
+        p_sol_to_grid_mw    = P_sol_to_grid,
+        p_sol_curtailed_mw  = P_sol_curtailed,
+        p_wind_to_load_mw   = P_wind_to_load,
+        p_wind_to_bat_mw    = P_wind_to_bat,
+        p_wind_to_grid_mw   = P_wind_to_grid,
+        p_wind_curtailed_mw = P_wind_curtailed,
+        p_bat_to_load_mw    = P_bat_to_load,
+        p_bat_to_grid_mw    = P_bat_to_grid,
+        p_bat_curtailed_mw  = P_bat_curtailed,
+        p_grid_to_bat_mw    = P_grid_to_bat_actual,
+        p_grid_to_load_mw   = grid_to_load,
     )
 
     return new_state, obs, reward, done, info
