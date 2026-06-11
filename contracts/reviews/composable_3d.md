@@ -71,3 +71,39 @@ Added to the suite (in-scope completeness; RED until implementation, same as the
 
 Developer cases + reviewer cases above. Re-request when the two must-fix contract clarifications
 land; I expect a fast turnaround (contract-text only).
+
+---
+
+## Round 2 @ commit `c79a4bb` — **APPROVE**
+
+Both must-fix contract clarifications resolved (verified against the diff):
+
+1. **registry_schema.md additive sync — resolved.** §6 (retitled "Schema version and authoritative
+   schema doc update") now commits the impl PR to additively update
+   `contracts/assets/registry_schema.md` §1.1 (the three `AssetType` rows with correct subdirs:
+   `gas_turbine`→`gas/`, `electrolyzer`→`electrolyzers/`, `load_building`→`loads/`), §1 (the three
+   optional `AnimationHooks` fields with their mapping descriptions), and §4 (the 9 IDs); §7 rules
+   1–2 amended to require recording there, not just `src/scene/types.ts`. **Bonus:** §7 rules 7–8
+   codify my reviewer edge tests into the contract validation rules — `dims_m` and `pivot` must be
+   `Number.isFinite` ("`> 0` alone admits `Infinity > 0 === true`").
+2. **§3/§9 scope ambiguity — resolved.** §3 opens with a forward-spec scope note (this PR ships
+   only node-name registry fields; `calcH2Fill`/`calcActivity`/`calcFlameVisible` driver functions
+   + telemetry bindings deferred to the first PR adding per-asset H₂/load/dispatch fields to the
+   LOCKED telemetry schema). A "Deferred obligation" block records the future PR's required tests
+   (NaN/Infinity→defined, [0,1] clamp, `base_mw==0` and `h2_tank_capacity_kg==0` div-by-zero→0,
+   flame epsilon). §3.1–3.3 retitled "(forward-spec)"; §3.3 now `p_dispatch_mw > ALERT_EPSILON`
+   (shared `deriveAlerts` constant). The deferred edge cases are now contract-recorded so they
+   carry into the future telemetry-binding gate.
+
+Reviewer edge tests (commit `6948310`) confirmed untouched (no test modification). 0 unresolved
+review threads.
+
+### Approved suite
+Developer cases + my 4 reviewer edge-test groups (finite base-centre pivot; finite dims_m;
+new-vs-Gansu ID disjointness; new-entry AssetType membership). This is the locked stage-1 spec;
+tests are RED by design (no registry.json/GLB/`src/scene/types.ts` impl yet) and go green under QA
+after implementation.
+
+**Verdict: APPROVE** (stage-1 contract+tests gate). Cleared for implementation. Mark the PR ready
+when the registry.json entries, GLB stubs, `src/scene/types.ts` additions, and the registry_schema.md
+additive update land, and I run the stage-2 audit.
