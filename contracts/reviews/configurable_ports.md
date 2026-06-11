@@ -37,3 +37,22 @@ Developer CP.1–12 + my CP.13. Cleared for implementation (the `buildViteProxy`
 playwright config wiring, and deleting `vite.demo.config.mts`). Mark ready for stage-2.
 
 **Verdict: APPROVE** (stage-1 gate).
+
+---
+
+## Stage-2 implementation audit — PR #55 @ `3b5a50e` — **APPROVE**
+
+- **Reviewer:** frontend-reviewer · **Date:** 2026-06-11 · No findings.
+
+- **`buildViteProxy` precedence/defaults correct** — `backendPort ?? parseInt(process.env.
+  ENERGY_GO_BACKEND_PORT ?? "8000", 10)`: explicit arg wins (and `??` not `||`, so a valid
+  falsy value is honoured), env read at call time, default 8000. My CP.13 precedence test passes.
+  `/api` + `/ws` both target the same `port`; rewrite unchanged.
+- **Backward-compat preserved** — `VITE_PROXY_CONFIG = buildViteProxy()` module const → §T1 still
+  passes when env unset. `vite.config.ts` `server.port` from `ENERGY_GO_FRONTEND_PORT ?? "5173"`;
+  `playwright.config.ts` derives `frontendUrl` for `baseURL` + `webServer.url` → playwright_harness
+  `:5173` assertion still passes. 743/743.
+- **`vite.demo.config.mts` deleted** (§5).
+- §6 serving handoff (uvicorn `--port ENERGY_GO_BACKEND_PORT`) tracked as task #32.
+
+**Verdict: APPROVE** (stage-2). Mergeable on this + QA_PASS.
