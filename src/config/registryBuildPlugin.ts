@@ -15,21 +15,37 @@ import { dirname } from "path";
 const SRC = "assets/3d/registry.json";
 const DEST = "src/config/registryData.json";
 
+/**
+ * Core conditional copy logic — extracted for testability.
+ *
+ * Three branches (partial-checkout safe):
+ *  1. source exists              → copy (fresh, overwrite committed fallback) → "copied"
+ *  2. source absent + dest exists → no-op (use committed fallback)            → "skipped"
+ *  3. neither exists             → throw (Vite cannot resolve the import)
+ *
+ * @param src  Path to the canonical source (default: assets/3d/registry.json)
+ * @param dest Path to the generated destination (default: src/config/registryData.json)
+ */
+export function copyRegistryIfNeeded(
+  src: string = SRC,
+  dest: string = DEST,
+): "copied" | "skipped" {
+  if (existsSync(src)) {
+    mkdirSync(dirname(dest), { recursive: true });
+    copyFileSync(src, dest);
+    return "copied";
+  } else if (existsSync(dest)) {
+    return "skipped";
+  } else {
+    throw new Error(
+      `[copy-registry] neither ${src} nor ${dest} exists — cannot proceed`
+    );
+  }
+}
+
 export const registryBuildPlugin = {
   name: "copy-registry",
   configResolved() {
-    // Partial-checkout behaviour (e.g. serving fixture, CI sandbox without assets/):
-    //   - Source exists     → copy (fresh, overwrite committed fallback)
-    //   - Source absent + dest exists → proceed silently (committed copy is the fallback)
-    //   - Neither exists    → hard-fail (Vite cannot resolve the import)
-    if (existsSync(SRC)) {
-      mkdirSync(dirname(DEST), { recursive: true });
-      copyFileSync(SRC, DEST);
-    } else if (!existsSync(DEST)) {
-      throw new Error(
-        `[copy-registry] neither ${SRC} nor ${DEST} exists — cannot proceed`
-      );
-    }
-    // else: source absent but dest exists → use committed fallback, no-op
+    copyRegistryIfNeeded();
   },
 };

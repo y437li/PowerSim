@@ -13,9 +13,10 @@
  * RB.3/RB.4 are RED until scripts/copy_registry.js is created.
  */
 
-import { describe, it, expect } from "vitest";
-import { readFileSync } from "fs";
-import { resolve } from "path";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { readFileSync, writeFileSync, mkdirSync, rmSync, mkdtempSync } from "fs";
+import { resolve, join } from "path";
+import { tmpdir } from "os";
 import { execSync } from "child_process";
 
 // ─── RB.1 / RB.2: Vite plugin shape ─────────────────────────────────────────
@@ -81,6 +82,53 @@ describe("RB.6 — node scripts/copy_registry.js exits 0 and output matches cano
     const copied = JSON.parse(readFileSync("src/config/registryData.json", "utf8"));
     const canonical = JSON.parse(readFileSync("assets/3d/registry.json", "utf8"));
     expect(copied).toEqual(canonical);
+  });
+});
+
+// ─── RB.8: copyRegistryIfNeeded — functional three-branch test ───────────────
+// Tests all three conditional branches using temp directories so nothing is
+// assumed about the real filesystem (no race conditions, no side effects).
+describe("RB.8 — copyRegistryIfNeeded: functional three-branch test", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "rbc-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("branch 1 (source present): copies to dest and returns 'copied'", async () => {
+    const { copyRegistryIfNeeded } = await import("../../src/config/registryBuildPlugin");
+    const src = join(tmpDir, "registry.json");
+    const dest = join(tmpDir, "out", "registryData.json");
+    const payload = JSON.stringify({ version: "1.0.0", assets: [] });
+    writeFileSync(src, payload);
+
+    const result = copyRegistryIfNeeded(src, dest);
+    expect(result).toBe("copied");
+    expect(readFileSync(dest, "utf8")).toBe(payload);
+  });
+
+  it("branch 2 (source absent, dest exists): no-op, returns 'skipped', dest unchanged", async () => {
+    const { copyRegistryIfNeeded } = await import("../../src/config/registryBuildPlugin");
+    const src = join(tmpDir, "registry.json"); // intentionally absent
+    const dest = join(tmpDir, "registryData.json");
+    const fallback = JSON.stringify({ version: "fallback", assets: [] });
+    writeFileSync(dest, fallback);
+
+    const result = copyRegistryIfNeeded(src, dest);
+    expect(result).toBe("skipped");
+    // dest must be unchanged — this is the committed-fallback path
+    expect(readFileSync(dest, "utf8")).toBe(fallback);
+  });
+
+  it("branch 3 (neither exists): throws", async () => {
+    const { copyRegistryIfNeeded } = await import("../../src/config/registryBuildPlugin");
+    const src = join(tmpDir, "registry.json");  // absent
+    const dest = join(tmpDir, "registryData.json"); // absent
+    expect(() => copyRegistryIfNeeded(src, dest)).toThrow(/copy-registry/);
   });
 });
 

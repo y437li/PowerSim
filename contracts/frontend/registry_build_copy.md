@@ -146,6 +146,27 @@ The source of truth is `assets/3d/registry.json` (LOCKED, `registry.json` v1.0.1
 **must** be kept in the index so partial-checkout builds (§9.5 serving fixture) can
 resolve the import without `assets/3d/` present.
 
+### CI drift check (`.github/workflows/ci.yml` — "Registry committed-copy drift check" step)
+
+Because the plugin regenerates the file *before* §T9 runs, §T9 cannot catch a stale
+committed copy. A dedicated CI step closes this gap:
+
+```yaml
+- name: Registry committed-copy drift check
+  shell: bash
+  run: |
+    if [ -f assets/3d/registry.json ] && [ -f src/config/registryData.json ]; then
+      node scripts/copy_registry.js
+      git diff --exit-code src/config/registryData.json || \
+        (echo "ERROR: src/config/registryData.json is stale" && exit 1)
+    fi
+```
+
+This step runs after "Frontend tests" (where `pretest` already ran the copy). If
+`assets/3d/registry.json` and the committed copy differ, `git diff --exit-code` returns
+non-zero and CI fails with a clear message. Skipped on partial-checkout environments
+where `assets/3d/registry.json` is absent.
+
 ---
 
 ## 4. Backward compatibility
@@ -175,3 +196,4 @@ All tests live in `tests/frontend/registry_build_copy.test.ts`.
 | RB.5 (reviewer) | calling `configResolved()` produces a `src/config/registryData.json` that deep-equals `assets/3d/registry.json` | `expect(copied).toEqual(canonical)` |
 | RB.6 | `node scripts/copy_registry.js` exits 0 and the produced `registryData.json` deep-equals canonical | `execSync("node scripts/copy_registry.js")` + `expect(copied).toEqual(canonical)` |
 | RB.7 | script and plugin both contain `existsSync` guard (partial-checkout safe) | source-grep asserts `"existsSync"` present in both files |
+| RB.8 | `copyRegistryIfNeeded(src, dest)` — functional three-branch test (temp dirs, no real-FS side effects) | branch-1: copies + returns `"copied"`; branch-2: no-op + returns `"skipped"` + dest unchanged; branch-3: throws |
