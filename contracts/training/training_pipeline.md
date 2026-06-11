@@ -83,10 +83,13 @@ class RunConfig:
     hidden_sizes: tuple[int, ...] = (256, 256)  # shared for actor and critic
 
     # --- Training logistics ---
-    eval_every_steps: int = 10_000   # run a full eval every this many env steps
-    log_every_steps: int  = 1_000    # emit a train_metrics message every this many env steps
-    seed: int             = 42       # master PRNG seed for reproducibility
-    run_id: str           = ""       # assigned at run start (UUID); passed through to telemetry
+    eval_every_steps: int  = 10_000   # run a full eval every this many env steps
+    log_every_steps: int   = 1_000    # emit a train_metrics message every this many env steps
+    seed: int              = 42       # master PRNG seed for reproducibility
+    run_id: str            = ""       # assigned at run start (UUID); passed through to telemetry
+    site_config_id: str    = "site_gansu"  # site YAML basename used for training (e.g. "site_gansu")
+                                           # Carried in checkpoint run_config_json for UI provenance
+                                           # (contracts/shared/checkpoint_format.md §4.1)
 ```
 
 ### 3.1 Constraints
