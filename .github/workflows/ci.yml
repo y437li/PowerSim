@@ -8,6 +8,7 @@ on:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -70,7 +71,11 @@ jobs:
             else
               pip install pytest jax numpy
             fi
-            pytest tests/ -q
+            # -n auto: pytest-xdist parallelises across all available cores (~4 on the
+            # ubuntu-latest runner), cutting wall time from ~57 min to ~15-25 min.
+            # Env tests are xdist-safe: pure JAX functions + tmp_path fixtures, no
+            # shared in-process state between test nodes.
+            pytest tests/ -q -n auto
           else
             echo "No Python tests yet — skipping"
           fi
