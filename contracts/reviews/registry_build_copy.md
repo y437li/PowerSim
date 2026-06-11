@@ -88,3 +88,22 @@ copy before the gitignored import resolves; the `pretest` hook is a backstop. 5/
 
 **Verdict: REQUEST_CHANGES.** Rename the script to CJS (or ESM-convert) + fix the hooks + add a
 script-execution test, then re-request.
+
+---
+
+## Stage-2 re-audit — PR #62 @ `28eaa4e` — **APPROVE**
+
+- **Reviewer:** frontend-reviewer · **Date:** 2026-06-11
+
+Blocker resolved + verified by running it (the same check that caught it):
+- `scripts/copy_registry.js` converted to ESM `import` (no `require()`). In a clean worktree,
+  `node scripts/copy_registry.js` → **exit 0**, output byte-identical to `assets/3d/registry.json`,
+  still gitignored.
+- **RB.6** `execSync`s the script (no-throw = exit 0) + deep-equals the output vs canonical — the
+  script path is now functionally guarded (RB.1–4 only grepped the source; RB.5 covers the plugin).
+- All invocation paths verified: plugin (registered in vite.config.ts + vitest.config.ts) for
+  `vite dev/build` + `vitest run`; the ESM script (via npm pre-hooks) for `npm dev/build/test` + CI.
+  RB.1–6 green; 786/786.
+
+**Verdict: APPROVE** (stage-2). Mergeable on this + QA_PASS. Closes task #37 — the hand-maintained
+registryData.json copy is now auto-generated and drift-guarded (§T9 content + RB.5 plugin + RB.6 script).
