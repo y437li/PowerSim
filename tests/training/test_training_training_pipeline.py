@@ -1037,8 +1037,8 @@ class TestActorOutputShape:
 # Reviewer-added cases (to be filled in by backend-reviewer)
 # ---------------------------------------------------------------------------
 
-# reviewer: verify reward normalization is std-only, not (r - mean)/std, by checking
-# that two different reward values with the same distance from zero get different norms.
+# dev: verify reward normalization is std-only, not (r - mean)/std — pins §12 N1 deviation
+# (N1 note added in response to backend-reviewer round-1 REQUEST_CHANGES)
 def test_reward_norm_not_mean_shifted():
     # reward_stats: mean=100, var=400 (std=20)
     # normalize_reward(0.0)   = 0.0/20 = 0.0   (not (0-100)/20 = -5.0)
@@ -1053,7 +1053,7 @@ def test_reward_norm_not_mean_shifted():
     assert r100 == pytest.approx(5.0, rel=1e-4),   f"normalize_reward(100) = {r100}, expected 5 (std-only)"
 
 
-# reviewer: eval obs_stats are FROZEN — updating after eval should not change actions.
+# dev: eval obs_stats are FROZEN — pinned explicitly because eval must not call update_stats
 def test_eval_obs_stats_frozen():
     """Running normalize_obs with the same stats twice must produce the same result.
     (This is trivially true but pins that eval does NOT call update_stats on the loaded stats.)"""
@@ -1066,7 +1066,7 @@ def test_eval_obs_stats_frozen():
     np.testing.assert_array_equal(np.array(a1), np.array(a2))
 
 
-# reviewer: sub-month training episodes must never book c_demand_charge (D21).
+# dev: sub-month training episodes must never book c_demand_charge (D21)
 def test_sub_month_demand_charge_is_zero_per_step():
     """A 7-day (168-step) episode must have c_demand_charge = 0 on every step.
     Training demand pressure comes from 2·c_demand_shape only (D21)."""
