@@ -16,7 +16,7 @@ Version pins live in `pyproject.toml` (Python) and `package.json` (frontend); th
 | **Policy export** | **ONNX** or raw MLP weights (actor is a plain MLP) | Consumed by the serving layer; ties to the checkpoint contract | REBUILD_SPEC §7 |
 | **Frontend shell** | **React + Vite + TypeScript** | App shell, routing, websocket/REST clients | REBUILD_SPEC §6; charters |
 | **Frontend state** | **Zustand** | Client state store (app shell + dashboard + 3D scene) | PR #5 app_shell contract; ratified PR #20 |
-| **3D scene** | **Three.js / React Three Fiber** | `.glb` assets resolved only via `assets/3d/registry.json` (no hardcoded paths) | REBUILD_SPEC §8.5; charters |
+| **3D scene** | **Three.js / React Three Fiber** (`@react-three/fiber@^8`) + **drei** (`@react-three/drei@^9`) | `@react-three/drei@^9` pinned to v9 (v10 requires fiber@^9, which would be a breaking upgrade); `useGLTF`, `OrbitControls`, etc. provided by drei. `.glb` assets resolved only via `assets/3d/registry.json` (no hardcoded paths) | REBUILD_SPEC §8.5; charters; task #28 |
 | **Dashboard charts** | **Recharts** (React wrapper around D3-based SVG charts) | `recharts` npm package; tree-shakeable; Vite-compatible; used for training metric curves in `TrainingPanel` | PR #21 (training dashboard) |
 | **Frontend E2E / browser tests** | **Playwright** (`@playwright/test`) + Chromium | `^1.46.0`; browser binary via `npx playwright install chromium`; config at `playwright.config.ts`; tests under `tests/frontend_e2e/*.spec.ts` | task #29 |
 | **Frontend tests** | **Vitest + React Testing Library** | `tests/frontend*/<feature>.test.tsx` | CLAUDE.md conventions |
