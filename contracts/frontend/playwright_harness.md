@@ -108,7 +108,11 @@ export type ErrorReport = {
 - `response` listener: records responses with `status >= 400` into `failedRequests`.
 - `requestfailed` listener: records `{ url, method, status: 0 }` into `failedRequests`.
 - After the test body (in fixture teardown), writes the `ErrorReport` as a JSON object
-  to `playwright-report/error-report.ndjson` (one JSON line per test, appended).
+  to `test-results/error-report.ndjson` (one JSON line per test, appended).
+  **Amendment (task #16):** moved out of `playwright-report/` because Playwright's HTML
+  reporter clears that directory at the start of each run, which would wipe the file before
+  any test writes to it. `test-results/` is the conventional Playwright artifact directory
+  and is not cleared by the HTML reporter plugin.
 - The `ErrorReport` is also returned to the test body so assertions can reference it
   inline: `const { errors } = await useErrorCapture(page)`.
 
@@ -306,7 +310,7 @@ Add the following step to the "For serving/frontend work" domain-checks section 
 
 ```
 - **Browser run (frontend deliverables):** run `npm run test:e2e` against the PR branch
-  with the dev server started. Attach the `playwright-report/error-report.ndjson`
+  with the dev server started. Attach the `test-results/error-report.ndjson`
   content verbatim as evidence in the verdict comment. A QA_PASS requires:
   (a) all smoke tests pass, (b) zero `pageErrors` on any route load, and
   (c) the error report shows no unexpected console.error on initial route navigation.
@@ -325,6 +329,7 @@ Add the following step to the "For serving/frontend work" domain-checks section 
    launching a browser.
 5. `playwright-report/` contains `results.json` + HTML report after every run; on any
    failure, a `<testname>-failed.png` screenshot is present.
+   `test-results/error-report.ndjson` exists and is not wiped between runs (task #16 fix).
 6. `STACK.md` has the Playwright row in the same commit.
 7. `qa-verification` SKILL.md has the browser-run step in the same commit.
 8. The `tests/frontend_e2e/` area exists on disk (`.gitkeep` or the first `.spec.ts`);
