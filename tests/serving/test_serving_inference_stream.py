@@ -1340,9 +1340,10 @@ class TestReviewerPolicyCutover:
 #  5. D18 validate() == [] for real env output.
 # ===========================================================================
 
-# Guard: JAX-dependent tests require the jax + jaxlib wheel.
-# On macOS Intel, jaxlib 0.8.x has no wheel — skip gracefully.
-_jax_available = pytest.importorskip("jax", reason="jax not installed; skip real-env tests")
+# JAX-availability guard for the new real-env classes.
+# We do NOT use pytest.importorskip at module level here — that would skip the
+# entire module (including the existing non-JAX tests).  Instead each new class
+# declares an autouse fixture that skips the class if JAX is absent.
 
 _REQUIRED_FLOW_FIELDS = [
     "solar_to_load_mw",
@@ -1378,6 +1379,11 @@ def _collect_real_env_frames(ws_client, n: int = 3) -> list[dict]:
 
 class TestRealJaxEnvPhysics:
     """Real JAX env physics after _SyntheticEnv replacement (task #48)."""
+
+    @pytest.fixture(autouse=True)
+    def _require_jax(self):
+        """Skip the entire class if JAX is not installed (e.g. macOS Intel)."""
+        pytest.importorskip("jax", reason="jax not installed; skip real-env physics tests")
 
     def test_d18_validate_passes_with_real_env(self, ws_client):
         """Real env output must pass energy_go.telemetry.validate() == [] (D18 hard gate)."""
@@ -1616,6 +1622,8 @@ class TestRealJaxEnvPhysics:
 class TestHasPolicyCanonical:
     """REST API has_policy field reports True iff a canonical checkpoint_*.npz exists."""
 
+    # has_policy fix in rest_api.py is pure Python — no JAX dependency.
+
     def _make_rest_client(self, tmp_path):
         """Return a TestClient with work_dir set to tmp_path."""
         old = os.getcwd()
@@ -1739,6 +1747,11 @@ class TestHasPolicyCanonical:
 
 class TestRealEnvEpisodeBoundary:
     """Real-env episode boundary: reset, seq monotonicity, episode increment."""
+
+    @pytest.fixture(autouse=True)
+    def _require_jax(self):
+        """Skip the entire class if JAX is not installed."""
+        pytest.importorskip("jax", reason="jax not installed; skip real-env boundary tests")
 
     def test_real_env_episode_resets_at_boundary(self, ws_client):
         """After 168 real-env steps (episode 0), payload.episode increments to 1.
