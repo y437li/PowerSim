@@ -89,3 +89,19 @@ jobs:
           else
             echo "No frontend tests yet — skipping"
           fi
+
+      - name: Registry committed-copy drift check
+        # Catches stale committed copies: regenerates src/config/registryData.json from
+        # the canonical assets/3d/registry.json and fails if they differ.  Guards the
+        # partial-checkout fallback path — if the committed copy is out of sync it will
+        # be used verbatim by sandboxed builds (serving fixture, etc.) that lack assets/3d/.
+        # Contract: contracts/frontend/registry_build_copy.md §3
+        shell: bash
+        run: |
+          if [ -f assets/3d/registry.json ] && [ -f src/config/registryData.json ]; then
+            node scripts/copy_registry.js
+            git diff --exit-code src/config/registryData.json || \
+              (echo "ERROR: src/config/registryData.json is stale — re-run 'node scripts/copy_registry.js' and commit the result" && exit 1)
+          else
+            echo "Registry drift check skipped (partial checkout or file absent)"
+          fi

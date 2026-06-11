@@ -1194,7 +1194,7 @@ def test_acceptance_serving_builds_frontend_bundle_sh(tmp_path):
         os.chmod(sh_file, 0o755)
     # Copy frontend source so npm ci/build can run
     for f in ("package.json", "package-lock.json", "vite.config.ts", "tsconfig.json",
-              "index.html", ".npmrc"):
+              "tsconfig.app.json", "index.html", ".npmrc"):
         if (REPO_ROOT / f).exists():
             shutil.copy(REPO_ROOT / f, tmp_path / f)
     for d in ("src", "public"):
