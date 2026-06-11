@@ -265,6 +265,45 @@ class TestGreedyPolicyAction:
             f"With load=0 and renewable=0, battery should idle; got a_bat={a_bat:.4f}"
         )
 
+    # reviewer: RE-ADDED — c5de350 deleted these two cases (claimed "intact"; they were not).
+    # reviewer: SOC-LIMITED discharge branch — the existing deficit tests use soc=0.6
+    # (power-limited: max_P_dis=114.3 > bat_power=98.16, so P_dis=98.16). This pins the
+    # OTHER branch of P_dis_max = (soc-soc_min)*cap*eta_dis, where SOC headroom caps
+    # discharge BELOW bat_power. At soc=0.25 the env (jax_env.py L337) gives:
+    #   max_P_dis = (0.25-0.2)*294.5*0.97 = 0.05*285.665 = 14.283 MW   (< bat_power 98.16)
+    # deficit=200 > 14.283 → P_dis_actual = 14.283 → a_bat = -14.283/98.16 = -0.14551.
+    def test_discharge_soc_limited_not_power_limited(self):
+        if GreedyPolicy is None:
+            pytest.skip("GreedyPolicy not yet implemented")
+        data = _make_data(wind_mps=0.0, irr_wm2=0.0, load_mw=200.0)
+        params = EnvParams(episode_len=1, soc_init=0.25)  # low SOC → discharge is SOC-limited
+        key = jax.random.PRNGKey(0)
+        state, _ = env_reset(key, params, data)
+        action = GreedyPolicy().action(state, data[0], params)
+        a_bat = float(action[0])
+        # max_P_dis = (0.25-0.2)*294.5*0.97 = 14.283 MW; a_bat = -14.283/98.16 = -0.14551
+        assert a_bat == pytest.approx(-0.14551, abs=2e-3), (
+            f"SOC-limited discharge at soc=0.25: expected a_bat≈-0.1455 "
+            f"(P_dis=(0.25-0.2)*294.5*0.97=14.283 MW, /bat_power 98.16); got {a_bat:.5f}"
+        )
+
+    # reviewer: deficit EXACTLY at bat_power_mw → full discharge, a_bat = -1.0 exactly.
+    # load=98.16, no renewable, soc=0.6 (power-limited): deficit=98.16=bat_power;
+    # P_dis_actual=min(98.16, max_P_dis=114.3)=98.16 → a_bat=-98.16/98.16=-1.0.
+    # Pins the deficit==bat_power boundary (full-discharge saturation).
+    def test_deficit_exactly_bat_power_full_discharge(self):
+        if GreedyPolicy is None:
+            pytest.skip("GreedyPolicy not yet implemented")
+        data = _make_data(wind_mps=0.0, irr_wm2=0.0, load_mw=98.16)  # deficit == bat_power_mw
+        params = EnvParams(episode_len=1, soc_init=0.6)
+        key = jax.random.PRNGKey(0)
+        state, _ = env_reset(key, params, data)
+        action = GreedyPolicy().action(state, data[0], params)
+        a_bat = float(action[0])
+        assert a_bat == pytest.approx(-1.0, abs=1e-3), (
+            f"deficit==bat_power_mw (98.16) → full discharge a_bat=-1.0; got {a_bat:.5f}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # B — GreedyPolicy hand-computed single-step cost assertions
