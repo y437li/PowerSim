@@ -42,3 +42,27 @@ Developer cases (§1–§8 + 4 dev edge cases) + my 3 animation-target cases. Lo
 RED until the 4 GLBs + generation script land. Mark ready after implementation for the stage-2 audit.
 
 **Verdict: APPROVE** (stage-1 gate).
+
+---
+
+## Stage-2 implementation audit — PR #49 @ `f2393ee` (marked ready) — **APPROVE**
+
+- **Reviewer:** frontend-reviewer · **Date:** 2026-06-11
+
+Validated the actual GLB bytes (not the test claims) with a standalone Node parser. No findings.
+
+- **All 4 GLBs structurally valid:** glTF magic + version 2 + `header length == file size` +
+  JSON chunkType (`0x4E4F534A`) + BIN chunkType (`0x004E4942`), both 4-byte aligned,
+  `asset.version "2.0"`, `> 200 bytes`, ≥1 POSITION accessor `count ≥ 8`. Sizes 924–1320 B.
+- **Animation-hook targets reference real meshes** (my 3 reviewer checks, verified on real bytes):
+  `vestas` `Rotor` → mesh=1 (+ `Tower` mesh=0); `catl` `SOCFillMesh` → mesh=1 inset inner box
+  (+ `Container` mesh=0); `trina` `PVSurface` material assigned to the panel primitive
+  (`"material": 0`). So rotor-spin / SOC-fill / irradiance animations will actually display.
+- **Generation script reproducible (§7.12):** `node scripts/generate_gansu_glbs.js` exits 0 and
+  regenerates **byte-identical** files (clean `git status` after re-run).
+- **Registry non-regression:** `assets/3d/registry.json` unchanged on the branch (additive files only).
+- Reviewer tests intact; 55/55 pass.
+
+§8 browser render stays a manual QA check (no automated 3D browser test in v1).
+
+**Verdict: APPROVE** (stage-2). Mergeable on this APPROVE + QA_PASS.
