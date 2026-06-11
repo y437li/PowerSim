@@ -56,9 +56,12 @@ function emptyTelemetryState() {
     lastSeq: null,
     seqGap: false,
     historyMaxLen: 168,
+    // §13.2 additions — keep mock in sync with TelemetryState interface
+    frameErrors: [] as any[],
     receiveEnvStep: vi.fn(),
     setWsStatus: vi.fn(),
     clearHistory: vi.fn(),
+    pushFrameError: vi.fn(),
   };
 }
 

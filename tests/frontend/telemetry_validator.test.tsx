@@ -1055,3 +1055,96 @@ describe("reviewer — wsClient drops a wrong-type field (Zod type rejection, §
     expect(onEnvStep).not.toHaveBeenCalled();
   });
 });
+
+// ─── TV.ROB.UI: FrameErrorBanner render-integration (§13.3) ──────────────────
+//
+// Stage-2 blocker (frontend-reviewer REQUEST_CHANGES): FrameErrorBanner was built
+// but never mounted. These tests verify it renders correctly when mounted in
+// LiveDashboard and that the mount is in place.
+
+describe("TV.ROB.UI — FrameErrorBanner render-integration (§13.3)", () => {
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  it("TV.ROB.UI.1 — non-empty frameErrors → frame-error-0 visible with kind, seq, and error code", async () => {
+    const React = await import("react");
+    const { render, screen, cleanup } = await import("@testing-library/react");
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+    const { FrameErrorBanner } = await import("../../src/components/FrameErrorBanner");
+
+    // Seed one frame error into the store
+    useTelemetryStore.getState().pushFrameError({
+      ts_utc: "2026-06-11T01:00:00Z",
+      kind: "env_step",
+      seq: 42,
+      errors: ["payload_invalid:battery"],
+    });
+
+    render(React.createElement(FrameErrorBanner, null));
+
+    const node = screen.getByTestId("frame-error-0");
+    expect(node).toBeDefined();
+    // Must include kind, seq, and at least one error code
+    expect(node.textContent).toContain("env_step");
+    expect(node.textContent).toContain("42");
+    expect(node.textContent).toContain("payload_invalid:battery");
+    cleanup();
+  });
+
+  it("TV.ROB.UI.2 — empty frameErrors → no frame-error DOM nodes", async () => {
+    const React = await import("react");
+    const { render, screen, cleanup } = await import("@testing-library/react");
+    const { FrameErrorBanner } = await import("../../src/components/FrameErrorBanner");
+
+    render(React.createElement(FrameErrorBanner, null));
+
+    expect(screen.queryByTestId("frame-error-0")).toBeNull();
+    cleanup();
+  });
+
+  it("TV.ROB.UI.3 — FrameErrorBanner is mounted in LiveDashboard (adjacent to AlertList)", async () => {
+    // Verify the mount is in place — LiveDashboard must import and render FrameErrorBanner.
+    // Strategy: seed a frame error, render LiveDashboard with a valid envStep, assert frame-error-0 visible.
+    const React = await import("react");
+    const { render, screen, cleanup, act } = await import("@testing-library/react");
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+
+    // Populate store with a valid envStep so LiveDashboard renders its full grid
+    await act(async () => {
+      useTelemetryStore.getState().receiveEnvStep(ENV_STEP_A as any);
+      useTelemetryStore.getState().setWsStatus("connected");
+      useTelemetryStore.getState().pushFrameError({
+        ts_utc: "2026-06-11T01:00:00Z",
+        kind: "env_step",
+        seq: 7,
+        errors: ["payload_invalid:battery.soc"],
+      });
+    });
+
+    // Stub heavy child components that aren't relevant to this mount test
+    vi.doMock("../../src/components/live/SocTimeline", () => ({
+      SocTimeline: () => React.createElement("div", { "data-testid": "soc-timeline-stub" }),
+    }));
+    vi.doMock("../../src/components/live/PriceTimeline", () => ({
+      PriceTimeline: () => React.createElement("div", { "data-testid": "price-timeline-stub" }),
+    }));
+    vi.doMock("../../src/scene/SiteScene", () => ({
+      SiteScene: () => null,
+    }));
+
+    const { LiveDashboard } = await import("../../src/routes/LiveDashboard");
+    render(React.createElement(LiveDashboard, null));
+
+    // FrameErrorBanner must be mounted — frame-error-0 visible
+    const node = screen.getByTestId("frame-error-0");
+    expect(node).toBeDefined();
+    expect(node.textContent).toContain("env_step");
+    expect(node.textContent).toContain("7");
+
+    vi.doUnmock("../../src/components/live/SocTimeline");
+    vi.doUnmock("../../src/components/live/PriceTimeline");
+    vi.doUnmock("../../src/scene/SiteScene");
+    cleanup();
+  });
+});

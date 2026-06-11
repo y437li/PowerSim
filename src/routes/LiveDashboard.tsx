@@ -6,6 +6,7 @@ import { SocTimeline } from "../components/live/SocTimeline";
 import { PriceTimeline } from "../components/live/PriceTimeline";
 import { MonthPeakCard } from "../components/live/MonthPeakCard";
 import { AlertList } from "../components/live/AlertList";
+import { FrameErrorBanner } from "../components/FrameErrorBanner";
 import { PowerFlowsTable } from "../components/live/PowerFlowsTable";
 import { deriveAlerts } from "../utils/deriveAlerts";
 
@@ -49,6 +50,7 @@ export function LiveDashboard(): JSX.Element {
           demandRateYuanPerMwMonth={envStep.costs.demand_rate_yuan_per_mw_month}
         />
         <AlertList alerts={alerts} />
+        <FrameErrorBanner />
         <PowerFlowsTable flows={envStep.flows} generation={envStep.generation} />
         <SocTimeline history={history} />
         <PriceTimeline history={history} />

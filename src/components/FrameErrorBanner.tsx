@@ -13,7 +13,9 @@
 import { useTelemetryStore } from "../stores/telemetryStore";
 
 export function FrameErrorBanner() {
-  const frameErrors = useTelemetryStore((s) => s.frameErrors);
+  // No-selector form: consistent with LiveDashboard and other consumers.
+  // `?? []` defensive fallback guards against incomplete test mocks.
+  const { frameErrors = [] } = useTelemetryStore();
 
   if (frameErrors.length === 0) return null;
 
