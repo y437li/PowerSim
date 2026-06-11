@@ -5,7 +5,8 @@
  * Wraps every test with page-event listeners that collect console errors,
  * page errors, and failed network requests into a structured ErrorReport.
  * After each test the report is appended (as one JSON line) to
- * playwright-report/error-report.ndjson so QA can quote it verbatim.
+ * test-results/error-report.ndjson so QA can quote it verbatim.
+ * (Path sourced from reportPaths.ERROR_REPORT_PATH — single source of truth.)
  *
  * All smoke tests must import { test, expect } from this module instead of
  * '@playwright/test' directly, ensuring error capture is active in every test.
@@ -14,6 +15,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { test as base, expect } from '@playwright/test';
+import { ERROR_REPORT_PATH } from './reportPaths';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -45,7 +47,8 @@ export type ErrorReport = {
  *  1. Attaches listeners BEFORE any page navigation (in setup).
  *  2. Yields the live ErrorReport to the test body for inline assertions.
  *  3. After the test body finishes, writes the report as a JSON line to
- *     playwright-report/error-report.ndjson (appended, one entry per test).
+ *     test-results/error-report.ndjson (appended, one entry per test).
+ *     Path from reportPaths.ERROR_REPORT_PATH.
  */
 export const test = base.extend<{ errorCapture: ErrorReport }>({
   errorCapture: async ({ page }, use, testInfo) => {
@@ -108,11 +111,11 @@ export const test = base.extend<{ errorCapture: ErrorReport }>({
     await use(report);
 
     // Teardown — write report entry to NDJSON file
-    const reportDir = path.join(process.cwd(), 'playwright-report');
-    if (!fs.existsSync(reportDir)) {
-      fs.mkdirSync(reportDir, { recursive: true });
-    }
-    const ndjsonPath = path.join(reportDir, 'error-report.ndjson');
+    // ERROR_REPORT_PATH is "test-results/error-report.ndjson" (from reportPaths.ts).
+    // test-results/ is NOT cleared by Playwright's HTML reporter — this file persists
+    // across runs (task #16 fix; moved out of playwright-report/ which IS cleared).
+    const ndjsonPath = path.join(process.cwd(), ERROR_REPORT_PATH);
+    fs.mkdirSync(path.dirname(ndjsonPath), { recursive: true });
     fs.appendFileSync(ndjsonPath, JSON.stringify(report) + '\n', 'utf8');
   },
 });

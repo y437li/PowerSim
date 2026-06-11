@@ -79,3 +79,22 @@ describe("playwright.config.ts shape (contract: playwright_harness.md §4)", () 
     expect(config.testMatch).toBe("**/*.spec.ts");
   });
 });
+
+// ─── §2 error-report.ndjson output path (task #16 amendment) ─────────────────
+//
+// error-report.ndjson must NOT be written to playwright-report/ because Playwright's
+// HTML reporter clears that directory at the start of every run, wiping the file
+// before any test output is captured. The correct path is test-results/error-report.ndjson.
+//
+// Tested via an exported constant from tests/frontend_e2e/helpers/reportPaths.ts so
+// the path is defined in exactly one place and this test will drift-detect any change.
+describe("errorCapture output path (contract: playwright_harness.md §2, task #16)", () => {
+  it("ERROR_REPORT_PATH is test-results/error-report.ndjson (not in playwright-report/)", async () => {
+    // Imports the canonical path constant from reportPaths.ts — the single source of truth.
+    // Contract: playwright_harness.md §2 (task #16 amendment — move out of playwright-report/).
+    // Verifies errorCapture.ts writes to test-results/ (not playwright-report/ which is
+    // cleared by Playwright's HTML reporter at run start).
+    const { ERROR_REPORT_PATH } = await import("../frontend_e2e/helpers/reportPaths");
+    expect(ERROR_REPORT_PATH).toBe("test-results/error-report.ndjson");
+  });
+});

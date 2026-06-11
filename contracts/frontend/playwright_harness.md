@@ -1,6 +1,6 @@
 # Contract: Playwright Browser Test Harness
 
-- **Status:** DRAFT — contract + tests gate
+- **Status:** AMENDED — task #16 amendment gate (fix/frontend-error-report-location)
 - **Area:** frontend (tooling)
 - **Owner:** qa-engineer
 - **Reviewer:** frontend-reviewer
@@ -8,6 +8,34 @@
 - **Tests:** `tests/frontend_e2e/smoke.spec.ts` (area pending rl-architect DECISION; D15-style)
 - **Task:** #29 (user-requested 2026-06-10)
 - **Spec ref:** REBUILD_SPEC §6 (frontend build order), CLAUDE.md (tests tree rule, D15, D16)
+
+## Task #16 Amendment — error-report.ndjson path relocation
+
+**Problem:** `playwright-report/` is cleared by Playwright's HTML reporter at the start of
+every run. Any file written there is wiped before tests run, losing prior error reports.
+
+**Fix:** move `error-report.ndjson` to `test-results/` (Playwright's artifact directory,
+not managed by any reporter plugin).
+
+### Amendment deliverables (implementation scope for PR #58)
+
+1. `tests/frontend_e2e/helpers/reportPaths.ts` — change stub constant from
+   `"playwright-report/error-report.ndjson"` → `"test-results/error-report.ndjson"`
+2. `tests/frontend_e2e/helpers/errorCapture.ts` — import `ERROR_REPORT_PATH` from
+   `reportPaths.ts` (single source of truth) instead of hardcoding the path
+3. `.claude/skills/qa-verification/SKILL.md` — line ~42: update the browser-run step's
+   attachment path from `playwright-report/error-report.ndjson` → `test-results/error-report.ndjson`
+   so QA instructions stay consistent with the actual output location
+4. `tests/frontend_e2e/smoke.spec.ts` — update header comment path reference (cosmetic)
+
+### Amendment gate test (task #16)
+
+`tests/frontend/playwright_harness.test.ts` includes one new test:
+- Imports `ERROR_REPORT_PATH` from `tests/frontend_e2e/helpers/reportPaths.ts`
+- Asserts `ERROR_REPORT_PATH === "test-results/error-report.ndjson"`
+- RED at gate stage (stub exports the old path); GREEN after implementation
+
+---
 
 ## Purpose
 
@@ -108,7 +136,11 @@ export type ErrorReport = {
 - `response` listener: records responses with `status >= 400` into `failedRequests`.
 - `requestfailed` listener: records `{ url, method, status: 0 }` into `failedRequests`.
 - After the test body (in fixture teardown), writes the `ErrorReport` as a JSON object
-  to `playwright-report/error-report.ndjson` (one JSON line per test, appended).
+  to `test-results/error-report.ndjson` (one JSON line per test, appended).
+  **Amendment (task #16):** moved out of `playwright-report/` because Playwright's HTML
+  reporter clears that directory at the start of each run, which would wipe the file before
+  any test writes to it. `test-results/` is the conventional Playwright artifact directory
+  and is not cleared by the HTML reporter plugin.
 - The `ErrorReport` is also returned to the test body so assertions can reference it
   inline: `const { errors } = await useErrorCapture(page)`.
 
@@ -306,7 +338,7 @@ Add the following step to the "For serving/frontend work" domain-checks section 
 
 ```
 - **Browser run (frontend deliverables):** run `npm run test:e2e` against the PR branch
-  with the dev server started. Attach the `playwright-report/error-report.ndjson`
+  with the dev server started. Attach the `test-results/error-report.ndjson`
   content verbatim as evidence in the verdict comment. A QA_PASS requires:
   (a) all smoke tests pass, (b) zero `pageErrors` on any route load, and
   (c) the error report shows no unexpected console.error on initial route navigation.
@@ -325,6 +357,7 @@ Add the following step to the "For serving/frontend work" domain-checks section 
    launching a browser.
 5. `playwright-report/` contains `results.json` + HTML report after every run; on any
    failure, a `<testname>-failed.png` screenshot is present.
+   `test-results/error-report.ndjson` exists and is not wiped between runs (task #16 fix).
 6. `STACK.md` has the Playwright row in the same commit.
 7. `qa-verification` SKILL.md has the browser-run step in the same commit.
 8. The `tests/frontend_e2e/` area exists on disk (`.gitkeep` or the first `.spec.ts`);

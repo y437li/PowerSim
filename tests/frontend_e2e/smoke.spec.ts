@@ -5,7 +5,8 @@
  *
  * All tests import { test, expect } from the errorCapture fixture so console errors,
  * page errors, and failed network requests are automatically captured and written to
- * playwright-report/error-report.ndjson after each test.
+ * test-results/error-report.ndjson after each test (not playwright-report/ — that dir is
+ * cleared by Playwright's HTML reporter at run start; see task #16 / playwright_harness.md §2).
  *
  * Design note — WS auto-connect:
  * The app shell (PR #5) does NOT call wsClient.connect() on mount. Consequently:
