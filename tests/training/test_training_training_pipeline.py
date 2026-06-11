@@ -386,7 +386,11 @@ class TestNoBatteryPolicy:
         # With p_bat=0 always, no battery throughput → c_degradation_yuan = 0 for the year
         # (cost formula: C_deg = c_deg_yuan_per_mwh * (p_bat_ch + p_bat_dis) * Δt
         #  = 10 * (0 + 0) * 1.0 = 0 ¥/step → Σ over 8760 steps = 0)
-        from energy_go.generators.synthetic import generate_year
+        _syn = pytest.importorskip(
+            "energy_go.generators.synthetic",
+            reason="generate_year from PR #33 (jax_env_core); deferred to task #25",
+        )
+        generate_year = _syn.generate_year
         key = jax.random.PRNGKey(0)
         data = generate_year(key)
         result = run_baseline("no_battery", data)
@@ -502,7 +506,11 @@ class TestTouPolicy:
     def test_tou_eval_has_zero_penalty(self):
         # Rule-based TOU does not target a specific SOC — env clips at bounds.
         # Verify the result object has penalty_yuan >= 0 (not a negative penalty).
-        from energy_go.generators.synthetic import generate_year
+        _syn = pytest.importorskip(
+            "energy_go.generators.synthetic",
+            reason="generate_year from PR #33 (jax_env_core); deferred to task #25",
+        )
+        generate_year = _syn.generate_year
         key = jax.random.PRNGKey(0)
         data = generate_year(key)
         result = run_baseline("rule_based_tou", data)
@@ -564,7 +572,11 @@ class TestPolicyEvalResultIdentity:
     def test_no_battery_degradation_is_zero_in_result(self):
         # Matches the baseline test: NoBattery → degradation_yuan=0 (p_bat_ch=p_bat_dis=0)
         # No battery throughput → C_deg = 10 ¥/MWh × 0 MWh = 0 ¥
-        from energy_go.generators.synthetic import generate_year
+        _syn = pytest.importorskip(
+            "energy_go.generators.synthetic",
+            reason="generate_year from PR #33 (jax_env_core); deferred to task #25",
+        )
+        generate_year = _syn.generate_year
         key = jax.random.PRNGKey(0)
         data = generate_year(key)
         result = run_baseline("no_battery", data)
@@ -763,7 +775,11 @@ class TestCheckpointRoundTrip:
 
     def _get_dummy_checkpoint(self):
         """Build a minimal CheckpointData by running a very short training loop."""
-        from energy_go.generators.synthetic import generate_year
+        _syn = pytest.importorskip(
+            "energy_go.generators.synthetic",
+            reason="generate_year from PR #33 (jax_env_core); deferred to task #25",
+        )
+        generate_year = _syn.generate_year
         from energy_go.training.run_training import train
         from energy_go.training.config import RunConfig
 
@@ -845,7 +861,11 @@ class TestDeterminism:
     """Fixed seed → identical trajectory — §6.8."""
 
     def _run_short(self, seed):
-        from energy_go.generators.synthetic import generate_year
+        _syn = pytest.importorskip(
+            "energy_go.generators.synthetic",
+            reason="generate_year from PR #33 (jax_env_core); deferred to task #25",
+        )
+        generate_year = _syn.generate_year
         from energy_go.training.run_training import train
         from energy_go.training.config import RunConfig
 
@@ -895,7 +915,11 @@ class TestVmapCompilation:
 
     def test_vmap_env_step_compiles(self):
         # Minimal vmap smoke test: vmap env.step over N=8 env states compiles.
-        from energy_go.generators.synthetic import generate_year
+        _syn = pytest.importorskip(
+            "energy_go.generators.synthetic",
+            reason="generate_year from PR #33 (jax_env_core); deferred to task #25",
+        )
+        generate_year = _syn.generate_year
         from energy_go.env.jax_env import EnvState, EnvParams, reset, step
 
         N = 8
@@ -918,7 +942,11 @@ class TestVmapCompilation:
 
     def test_4096_envs_vmap_compiles(self):
         # The contract requires n_envs=4096 as the default — test that vmap at this scale compiles.
-        from energy_go.generators.synthetic import generate_year
+        _syn = pytest.importorskip(
+            "energy_go.generators.synthetic",
+            reason="generate_year from PR #33 (jax_env_core); deferred to task #25",
+        )
+        generate_year = _syn.generate_year
         from energy_go.env.jax_env import EnvState, EnvParams, reset, step
 
         N = 4096
@@ -940,7 +968,11 @@ class TestActorOutputShape:
     """Actor MLP output has shape (6,) and respects per-component squash ranges — §5.2."""
 
     def _get_short_checkpoint(self):
-        from energy_go.generators.synthetic import generate_year
+        _syn = pytest.importorskip(
+            "energy_go.generators.synthetic",
+            reason="generate_year from PR #33 (jax_env_core); deferred to task #25",
+        )
+        generate_year = _syn.generate_year
         from energy_go.training.run_training import train
         from energy_go.training.config import RunConfig
         cfg = RunConfig(total_env_steps=512, n_envs=4, buffer_size=1024, batch_size=32, seed=0)
@@ -1079,7 +1111,11 @@ def test_sub_month_demand_charge_is_zero_per_step():
     """A 7-day (168-step) episode must have c_demand_charge = 0 on every step.
     Training demand pressure comes from 2·c_demand_shape only (D21)."""
     # This test needs the env and the info output — smoke test on the raw env step.
-    from energy_go.generators.synthetic import generate_year
+    _syn = pytest.importorskip(
+        "energy_go.generators.synthetic",
+        reason="generate_year from PR #33 (jax_env_core); deferred to task #25",
+    )
+    generate_year = _syn.generate_year
     from energy_go.env.jax_env import EnvParams, reset, step
 
     key = jax.random.PRNGKey(0)
