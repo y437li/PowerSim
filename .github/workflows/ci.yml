@@ -91,6 +91,11 @@ jobs:
             rm -f package-lock.json
             npm install
             npm test
+            # Task #40: production TypeScript typecheck + bundle (tsc + vite build).
+            # Catches type errors that Vitest/RTL unit tests don't exercise and confirms
+            # the production bundle compiles cleanly on each PR.  Uses the node_modules
+            # already installed above — no second install needed.
+            npm run build
           else
             echo "No frontend tests yet — skipping"
           fi
