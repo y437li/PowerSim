@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { SceneMountPoint } from "../components/SceneMountPoint";
 import { SiteScene } from "../scene/SiteScene";
+import { SessionControlStrip } from "../components/SessionControlStrip";
 import { LiveDashboard } from "./LiveDashboard";
 import { GANSU_SITE_CONFIG, ASSET_REGISTRY } from "../config/gansuSiteConfig";
 
@@ -24,6 +25,7 @@ export default function SiteView() {
         registry={ASSET_REGISTRY}
         containerEl={containerEl}
       />
+      <SessionControlStrip />
       <LiveDashboard />
     </div>
   );
