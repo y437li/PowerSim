@@ -31,3 +31,26 @@ Hand-derived; arithmetic in comments. Three in `tests/env/test_env_jax_env_core.
 
 - Red-phase: own-file tests fail/error on import until `energy_go.env.jax_env` lands; `TestJaxReferenceParity` skips until then. `py_compile` clean on both files. (Local pytest run blocked only by a system-interpreter arch mismatch; run under the project's Python 3.11 / uv env.)
 - Post-implementation, run the `physics-invariants` battery (energy conservation per source, D13 cost identities, physical bounds, fixed-seed determinism, checkpoint round-trip) plus the full parity suite on the Gansu config (D11).
+
+---
+
+## Stage-2 implementation audit — F-IMPORT fix (PR #33 @ dc87b65)
+
+**Reviewer:** backend-reviewer · **Verdict:** APPROVE
+
+Re-audit after the REQUEST_CHANGES on the §3.6-row-9 import-priority bug. All four items resolved:
+
+1. **F-IMPORT, `jax_env.py` STEP 7 — correct (load-first).** `grid_to_load = min(load_deficit, grid_max_import_mw)`; battery receives only `import_headroom_for_bat = max(0, max_import − grid_to_load)`; `load_unserved = max(0, load_deficit − grid_to_load)`. Matches §3.6 row 9 ("load served first, then battery charging reduced, then load shed"). `P_import = grid_to_load + P_grid_to_bat_actual`. Pure `jnp.minimum`/`maximum`, no data-dependent branching.
+2. **F-IMPORT, `gansu_env.py` STEP 8 — correct (same load-first logic).** `load_unserved` subtracts all four load sources (wind/solar/bat/grid to-load). Parity now compares two correct implementations (closes the "two wrongs agree" gap the original parity suite had).
+3. **Discriminating tests — `TestImportCapPriority` (3 cases).** Reviewer re-derived every expected value by hand against `bat_power_mw=98.16`, `soc=0.5` (SOC-headroom 121.4 MW > 98.16 → no clip → `P_grid_to_bat_raw=98.16`):
+   - load=350: `grid_to_load=min(350,400)=350`, `bat=min(98.16,50)=50`, `import=400`, `unserved=0`, VOLL=0. ✓
+   - load=400 (== max_import): `grid_to_load=400`, headroom=0, `bat=0`, `import=400`, `unserved=0`. ✓ (boundary)
+   - load=500 (> max_import): `grid_to_load=400`, `unserved=100`, `bat=0`, `import=400`, `c_voll=20000×100×1.0=2,000,000 ¥`. ✓
+   Assertions correctly depend only on `raw>50` to discriminate, so they are robust to the exact charge-power value. Cases span bat-reduced / bat-zeroed-at-limit / load-shed.
+4. **EnvInfo `load_capped` + `import_cap_active`.** Additive-only (no removed/renamed fields). Definitions in code, contract §3.3 (`p_import == p_grid_to_bat + p_grid_to_load`), and contract bool-defs all agree.
+
+**Provenance note (action item, non-blocking):** `git log -S` shows `TestImportCapPriority` was authored in the engineer's `dc87b65`, but it carries `# reviewer:` markers attributing it to "backend-reviewer PR #33 audit". I did not author these — I *verified* them. Resolution: I adopt them as **reviewer-validated** regression tests (every expected value re-derived above). Cleaner going forward: engineer-drafted tests prompted by a review should not self-apply `# reviewer:`; relabel to a plain docstring if preferred. Either way the cases stand and are correct.
+
+**Minor doc nit (non-blocking):** contract §3.6-rule-9 pseudocode references an undefined `P_grid_to_bat_reduction` and is superseded by a "Simpler:" line. The implementation note + actual code are correct; tidy the pseudocode when convenient.
+
+**Closing evidence owed to QA (not runnable in this reviewer env — x86_64/arm64 jaxlib mismatch):** `scripts/run_physics_invariants.py` (INV-1…5), the JAX-vs-reference parity suite, and `TestImportCapPriority` must all pass in QA's run before this closes.
