@@ -107,3 +107,33 @@ after implementation.
 **Verdict: APPROVE** (stage-1 contract+tests gate). Cleared for implementation. Mark the PR ready
 when the registry.json entries, GLB stubs, `src/scene/types.ts` additions, and the registry_schema.md
 additive update land, and I run the stage-2 audit.
+
+---
+
+## Stage-2 implementation audit — PR #38 @ `7d9d7d0` (marked ready) — **APPROVE**
+
+- **Reviewer:** frontend-reviewer · **Date:** 2026-06-11
+
+Verified all four deliverables against the actual files (not the summary):
+
+1. **`registry.json` — correct.** `schema_version` `1.0.1`; the 4 Gansu entries are **byte-identical**
+   to LOCKED v1.0.0 (untouched); 9 new entries match contract §4 exactly (type / dims_m / pivot
+   {0,0,0} / animation_hooks). 13 total. All IDs format-valid; all dims & pivots finite.
+2. **`registry_schema.md` additive sync (must-fix #1) — correct.** §1 +3 AnimationHooks rows
+   (`h2_fill_mesh`/`activity_material`/`flame_node`, forward-spec mappings); §1.1 +3 AssetType rows
+   (`gas_turbine`→`gas/`, `electrolyzer`→`electrolyzers/`, `load_building`→`loads/`) with an
+   "additive — no re-LOCK" note; §4 replaced with the 9-entry §8 table. The §4 dims match
+   `registry.json` and contract §4 verbatim — single source of truth preserved. Additive (no field
+   removal/rename/retype) → no re-LOCK, within frontend-reviewer gate per D23.
+3. **9 GLB stubs — valid.** Magic `67 6C 54 46` ("glTF") + version `02 00 00 00` + length
+   `18 00 00 00` (24 bytes) — minimal valid GLB v2 under `gas/`, `electrolyzers/`, `loads/`.
+4. **`src/scene/types.ts` — correct.** `AssetType` += the 3 new values; `AnimationHooks` += the 3
+   new optional fields (with mapping doc-comments); existing 7 types / 3 hooks unchanged.
+
+- **Reviewer edge tests (commit 6948310) intact** — pivot finite, dims finite, ID disjointness,
+  type membership — no test modification. **92/92 pass** (developer + reviewer suite).
+- No scene-consumption / hardcoded-path / LOD concerns this PR — it ships the asset *library*;
+  scene rendering of §8 assets and the telemetry-binding driver functions are future work
+  (recorded deferred obligation in contract §3).
+
+**Verdict: APPROVE** (stage-2). Mergeable on this APPROVE + QA_PASS. No findings.
