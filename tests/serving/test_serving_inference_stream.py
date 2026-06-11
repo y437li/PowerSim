@@ -911,3 +911,61 @@ class TestPolicyForwardPass:
             f"tanh(-0.5) must be negative (≈-0.462); got {served[0]:.6f} — "
             "likely relu used instead of tanh"
         )
+
+
+# ===========================================================================
+# Reviewer-added (backend-reviewer, PR #46 gate): D18 runtime-warning CONTENT
+# ===========================================================================
+class TestReviewerD18RuntimeWarningContent:
+    """The contract's D18 runtime tier requires the warning to be structured with
+    fields (kind, seq, error list). The dev's resilience test only asserts a
+    'D18'-containing warning EXISTS — a content-less "D18 oops" would satisfy it.
+    This pins that the logged warning actually carries kind=, seq=, and the errors.
+    """
+
+    def _collect_frames(self, ws_client, n: int = 2) -> list[dict]:
+        frames: list[dict] = []
+        with ws_client.websocket_connect("/ws/inference") as ws:
+            ws.receive_text(timeout=5)  # ready
+            ws.send_text(_start_cmd())
+            while len(frames) < n:
+                raw = ws.receive_text(timeout=5)
+                msg = json.loads(raw)
+                if msg.get("kind") == "env_step":
+                    frames.append(msg)
+        return frames
+
+    def test_d18_runtime_warning_carries_kind_seq_errors(self, ws_client, monkeypatch):
+        # reviewer: force validate() to return a unique sentinel error and assert the
+        # reviewer: logged D18 warning contains kind=, seq=, AND that sentinel — pinning
+        # reviewer: the contract's "structured (fields: kind, seq, error list)" requirement.
+        # reviewer: Also confirms resilience holds alongside content (2 frames still arrive).
+        import logging
+        import energy_go.telemetry.validate as _val_mod  # type: ignore
+
+        sentinel = "reviewer-D18-sentinel-xyz"
+        monkeypatch.setattr(_val_mod, "validate", lambda msg: [sentinel])
+
+        captured: list[str] = []
+
+        class _Catcher(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                m = record.getMessage()
+                if "D18" in m:
+                    captured.append(m)
+
+        logger = logging.getLogger("energy_go.serving.inference_stream")
+        handler = _Catcher()
+        logger.addHandler(handler)
+        try:
+            frames = self._collect_frames(ws_client, n=2)
+        finally:
+            logger.removeHandler(handler)
+
+        assert captured, "no D18 warning captured on energy_go.serving.inference_stream logger"
+        msg = captured[0]
+        assert "kind=" in msg, f"D18 warning missing kind field: {msg!r}"
+        assert "seq=" in msg, f"D18 warning missing seq field: {msg!r}"
+        assert sentinel in msg, f"D18 warning missing the error list: {msg!r}"
+        # resilience preserved alongside structured content
+        assert len(frames) == 2, f"session must keep streaming; got {len(frames)} frames"
