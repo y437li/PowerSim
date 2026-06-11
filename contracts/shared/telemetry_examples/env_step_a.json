@@ -1,0 +1,84 @@
+{
+  "schema_version": "1.0.0",
+  "kind": "env_step",
+  "ts_utc": "2026-06-10T08:00:00Z",
+  "run_id": "golden-a",
+  "seq": 168,
+  "payload": {
+    "step": 168,
+    "episode": 3,
+    "dt_hours": 1.0,
+    "sim_time_utc": "2026-03-02T08:00:00Z",
+    "hour_of_day": 8,
+    "minute_of_hour": 0,
+    "wind_speed_mps": 6.4,
+    "irradiance_wm2": 540.0,
+    "temperature_c": 18.2,
+    "load_mw": 72.5,
+    "price_buy_yuan_per_mwh": 620.0,
+    "price_sell_yuan_per_mwh": 590.0,
+    "tariff_tier": "peak",
+    "battery": {
+      "soc": 0.55,
+      "p_charge_mw": 0.0,
+      "p_discharge_mw": 40.0,
+      "p_max_charge_mw": 98.16,
+      "p_max_discharge_mw": 98.16,
+      "soc_violation_mwh": 0.0,
+      "capacity_mwh": 294.5
+    },
+    "generation": {
+      "gross_solar_mw": 30.0,
+      "gross_wind_mw": 92.5
+    },
+    "flows": {
+      "solar_to_load_mw": 30.0,
+      "solar_to_bat_mw": 0.0,
+      "solar_to_grid_mw": 0.0,
+      "wind_to_load_mw": 12.5,
+      "wind_to_bat_mw": 0.0,
+      "wind_to_grid_mw": 80.0,
+      "bat_to_load_mw": 30.0,
+      "bat_to_grid_mw": 10.0,
+      "grid_to_load_mw": 0.0,
+      "grid_to_bat_mw": 0.0,
+      "solar_curtailed_mw": 0.0,
+      "wind_curtailed_mw": 0.0,
+      "bat_curtailed_mw": 0.0,
+      "load_unserved_mw": 0.0
+    },
+    "pcc": {
+      "export_mw": 90.0,
+      "import_mw": 0.0,
+      "max_export_mw": 945.0,
+      "max_import_mw": 400.0
+    },
+    "costs": {
+      "c_energy_yuan": -53100.0,
+      "c_import_yuan": 0.0,
+      "r_export_yuan": 53100.0,
+      "c_demand_charge_yuan": 0.0,
+      "c_demand_shape_yuan": 0.0,
+      "c_degradation_yuan": 400.0,
+      "c_curtail_yuan": 0.0,
+      "c_voll_yuan": 0.0,
+      "penalty_yuan": 0.0,
+      "demand_rate_yuan_per_mw_month": 32000.0,
+      "cost_total_real_yuan": -52700.0,
+      "cost_total_reward_basis_yuan": -52700.0
+    },
+    "cost_cum": {
+      "c_energy_yuan_cum": -53100.0,
+      "c_demand_charge_yuan_cum": 0.0,
+      "c_demand_shape_yuan_cum": 0.0,
+      "c_degradation_yuan_cum": 400.0,
+      "c_curtail_yuan_cum": 0.0,
+      "c_voll_yuan_cum": 0.0,
+      "penalty_yuan_cum": 0.0,
+      "cost_total_real_yuan_cum": -52700.0,
+      "cost_total_reward_basis_yuan_cum": -52700.0
+    },
+    "month_peak_mw": 95.0,
+    "reward": 0.527
+  }
+}

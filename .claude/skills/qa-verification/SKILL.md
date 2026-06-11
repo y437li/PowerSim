@@ -38,6 +38,12 @@ For training work:
 For serving/frontend work:
 - Validate every websocket/REST message against the contract schema (field names, units, types).
 - Exported policy (ONNX/weights) produces the same actions as the training checkpoint on fixed inputs (tolerance in the contract).
+- **Browser run (frontend deliverables):** run `npm run test:e2e` against the PR branch
+  with the dev server started. Attach the `playwright-report/error-report.ndjson`
+  content verbatim as evidence in the verdict comment. A QA_PASS requires:
+  (a) all smoke tests pass, (b) zero `pageErrors` on any route load, and
+  (c) the error report shows no unexpected console.error on initial route navigation.
+  Attach the Playwright HTML report path and the full NDJSON report.
 
 ## Step 4 — Report
 

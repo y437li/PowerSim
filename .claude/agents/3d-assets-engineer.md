@@ -17,3 +17,8 @@ Scene requirements:
 - Turbine rotors spin at a rate ∝ wind speed (0 below cut-in 3 m/s and at/above cut-out 25 m/s); battery bank shows SOC fill; PV arrays reflect irradiance.
 - Animated power-flow lines for every active flow (solar→load/bat/grid, wind→load/bat/grid, bat→load/grid, grid→load/bat), with width/speed ∝ MW; show curtailment and unserved-load events visibly.
 - Performance: the Gansu site is 615 MW of wind (~146 V150-class turbines) — use instancing/LODs; target 60 fps on a mid-range GPU. Handle telemetry gaps gracefully (freeze, don't flicker).
+
+## Assigned skills (mandatory)
+
+- `contract-first-dev` — always, before any implementation.
+- `validate-telemetry` — bind only to LOCKED schema fields; include at least one full-message validation against the contract's golden examples in your tests.

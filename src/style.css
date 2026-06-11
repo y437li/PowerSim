@@ -1,0 +1,140 @@
+/* Energy GO — base styles */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: #0f1117;
+  color: #e2e8f0;
+}
+
+/* App shell layout */
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.app__nav {
+  display: flex;
+  gap: 1rem;
+  padding: 0.75rem 1.5rem;
+  background: #1a1f2e;
+  border-bottom: 1px solid #2d3748;
+}
+
+.nav-link {
+  color: #94a3b8;
+  text-decoration: none;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.nav-link--active {
+  color: #60a5fa;
+}
+
+.app__main {
+  flex: 1;
+  padding: 1.5rem;
+}
+
+/* Card */
+.card {
+  background: #1e2533;
+  border: 1px solid #2d3748;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.card__title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #64748b;
+  margin-bottom: 0.5rem;
+}
+
+/* Scene mount point */
+.scene-mount-point {
+  width: 100%;
+  height: 100%;
+  min-height: 400px;
+}
+
+/* TOU badge */
+.tou-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid currentColor;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+/* Number display */
+.number-display__value {
+  font-variant-numeric: tabular-nums;
+}
+
+.number-display__null {
+  color: #64748b;
+}
+
+/* Time axis */
+.time-axis {
+  font-size: 0.85rem;
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Error boundary */
+.error-boundary-fallback {
+  padding: 1rem;
+  background: #2d1515;
+  border: 1px solid #f87171;
+  border-radius: 6px;
+  color: #fca5a5;
+}
+
+.error-boundary-fallback__detail {
+  font-size: 0.75rem;
+  opacity: 0.8;
+  margin-top: 0.5rem;
+  white-space: pre-wrap;
+}
+
+/* 404 */
+.not-found {
+  text-align: center;
+  padding: 4rem 1rem;
+  color: #64748b;
+}
+
+/* Eval comparison table */
+.eval-comparison__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.eval-comparison__table th,
+.eval-comparison__table td {
+  padding: 0.5rem 0.75rem;
+  text-align: right;
+  border-bottom: 1px solid #2d3748;
+}
+
+.eval-comparison__table th:first-child,
+.eval-comparison__table td:first-child {
+  text-align: left;
+}

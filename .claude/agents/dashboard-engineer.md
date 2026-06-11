@@ -25,3 +25,8 @@ Rules:
 - Consume data only through frontend-engineer's hooks/stores; format all numbers through the shared formatting utilities (units shown on every value — MW, MWh, ¥, ¥/MWh).
 - Never transform units inside a component; if the contract gives MW and you need kW, that conversion lives in one named utility with a test.
 - Handle empty/stale/extreme data without breaking scales — the frontend-reviewer will add cases for these.
+
+## Assigned skills (mandatory)
+
+- `contract-first-dev` — always, before any implementation.
+- `validate-telemetry` — bind only to LOCKED schema fields; include at least one full-message validation against the contract's golden examples in your tests.
