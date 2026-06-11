@@ -20,6 +20,11 @@
  *   3. Default: 8000.
  */
 
+// process.env is available in Node context (vite.config.ts) and polyfilled by Vite
+// in browser/test context.  Declaring here avoids a @types/node devDependency;
+// the only field we read is ENERGY_GO_BACKEND_PORT.
+declare const process: { env: Record<string, string | undefined> };
+
 type ProxyEntry = {
   target: string;
   changeOrigin?: boolean;

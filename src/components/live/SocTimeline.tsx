@@ -57,7 +57,8 @@ export function SocTimeline({ history }: SocTimelineProps): JSX.Element {
               strokeDasharray="4 4"
               label={{ value: "Max 90%", position: "insideTopLeft", fontSize: 10 }}
             />
-            <Tooltip formatter={(v: number) => [`${v.toFixed(1)} %`, "SOC"]} />
+            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+            <Tooltip formatter={(v: any) => v == null ? ['', ''] : [`${Number(v).toFixed(1)} %`, "SOC"]} />
             <Line type="monotone" dataKey="soc" dot={false} stroke="#3b82f6" strokeWidth={1.5} />
           </LineChart>
         </ResponsiveContainer>

@@ -14,7 +14,10 @@
  */
 
 import type { SiteSceneConfig, AssetRegistry } from "../scene/types";
-import rawRegistry from "../../assets/3d/registry.json";
+// registryData.json is a build-time copy of assets/3d/registry.json kept inside src/
+// so that tsc (moduleResolution: bundler) can resolve it within the include paths.
+// Update both files when the asset registry changes (see LOCKED registry, PR #24).
+import rawRegistry from "./registryData.json";
 
 // ─── Asset registry ───────────────────────────────────────────────────────────
 

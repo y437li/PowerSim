@@ -95,12 +95,16 @@ export function MetricCurves({ history }: MetricCurvesProps): JSX.Element {
                   tick={{ fontSize: 11 }}
                 />
                 <Tooltip
-                  formatter={(value: number) =>
-                    panel.key === "cost_total_real_mean_yuan"
-                      ? [formatYuan(value, 0), panel.label]
-                      : [value.toFixed(4), panel.label]
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  formatter={(value: any) =>
+                    value == null
+                      ? ['', panel.label]
+                      : panel.key === "cost_total_real_mean_yuan"
+                        ? [formatYuan(value as number, 0), panel.label]
+                        : [(value as number).toFixed(4), panel.label]
                   }
-                  labelFormatter={(v: number) => formatSteps(v)}
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  labelFormatter={(v: any) => v == null ? "" : formatSteps(Number(v))}
                 />
                 <Line
                   type="monotone"

@@ -196,11 +196,20 @@ export interface ServerErrorFrame {
 }
 
 // ─── REST client types ───────────────────────────────────────────────────────
+/**
+ * REST API schema for GET /runs and GET /runs/latest — contracts/serving/rest_api.md §GET-runs.
+ * Primary key is `id`; `run_id` accepted as a legacy alias for backward compatibility.
+ */
 export interface RunInfo {
-  run_id: string;
-  started_at: string;      // ISO-8601 UTC
-  status: "running" | "completed" | "failed";
-  checkpoint_count: number;
+  id?: string;
+  run_id?: string;              // legacy alias; prefer id
+  created_at?: string;          // ISO-8601 UTC; absent if not determinable
+  started_at?: string;          // legacy alias for created_at
+  episodes_trained?: number;
+  latest_eval_reward?: number | null;
+  has_policy?: boolean;
+  status?: "running" | "completed" | "failed";   // legacy field
+  checkpoint_count?: number;                       // legacy field
 }
 
 export interface SiteConfig {

@@ -76,11 +76,11 @@ export function RunSelector({ restClient }: RunSelectorProps): JSX.Element {
       <select id="run-select" className="run-selector__select">
         {runs.map((run) => (
           <option
-            key={run.run_id}
-            value={run.run_id}
+            key={run.run_id ?? run.id ?? ""}
+            value={run.run_id ?? run.id ?? ""}
             data-status={run.status}
           >
-            {run.run_id}
+            {run.run_id ?? run.id ?? ""}
           </option>
         ))}
       </select>
