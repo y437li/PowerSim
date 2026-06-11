@@ -196,11 +196,13 @@ export interface ServerErrorFrame {
 }
 
 // ─── REST client types ───────────────────────────────────────────────────────
+/** REST API schema for GET /runs and GET /runs/latest — contracts/serving/rest_api.md §GET-runs. */
 export interface RunInfo {
-  run_id: string;
-  started_at: string;      // ISO-8601 UTC
-  status: "running" | "completed" | "failed";
-  checkpoint_count: number;
+  id: string;
+  created_at?: string;         // ISO-8601 UTC; absent if not determinable
+  episodes_trained: number;
+  latest_eval_reward: number | null;
+  has_policy: boolean;
 }
 
 export interface SiteConfig {

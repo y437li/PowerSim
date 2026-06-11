@@ -61,7 +61,7 @@ export const inferenceSessionStore = create<InferenceSessionState>((set, get) =>
   async function _autoStart(): Promise<void> {
     try {
       const run = await restClient.getLatestRun();
-      get().startSession(run.run_id, "gansu");
+      get().startSession(run.id, "gansu");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg === "no_runs_found") {
