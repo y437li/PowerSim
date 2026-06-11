@@ -54,15 +54,16 @@ jobs:
         run: |
           if [ -d tests ] && find tests -name 'test_*.py' | grep -q .; then
             if [ -f pyproject.toml ]; then
-              # --no-deps on the package itself skips heavy jax/jaxlib; all lightweight
-              # runtime + test deps are installed explicitly below.
-              # Tests that still need jax skip via pytest.importorskip.
+              # --no-deps on the package itself skips sbx-rl (heavy optional training lib);
+              # jax[cpu]+jaxlib, serving, and training framework deps are installed explicitly
+              # so the training suite (78 tests) and serving suite execute in CI.
               pip install --no-deps -e .
               pip install \
                 "pytest>=8.0" "pytest-asyncio>=0.23" "anyio>=4.0" "pytest-xdist>=3.5" \
                 "fastapi>=0.110" "httpx>=0.27" "starlette>=0.36" \
                 "pyyaml>=6.0" "numpy>=1.26" "websockets>=12" "uvicorn[standard]>=0.29" \
-                "jsonschema>=4.21"
+                "jsonschema>=4.21" \
+                "jax[cpu]>=0.4.25" "flax>=0.8.0" "optax>=0.2.0" "flashbax>=0.1.0"
             else
               pip install pytest jax numpy
             fi

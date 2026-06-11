@@ -71,6 +71,14 @@ dev = [
     "jsonschema>=4.21",
     "starlette>=0.36",
 ]
+# Training dependencies — install with:  pip install -e ".[training]"
+# IMPORTANT: the SAC-in-JAX library is "sbx-rl" on PyPI (NOT "sbx" which is a flashcard app).
+training = [
+    "sbx-rl>=0.19.0",       # SB3-in-JAX SAC (PyPI: sbx-rl); https://github.com/araffin/sbx
+    "flax>=0.8.0",           # neural network layers (actor/critic MLPs)
+    "optax>=0.2.0",          # JAX optimisers (Adam for SAC updates)
+    "flashbax>=0.1.0",       # JAX replay buffers (flashbax-style circular buffer)
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

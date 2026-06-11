@@ -144,8 +144,17 @@ exactly to the LOCKED `contracts/shared/telemetry_schema.json` v1.0.0.
 
 - `seq` — strictly monotonic per connection, starting at 0; increments by 1 per step.
 - The serving layer MUST call `energy_go.telemetry.validate(msg)` on every frame before
-  sending, and MUST assert `== []` (zero validation errors).  A non-empty error list is
-  a bug in the serving layer — the test suite pins this (D18 producer obligation).
+  sending (D18 producer obligation).  The obligation has two tiers:
+
+  **Test-time (hard gate):** Every test that receives an `env_step` frame MUST assert
+  `validate(msg) == []`.  A non-empty error list in tests is a bug in the serving layer —
+  the test suite is the hard gate that prevents systematic validation failures.
+
+  **Runtime (resilient):** In the live inference stream a D18 validation failure MUST be
+  logged as a structured warning (fields: `kind`, `seq`, error list) and MUST NOT crash
+  the WebSocket session or silently drop the frame.  Rationale: a transient physics NaN
+  in a multi-hour live session should not terminate the connection; the test-time gate
+  catches systematic bugs before they reach production.
 - `episode` increments when the env resets at the episode boundary (168 steps per D3).
   The stream is continuous across episodes until `stop` is received.
 

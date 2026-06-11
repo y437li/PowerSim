@@ -1,4 +1,4 @@
-import type { TelemetryEnvelope } from "../types/telemetry";
+import type { TelemetryEnvelope, ServerStatusFrame, ServerErrorFrame } from "../types/telemetry";
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -8,6 +8,10 @@ export interface WsClientOptions {
   onTrainMetrics: (msg: TelemetryEnvelope) => void;
   onEvalCompare: (msg: TelemetryEnvelope) => void;
   onStatusChange: (status: "connecting" | "connected" | "disconnected" | "stale") => void;
+  /** Called when the server sends a kind="status" control frame. */
+  onServerStatus?: (frame: ServerStatusFrame) => void;
+  /** Called when the server sends a kind="error" control frame. */
+  onServerError?: (frame: ServerErrorFrame) => void;
   /** Mark status 'stale' after this many ms with no messages. Default: 10_000 */
   staleAfterMs?: number;
   /** Base delay for exponential-backoff reconnect. Default: 1_000 */
@@ -19,11 +23,33 @@ export interface WsClientOptions {
 export interface WsClient {
   connect: () => void;
   disconnect: () => void;
+  /**
+   * Send a JSON-serializable message to the server.
+   * No-op if the WebSocket is not connected (ws === null) — callers should
+   * wait for status:ready before sending commands.
+   */
+  send: (msg: unknown) => void;
 }
 
 // ─── Implementation ──────────────────────────────────────────────────────────
 
 const SUPPORTED_MAJOR = 1;
+
+/**
+ * Convert a relative WebSocket path to an absolute ws:// / wss:// URL.
+ *
+ * `new WebSocket(url)` requires an absolute URL in jsdom and older browsers.
+ * Vite's dev proxy rewrites `/ws/*` to `ws://localhost:8000/*`, so the
+ * browser connects to the dev server which proxies to the backend — correct.
+ *
+ * Already-absolute URLs (ws:// or wss://) are returned unchanged so existing
+ * test fixtures that pass absolute URLs continue to work.
+ */
+function resolveWsUrl(url: string): string {
+  if (/^wss?:\/\//.test(url)) return url;
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${location.host}${url}`;
+}
 
 /** Parse the major version from a semver string, e.g. "1.5.0" → 1. */
 function parseMajor(version: string): number {
@@ -47,6 +73,8 @@ export function createWsClient(opts: WsClientOptions): WsClient {
     onTrainMetrics,
     onEvalCompare,
     onStatusChange,
+    onServerStatus,
+    onServerError,
     staleAfterMs = 10_000,
     reconnectBaseMs = 1_000,
     reconnectMaxMs = 30_000,
@@ -99,14 +127,23 @@ export function createWsClient(opts: WsClientOptions): WsClient {
       return;
     }
 
-    // §4.3: Missing required envelope fields → discard
-    if (typeof msg.kind !== "string" || msg.payload === undefined) {
-      console.warn("[wsClient] Discarding message with missing kind or payload");
+    // §4.3: Missing kind → discard always.
+    if (typeof msg.kind !== "string") {
+      console.warn("[wsClient] Discarding message with missing kind");
       return;
     }
 
-    // Schema version check: major > supported → reject and mark disconnected
-    if (typeof msg.schema_version === "string") {
+    // Control frames (status, error) do NOT carry a payload wrapper — dispatch them
+    // directly.  Data frames (env_step, train_metrics, eval_compare) MUST have a payload;
+    // a missing payload on a data frame is dropped (D18 load-bearing guard).
+    const isControlFrame = msg.kind === "status" || msg.kind === "error";
+    if (!isControlFrame && msg.payload === undefined) {
+      console.warn("[wsClient] Discarding data frame with missing payload");
+      return;
+    }
+
+    // Schema version check applies to data frames only (control frames have no schema_version).
+    if (!isControlFrame && typeof msg.schema_version === "string") {
       const major = parseMajor(msg.schema_version);
       if (major > SUPPORTED_MAJOR) {
         console.error(
@@ -120,19 +157,24 @@ export function createWsClient(opts: WsClientOptions): WsClient {
     }
 
     // Dispatch by kind
-    const envelope = msg as TelemetryEnvelope;
-    switch (envelope.kind) {
+    switch (msg.kind) {
       case "env_step":
-        onEnvStep(envelope);
+        onEnvStep(msg as TelemetryEnvelope);
         break;
       case "train_metrics":
-        onTrainMetrics(envelope);
+        onTrainMetrics(msg as TelemetryEnvelope);
         break;
       case "eval_compare":
-        onEvalCompare(envelope);
+        onEvalCompare(msg as TelemetryEnvelope);
+        break;
+      case "status":
+        onServerStatus?.(msg as ServerStatusFrame);
+        break;
+      case "error":
+        onServerError?.(msg as ServerErrorFrame);
         break;
       default:
-        console.warn(`[wsClient] Unknown message kind: ${(envelope as any).kind}`);
+        console.warn(`[wsClient] Unknown message kind: ${msg.kind}`);
         break;
     }
   }
@@ -142,7 +184,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
 
     intentionalClose = false;
     versionRejected = false;
-    ws = new WebSocket(url);
+    ws = new WebSocket(resolveWsUrl(url));
 
     ws.onopen = () => {
       reconnectAttempt = 0;
@@ -201,6 +243,12 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         ws.close();
         ws = null;
       }
+    },
+
+    send(msg: unknown) {
+      // No-op when not connected — callers wait for status:ready before sending commands.
+      if (ws === null) return;
+      ws.send(JSON.stringify(msg));
     },
   };
 }

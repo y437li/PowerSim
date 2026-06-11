@@ -10,6 +10,8 @@ export interface RestClientOptions {
 
 export interface RestClient {
   getRuns: () => Promise<RunInfo[]>;
+  /** GET /runs/latest — the run with the most recent created_at. Throws Error("no_runs_found") on 404. */
+  getLatestRun: () => Promise<RunInfo>;
   getSiteConfig: (siteId: string) => Promise<SiteConfig>;
 }
 
@@ -65,6 +67,19 @@ export function createRestClient(opts: RestClientOptions): RestClient {
   return {
     getRuns(): Promise<RunInfo[]> {
       return fetchJson<RunInfo[]>(`${baseUrl}/runs`, timeoutMs);
+    },
+
+    async getLatestRun(): Promise<RunInfo> {
+      try {
+        return await fetchJson<RunInfo>(`${baseUrl}/runs/latest`, timeoutMs);
+      } catch (err: unknown) {
+        // fetchJson throws "http_4xx: 404 ..." for 404 responses — re-throw as no_runs_found
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.startsWith("http_4xx:")) {
+          throw new Error("no_runs_found");
+        }
+        throw err;
+      }
     },
 
     getSiteConfig(siteId: string): Promise<SiteConfig> {

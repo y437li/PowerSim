@@ -165,6 +165,36 @@ export interface EvalComparePayload {
   };
 }
 
+// ─── Inference session server frames (inference_stream.md) ───────────────────
+
+/** Server → client session status frame (no `payload` wrapper). */
+export interface ServerStatusFrame {
+  kind: "status";
+  state: "ready" | "running" | "paused" | "stopped";
+  session_id: string | null;
+  step: number;
+  episode: number;
+  run_id: string | null;
+  site_id: string | null;
+  message?: string;
+}
+
+/** Server → client error frame (no `payload` wrapper). */
+export interface ServerErrorFrame {
+  kind: "error";
+  code:
+    | "run_not_found"
+    | "site_not_found"
+    | "policy_not_found"
+    | "already_running"
+    | "no_session"
+    | "bad_state"
+    | "bad_command"
+    | "invalid_message"
+    | "internal";
+  message: string;
+}
+
 // ─── REST client types ───────────────────────────────────────────────────────
 export interface RunInfo {
   run_id: string;
