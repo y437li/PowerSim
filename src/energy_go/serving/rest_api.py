@@ -165,7 +165,9 @@ def _list_runs_raw() -> list[dict]:
                 meta = json.loads(meta_path.read_text())
             except Exception:
                 pass
-        has_policy = (d / "policy.npz").exists() or (d / "policy.onnx").exists()
+        # Task #38 fix: check canonical checkpoint_*.npz (training PR #40 format),
+        # not the legacy policy.npz / policy.onnx which were never produced.
+        has_policy = any("_step" in p.stem for p in d.glob("checkpoint_*.npz"))
         runs.append({
             "id": d.name,
             "created_at": meta.get("created_at"),
@@ -222,7 +224,8 @@ def _get_run_detail(run_id: str) -> dict:
         except Exception:
             pass
 
-    has_policy = (run_dir / "policy.npz").exists() or (run_dir / "policy.onnx").exists()
+    # Task #38 fix: canonical checkpoint_*.npz discovery (matches inference_stream._load_checkpoint_for_run)
+    has_policy = any("_step" in p.stem for p in run_dir.glob("checkpoint_*.npz"))
 
     # Load normalization arrays if present
     normalization: dict | None = None
