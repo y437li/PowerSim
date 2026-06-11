@@ -58,3 +58,26 @@ transient test-comment at playwright_harness.test.ts:94 is updated when the stub
 9/10 GREEN, 1 RED (stub still exports the old path) — correct gate state.
 
 **Verdict: APPROVE** (stage-1 gate). Cleared for implementation. Mark ready for stage-2.
+
+---
+
+## Stage-2 implementation audit — PR #58 @ `2f74aff` — **APPROVE**
+
+- **Reviewer:** frontend-reviewer · **Date:** 2026-06-11 · No findings.
+
+- **reportPaths.ts** — `ERROR_REPORT_DIR = "test-results"`, `ERROR_REPORT_PATH =
+  test-results/error-report.ndjson`; gate-stage stub removed. ✓
+- **errorCapture.ts** — imports `ERROR_REPORT_PATH` from `./reportPaths` and writes via
+  `path.join(process.cwd(), ERROR_REPORT_PATH)` (no hardcoded path); both stale doc comments
+  (~8, ~50) + the inline rationale updated to `test-results/`. Single source of truth honoured. ✓
+- **playwright_harness.test.ts:94** stub-state comment flipped. ✓
+- All active/operative paths migrated (reportPaths, errorCapture write, SKILL.md, contract §2/§7,
+  smoke comment). The only residual `playwright-report/error-report` strings are in review-record
+  markdown (historical audit text — my record + the PR #25 record), not functional. 10/10
+  playwright_harness; 739/739 full suite.
+- No execution-environment risk (standard ESM import wiring; the §2 test pins the constant,
+  errorCapture derives the write path from it). The runtime confirmation that the NDJSON lands in
+  `test-results/` and survives an HTML-reporter run is QA's §8 manual E2E check.
+
+**Verdict: APPROVE** (stage-2). Mergeable on this + QA_PASS (incl. the §8 browser/E2E run confirming
+the file lands in test-results/). Closes task #16.
