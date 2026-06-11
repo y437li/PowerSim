@@ -237,12 +237,17 @@ def save_checkpoint(data: CheckpointData, path: str | Path) -> None:
         arrays["target_entropy"] = np.float32(data.target_entropy)
 
     # ---- Atomic write: temp file in the same directory
+    # IMPORTANT: suffix must be ".npz" — np.savez_compressed appends ".npz" to
+    # any path that does not already end with ".npz", so a suffix like ".npz.tmp"
+    # would make numpy write to "<tmp>.npz.tmp.npz" while os.replace renames the
+    # original empty mkstemp file → EOFError on load.  With suffix=".npz" numpy
+    # writes to exactly tmp_path, then os.replace atomically promotes it to path.
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".npz.tmp")
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".npz")
     try:
-        os.close(fd)
-        np.savez_compressed(tmp_path, **arrays)
-        os.replace(tmp_path, path)  # POSIX-atomic rename (same filesystem)
+        os.close(fd)                             # close the bare mkstemp fd
+        np.savez_compressed(tmp_path, **arrays)  # numpy opens, writes, closes
+        os.replace(tmp_path, path)               # POSIX-atomic rename
     except Exception:
         try:
             os.unlink(tmp_path)
