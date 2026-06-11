@@ -257,3 +257,17 @@ frontend CI job (follow-up) so this path can't regress unseen behind vitest agai
 
 **Verdict: APPROVE (stage 2).** Supersedes my REQUEST_CHANGES @ f14332f. Head moved to
 `350093a`, so QA must re-verify here — and should run the real `npm run build`, not just vitest.
+
+---
+
+## Marker refresh @ `8f687ab` — **APPROVE** carried forward
+
+- **Reviewer:** frontend-reviewer · **Date:** 2026-06-11
+
+`git diff 350093a 8f687ab` = my review-record file + a 1-line change to
+`tests/serving/test_serving_launch_scripts.py` (`+ "tsconfig.app.json"` to the fixture copy
+tuple). **No frontend file changed — byte-identical to the `350093a` I probe-tested and
+APPROVE'd.** The fixture edit is the correct, necessary co-change: since `build` is now
+`tsc -p tsconfig.app.json && vite build`, the §9.5 serving sandbox must copy `tsconfig.app.json`
+in or the build hits TS5058 — so this addition makes the sandbox build resolvable. That serving
+test is backend-reviewer's gate (blessed, setup-only). My frontend APPROVE stands at `8f687ab`.
