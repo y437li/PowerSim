@@ -78,7 +78,25 @@ interface AnimationHooks {
 }
 ```
 
-### 3.1 `h2_fill_mesh` mapping
+**Scope note — §3.1–3.3 are forward-spec for the future telemetry-binding PR.**
+This PR ships only the `animation_hooks` node-name fields in `registry.json` (so the
+scene knows *which mesh/material* to drive). The actual driver functions
+(`calcH2Fill`, `calcActivity`, `calcFlameVisible`) and their per-asset telemetry
+bindings are deferred to the first PR that adds per-asset H₂/load/dispatch fields to
+the LOCKED telemetry schema. Until then, the hooks are wired but inert — meshes render
+at their initial GLB pose, no animation applied.
+
+**Deferred obligation (recorded here for the future telemetry-binding PR):**
+When `calcH2Fill`, `calcActivity`, and `calcFlameVisible` are implemented, their test
+suite MUST cover:
+- NaN / Infinity input → defined output (no propagation to the DOM/scene)
+- Output clamped to [0, 1] for fill/intensity drivers
+- `base_mw == 0` division-by-zero → 0 (activity driver)
+- `h2_tank_capacity_kg == 0` division-by-zero → 0 (H₂ fill driver)
+- Flame epsilon: `p_dispatch_mw > ε` (analogous to `deriveAlerts` `ALERT_EPSILON`) so
+  float noise near zero does not flicker the flame node's visibility
+
+### 3.1 `h2_fill_mesh` mapping (forward-spec)
 
 ```
 h2_fill = h2_level_kg / h2_tank_capacity_kg    // ∈ [0, 1], clamp defensive
@@ -89,11 +107,7 @@ scale.y  = h2_fill                              // analog of calcSocFill for bat
 - `h2_level_kg = h2_tank_capacity_kg` (2000 kg reference, §8.2) → `h2_fill = 1.0` (full)
 - Defensive clamp: if `h2_level_kg < 0` → 0; `> capacity` → 1.
 
-When the 3D scene does not yet receive per-asset H₂ telemetry (v1 scene only has the
-lumped env_step), this hook is available for future binding. Until then the mesh is
-rendered at whatever the initial GLB pose is.
-
-### 3.2 `activity_material` mapping
+### 3.2 `activity_material` mapping (forward-spec)
 
 ```
 activity = clamp(current_load_mw / base_mw, 0.0, 1.0)   // load fraction
@@ -106,16 +120,17 @@ material.emissiveIntensity = activity
 
 Same driver pattern as `irradiance_material` for PV arrays.
 
-### 3.3 `flame_node` mapping
+### 3.3 `flame_node` mapping (forward-spec)
 
 ```
-visible = p_dispatch_mw > 0   // boolean: show flame when gas turbine is dispatched
+visible = p_dispatch_mw > ALERT_EPSILON   // float-safe: no flicker near zero
 flame_node.visible = visible
 ```
 
-- `p_dispatch_mw = 0` (turbine off) → flame hidden.
-- `p_dispatch_mw > 0` (any dispatch) → flame visible.
-- No intensity gradation in v1 (binary on/off).
+- `p_dispatch_mw ≤ ALERT_EPSILON` (turbine off or noise floor) → flame hidden.
+- `p_dispatch_mw > ALERT_EPSILON` (any meaningful dispatch) → flame visible.
+- No intensity gradation in v1 (binary on/off). `ALERT_EPSILON` value from
+  `deriveAlerts` utility (shared constant).
 
 ---
 
@@ -227,13 +242,29 @@ assets/3d/
 
 ---
 
-## 6. Schema version
+## 6. Schema version and authoritative schema doc update
 
 `assets/3d/registry.json` `schema_version` bumps from `"1.0.0"` to `"1.0.1"`:
 
 - Minor bump (additive entries only — no field removal, rename, or retype).
 - No re-LOCK required per registry LOCK versioning rule.
 - All existing v1.0.0 consumers continue to work: scene code ignores unknown asset IDs.
+
+**`contracts/assets/registry_schema.md` must also be updated in the implementation PR
+(additive, stays in frontend-reviewer gate per D23):**
+
+- §1.1 `AssetType` enum table: add three rows:
+  - `"gas_turbine"` | Gas combustion turbine hall + enclosure | `gas/`
+  - `"electrolyzer"` | H₂ electrolyzer skid + pressurised storage tank | `electrolyzers/`
+  - `"load_building"` | Load-archetype building / facility | `loads/`
+- §1 `AssetRegistryEntry` / animation_hooks schema block: add three optional fields:
+  - `animation_hooks.h2_fill_mesh` — `string` | opt | Three.js mesh name; `scale.y` = H₂ fill [0,1]
+  - `animation_hooks.activity_material` — `string` | opt | Material name; `emissiveIntensity` = load activity [0,1]
+  - `animation_hooks.flame_node` — `string` | opt | Node name; `visible` = `p_dispatch > ALERT_EPSILON`
+- §4 `Future entries` placeholder note is replaced by §4 `§8 entries (v1.0.1)` listing the 9 IDs.
+
+This keeps `registry_schema.md` as the authoritative reviewed document that `src/scene/types.ts`
+mirrors. No field removal or rename → no re-LOCK, but both reviewers should see the update.
 
 ---
 
@@ -243,15 +274,20 @@ All existing registry validation rules (§5 of `contracts/assets/registry_schema
 apply to the new entries. Additionally:
 
 1. New `AssetType` values (`gas_turbine`, `electrolyzer`, `load_building`) are recognised
-   by the `AssetType` union in `src/scene/types.ts`.
+   by the `AssetType` union in `src/scene/types.ts` **and** recorded in
+   `contracts/assets/registry_schema.md` §1.1.
 2. New animation hook field names (`h2_fill_mesh`, `activity_material`, `flame_node`)
-   are present in the `AnimationHooks` interface in `src/scene/types.ts`.
+   are present in the `AnimationHooks` interface in `src/scene/types.ts` **and** recorded
+   in `contracts/assets/registry_schema.md` §1.
 3. `resolveAsset(registry, id)` returns a non-null entry for each of the 9 new IDs.
 4. `resolveAsset(registry, id)` continues to return correct entries for all 4 Gansu IDs
    (non-regression).
 5. All new file paths (`gas/…`, `electrolyzers/…`, `loads/…`) point to files that
    actually exist under `assets/3d/`.
 6. GLB stubs are valid binary files (minimum: proper GLB magic header `67 6C 54 46`).
+7. `dims_m` x/y/z values are all finite (not Infinity or NaN) — `> 0` alone admits
+   `Infinity > 0 === true`; implementation must use `Number.isFinite` in the validator.
+8. `pivot` x/y/z values are all finite numbers (not NaN/missing).
 
 ---
 
