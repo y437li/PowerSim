@@ -36,3 +36,23 @@ Developer RB.1–4 + my RB.5. Re-request once the plugin is registered in `vites
 contract claim is corrected.
 
 **Verdict: REQUEST_CHANGES.**
+
+---
+
+## Round 2 @ commit `9e6b4af` — **APPROVE**
+
+Must-fix resolved (verified):
+- **`vitest.config.ts`** imports + registers `registryBuildPlugin` in `plugins` → the plugin's
+  `configResolved` now fires for `vitest run`, so `registryData.json` is generated before any test
+  imports `gansuSiteConfig` (incl. §T9 + RB.5). `vite.config.ts` keeps the plugin for dev/build and
+  drops its now-redundant `test:` block (Vitest uses `vitest.config.ts` exclusively).
+- **Contract §Solution** corrected: the false "Vitest runs inside Vite" claim is replaced with an
+  accurate coverage table (invocation → config loaded → plugin location). §5 gains the RB.5 row.
+- My **RB.5** functional copy test is intact.
+
+All invocation paths (`vite dev`/`build`, `npm dev/build/test`, `npx vitest run`) now generate the
+copy before the gitignored import resolves; the `pretest` hook is a backstop. 5/5 RED at gate
+(stub), 780 others green — correct gate state.
+
+**Verdict: APPROVE** (stage-1 gate). Cleared for implementation (real `configResolved` copy +
+`copy_registry.js` + npm pre-hooks + `.gitignore`). Mark ready for stage-2.
