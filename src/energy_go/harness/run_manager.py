@@ -175,6 +175,20 @@ class RunManager:
         """Validate config; assign UUID4 run_id; set status=RUNNING; return run_id."""
         self._validate_config(config)
 
+        # Pre-warm JAX JIT before spawning the background thread.
+        # The first _jitted_step call inside InteractiveEnv triggers lazy JAX
+        # compilation which can take 30-60 s on cold CI runners (no XLA cache).
+        # Running it here, synchronously in start_run (before stream_metrics is
+        # called), ensures the JIT cache is warm when the thread starts so the
+        # first train_metrics message arrives within test timeouts.
+        _env_params = jax_env.EnvParams(**config.env_params)
+        _data = generate_year(jax.random.PRNGKey(config.data_seed))
+        _ienv = InteractiveEnv(params=_env_params, data=_data)
+        _warmup_state = _ienv.make_state(
+            soc=float(_env_params.soc_init), t=0, month_peak_mw=0.0, seed=0
+        )
+        _ienv._step_raw(_warmup_state, [0.0] * 6)  # trigger JAX JIT compile once
+
         run_id = uuid.uuid4().hex
         now = _utc_now()
         record = RunRecord(
@@ -201,7 +215,7 @@ class RunManager:
 
         t = threading.Thread(
             target=self._run_loop,
-            args=(run_id, config, q, pause_event, stop_event),
+            args=(run_id, config, q, pause_event, stop_event, _ienv, _data),
             daemon=True,
             name=f"run-{run_id[:8]}",
         )
@@ -327,10 +341,15 @@ class RunManager:
         q: queue.Queue,
         pause_event: threading.Event,
         stop_event: threading.Event,
+        prewarmed_ienv: InteractiveEnv | None = None,
+        prewarmed_data: object | None = None,
     ) -> None:
         """Background thread: runs simulation and emits telemetry messages."""
         try:
-            self._simulate(run_id, config, q, pause_event, stop_event)
+            self._simulate(
+                run_id, config, q, pause_event, stop_event,
+                prewarmed_ienv, prewarmed_data,
+            )
         except Exception as exc:
             with self._lock:
                 if run_id in self._runs:
@@ -346,11 +365,20 @@ class RunManager:
         q: queue.Queue,
         pause_event: threading.Event,
         stop_event: threading.Event,
+        prewarmed_ienv: InteractiveEnv | None = None,
+        prewarmed_data: object | None = None,
     ) -> None:
         """Simulation core: rollout with zero-action policy, emit train_metrics."""
         params = jax_env.EnvParams(**config.env_params)
-        data = generate_year(jax.random.PRNGKey(config.data_seed))
-        ienv = InteractiveEnv(params=params, data=data)
+        # Use pre-warmed data and ienv if provided (JIT already compiled in start_run).
+        if prewarmed_data is not None:
+            data = prewarmed_data
+        else:
+            data = generate_year(jax.random.PRNGKey(config.data_seed))
+        if prewarmed_ienv is not None:
+            ienv = prewarmed_ienv
+        else:
+            ienv = InteractiveEnv(params=params, data=data)
 
         global_step = 0
         seq = 0

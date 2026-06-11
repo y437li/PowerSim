@@ -15,6 +15,19 @@ from energy_go.env import jax_env
 from energy_go.harness.types import StepInspection
 
 # ---------------------------------------------------------------------------
+# Module-level JIT functions — one compilation shared across all instances.
+#
+# Capturing params/data as closure constants (jax.jit(lambda: f(…, data)))
+# forces a full XLA recompile per InteractiveEnv instance because each new data
+# array becomes a distinct compile-time constant.  Passing them as explicit
+# arguments lets JAX reuse the single compiled kernel for any (params, data)
+# with the same shapes/dtypes — critical for CI where jax[cpu] is slow.
+# ---------------------------------------------------------------------------
+
+_STEP_JIT = jax.jit(jax_env.step)
+_GET_OBS_JIT = jax.jit(jax_env.get_obs)
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
@@ -56,13 +69,7 @@ class InteractiveEnv:
     ) -> None:
         self._params = params
         self._data = jnp.asarray(data, dtype=jnp.float32)
-        # JIT once; reused for all calls
-        self._jitted_step = jax.jit(
-            lambda state, action: jax_env.step(state, action, self._params, self._data)
-        )
-        self._jitted_get_obs = jax.jit(
-            lambda state: jax_env.get_obs(state, self._params, self._data)
-        )
+        # Module-level _STEP_JIT / _GET_OBS_JIT are shared across all instances.
 
     # ------------------------------------------------------------------
     # Public API (§5.1 contract)
@@ -117,7 +124,7 @@ class InteractiveEnv:
         state: jax_env.EnvState,
     ) -> list:
         """Compute observation for state without stepping (length 107)."""
-        obs = self._jitted_get_obs(state)
+        obs = _GET_OBS_JIT(state, self._params, self._data)
         return [float(v) for v in obs]
 
     def reset(
@@ -183,10 +190,12 @@ class InteractiveEnv:
             p_bat_commanded_ch_mw = 0.0
             p_bat_commanded_dis_mw = abs(a_bat) * bat_power_mw
 
-        # Single JIT call — the only JAX kernel invocation for this step
+        # Single JIT call — the only JAX kernel invocation for this step.
+        # Uses module-level _STEP_JIT (shared across all instances) to avoid
+        # per-instance XLA recompilation on CI.
         action_jax = jnp.array(action_clipped, dtype=jnp.float32)
-        new_state, obs_arr, reward_arr, done_arr, info = self._jitted_step(
-            state, action_jax
+        new_state, obs_arr, reward_arr, done_arr, info = _STEP_JIT(
+            state, action_jax, self._params, self._data
         )
 
         def f(x) -> float:
