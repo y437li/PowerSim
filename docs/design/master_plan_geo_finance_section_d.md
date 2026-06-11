@@ -45,8 +45,8 @@ View (II) is the **per-policy discriminator** (all §11 policies share CAPEX, di
 End-product prices are **scenario-specific and time-dependent**; physical quantities are **hourly time series**. The model therefore abstracts **revenue/cost streams as data**, keyed to the device that produces them — the *same* NPV/IRR/LCOE engine then prices any scenario by configuration alone:
 
 ```
-stream = { type:           grid_export | grid_import | demand_charge | h2_sale | avoided_cost | … ,
-           unit:           ¥/MWh | ¥/kg | ¥/t | ¥/MW·month ,
+stream = { type:           grid_export | grid_import | demand_charge | h2_sale | avoided_cost | token_sale | … ,
+           unit:           ¥/MWh | ¥/kg | ¥/t | ¥/token | ¥/MW·month ,
            source_device_id: <device-model id>            # the device whose dispatch produces q_{s,t}
            quantity_source:  which dispatch quantity feeds q_{s,t}   (P_export, H2_kg, load_served, …)
            price_model:     { kind: flat | tou | indexed | spot,  params | series } ,
@@ -59,8 +59,11 @@ scenario = { id, streams:[…], price assumptions, weather_mode, discount/escala
 | **power-supply** (= Gansu) | `grid_export` (+ `grid_import`, `demand_charge` cost streams) | ¥/MWh, ¥/MW·month | grid/PCC |
 | **hydrogen** | `h2_sale` | ¥/kg | electrolyzer (§8.2, kWh/kg physics) |
 | **aluminum** | `avoided_cost` | ¥/t (via avoided ¥/MWh) | industrial-continuous load (§8.3) |
+| **data-center (AI tokens)** | `token_sale` | ¥/token | `load_data_center` (registry, PR #38) |
 
-**v1 scope guard (USER-binding):** v1 ships **power-supply ONLY** — only `grid_export` (+ the `grid_import`/`demand_charge` cost streams) is **wired**; `h2_sale` and `avoided_cost` are **defined and demonstrated as config-only** (the field exists, exercised by `grid_export`; the others slot in by adding a stream entry, **not** built in v1). §5 *shows* they compose cleanly so the expansion is architecturally cheap. If the stream shape needs to flex B's device schema, that's a B-lock accommodation (flagged to the B owner).
+The `token_sale` stream is power-driven (tokens/h ∝ served power) and prices identically to electricity/H₂ — `q_{s,t} · p_{s,t}` per hour (P1), no schema change. *Nuance (rl-architect-flagged):* data-center load is **partially flexible** (deferrable jobs), which is a future **action-space** extension (env/action concern), **explicitly not v1** (v1 = fixed load); the **revenue side** (`token_sale`) is already handled by this schema unchanged, so finance needs nothing extra for it.
+
+**v1 scope guard (USER-binding):** v1 ships **power-supply ONLY** — only `grid_export` (+ the `grid_import`/`demand_charge` cost streams) is **wired**; `h2_sale`, `avoided_cost`, and `token_sale` are **defined and demonstrated as config-only** (the field exists, exercised by `grid_export`; the others slot in by adding a stream entry, **not** built in v1). §5 *shows* they compose cleanly so the expansion is architecturally cheap. If the stream shape needs to flex B's device schema, that's a B-lock accommodation (flagged to the B owner).
 
 ### 5.4 The D13 → cash-flow mapping table *(mandatory artifact + named anti-double-count invariants)*
 
