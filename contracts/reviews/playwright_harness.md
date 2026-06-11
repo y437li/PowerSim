@@ -33,3 +33,46 @@ Re-review of 06a5b92. Both blockers resolved:
 **Sole-gate note (QA-tooling, my APPROVE = acceptance):** functional evidence cannot run at this gate — no harness impl yet (`playwright.config.ts`/`errorCapture.ts` RED) and the app shell (PR #5) is unmerged, so nothing is servable. Final acceptance is conditional on, at the implementation commit (which also comes to me): `npm ci` + `npx playwright install chromium` succeed; `npm run test:e2e` runs S1–S5+S6r green vs the live dev server; an injected `console.error` surfaces in `error-report.ndjson` and fails S2/S3/S4; a fatal `throw` populates `pageErrors`; `playwright-report/` has results.json + HTML + on-failure screenshot.
 
 Verdict: APPROVE the contract+tests gate; I run the functional acceptance at implementation.
+
+---
+
+## Stage-2 implementation audit — PR #25 @ `0ddcd13` (marked ready)
+
+- **Reviewer:** frontend-reviewer · **Date:** 2026-06-11
+- **Verdict:** **APPROVE** — honours the stage-1b acceptance conditions above.
+
+### Audited against the contract (no findings)
+- **`playwright.config.ts` (§1):** `testDir: './tests/frontend_e2e'`, `testMatch: '**/*.spec.ts'`
+  (D20), `baseURL: 'http://localhost:5173'`, html + json reporters, `webServer.command: 'npm run
+  dev'` — matches §1 acceptance bullets exactly.
+- **`errorCapture.ts` (§2):** `ErrorReport` shape (consoleErrors / consoleWarnings / pageErrors /
+  failedRequests) and all four listeners match §2 verbatim — `console` (error→errors,
+  warning→warnings, others dropped), `pageerror`→`.message`, `response` status≥400→failedRequests,
+  `requestfailed`→`{url,method,status:0}`. Fixture `base.extend<{errorCapture: ErrorReport}>`;
+  teardown appends one JSON line per test to `playwright-report/error-report.ndjson`; report
+  yielded to the test body for inline assertions. Listeners attach in fixture setup → active
+  before the test's first `goto` (initial-load console errors are captured).
+- **`smoke.spec.ts` (§3):** S1 (200 + `/Energy GO/i` title + consoleErrors 0 + pageErrors 0),
+  S2–S4 (route renders + consoleErrors 0 + pageErrors 0), S5 (explicit WS drive to absent backend
+  via `page.evaluate`, asserts pageErrors 0; consoleErrors deliberately not asserted — documented)
+  match §3. S6r (my gate reviewer case — 404 fallback, 200 SPA, "not found" visible, pageErrors 0)
+  present. All import `{ test, expect }` from the errorCapture fixture.
+- **Wiring:** `test:e2e: "playwright test"` + `test:e2e:report`; `@playwright/test ^1.46.0`
+  (devDep); **STACK.md** row present (D16) — `^1.46.0`, chromium via `npx playwright install`,
+  config + `tests/frontend_e2e/*.spec.ts` location (D20).
+- **`qa-verification/SKILL.md`:** additive note on running `npm run test:e2e` and attaching
+  `error-report.ndjson` as QA evidence — coordinated with QA, consistent with the harness purpose.
+- **QA evidence:** QA_PASS @ 0ddcd13 — Vitest 9/9 (config-shape) + smoke 6/6 with the NDJSON
+  report attached.
+
+### Non-blocking observation + recommended follow-up amendment
+- **`error-report.ndjson` lives in `playwright-report/`, which the HTML reporter clears at run
+  start** (QA flagged). The implementation is **correct per contract §2** (which names that path),
+  and within a run the NDJSON is written in fixture teardown *after* the reporter's start-of-run
+  clean, so the current run's report is intact (QA confirmed). The only loss is the *previous*
+  run's file. **Recommend a follow-up contract amendment (§2):** write the NDJSON to a directory
+  the HTML reporter does not manage (e.g. `test-results/error-report.ndjson` or repo root) so it
+  persists across runs and can never be race-clobbered by the reporter. Not gating — the contract
+  currently specifies `playwright-report/`, and the harness works as specified for single-run QA.
+
+**Verdict: APPROVE** (stage-2). Mergeable on this APPROVE + the existing QA_PASS.
