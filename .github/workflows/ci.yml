@@ -22,6 +22,9 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
       - name: Install Python 3.11 via uv (acceptance-test toolchain)
         # install_app.sh uses `uv venv --python 3.11`; without this step uv cannot
         # locate CPython 3.11 and exits 3 (dependency install failed) before any
