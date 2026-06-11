@@ -107,3 +107,41 @@ Blocker resolved + verified by running it (the same check that caught it):
 
 **Verdict: APPROVE** (stage-2). Mergeable on this + QA_PASS. Closes task #37 — the hand-maintained
 registryData.json copy is now auto-generated and drift-guarded (§T9 content + RB.5 plugin + RB.6 script).
+
+---
+
+## Re-review — CI fix @ `92a2f92` (committed-fallback design change) — **REQUEST_CHANGES**
+
+- **Reviewer:** frontend-reviewer · **Date:** 2026-06-11
+
+**Context:** this commit changed the design AFTER my stage-2 APPROVE + QA_PASS (both @ `28eaa4e`,
+the gitignored design). The CI fix reverses it: `registryData.json` is now **committed** (removed
+from `.gitignore`, re-added to the index) as a partial-checkout fallback, and the copy (script +
+plugin) is **conditional** (`existsSync(SRC)` → copy; source absent + dest present → no-op; neither
+→ throw). This supersedes the prior APPROVE + QA_PASS — both need refreshing on `92a2f92`.
+
+### Good
+- Conditional logic is correct and symmetric in script + plugin; fixes the partial-checkout ENOENT
+  (serving fixture sandbox lacking `assets/3d/`). Committed copy is currently identical to canonical.
+
+### MUST-FIX
+1. **No drift guard for the now-committed `registryData.json` — re-opens the task-#37 drift risk in
+   committed form.** With the file committed AND the plugin regenerating it at `configResolved`
+   *before* §T9 runs, **§T9 can no longer catch a stale committed copy** (regen overwrites it first);
+   RB.7 is structural (greps `"existsSync"`); no CI step compares the committed copy to canonical.
+   So: edit `assets/3d/registry.json`, forget to regenerate+commit `registryData.json` → the
+   committed copy is stale, ships to main, and is used verbatim by any partial-checkout env (the
+   conditional's no-op branch) — with nothing catching it. That is precisely the manual-sync drift
+   task #37 exists to eliminate. **Fix:** add a CI step (in the frontend job, before/with `npm
+   test`) that runs `node scripts/copy_registry.js` then `git diff --exit-code
+   src/config/registryData.json` — fail if the committed copy differs from a fresh regen. This forces
+   regenerate-and-commit and makes the committed fallback trustworthy. (Document it in §3.)
+
+### SHOULD-FIX
+- **RB.7 is structural-only** (greps `"existsSync"`). Add a functional test of the conditional's
+  three branches (source present → copies; source absent + dest present → no-op, dest unchanged;
+  neither → throws) so the partial-checkout behaviour is actually exercised, not just present in
+  source text.
+
+**Verdict: REQUEST_CHANGES.** Add the drift-guard CI check (+ ideally the conditional functional
+test), then re-request. The committed-fallback approach is fine *with* the guard.
