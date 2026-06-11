@@ -1,0 +1,57 @@
+# Gansu Wind-Solar-Storage site configuration.
+# Resolver source of truth: contracts/shared/device_model_schema.md §7
+# Decisions: D2, D3, D5, D12, D19
+#
+# Fleet sizes: 146 turbines × 4.2 MW = 613.2 MW (spec rounds fleet to 615.0 MW),
+#              330 MW PV, 294.5 MWh / 98.16 MW battery.
+# Grid: 945 MW PCC export (D5), 400 MW import (D12) — model physics defaults.
+# soc_init and episode_len are EnvParams defaults (not site-configurable).
+
+assets:
+  wind:
+    model: vestas-v150-4.2
+    fleet_rated_mw: 615.0       # MW — site override: 146 × 4.2 = 613.2, spec rounds to 615.0
+    # hub_height_m not overridden — uses model default of 105.0 m
+
+  solar:
+    model: trina-vertex-n-670w
+    fleet_capacity_mw: 330.0    # MW — total DC/AC fleet capacity
+    # degradation_yr1 not overridden — uses model default of 0.98
+
+  battery:
+    model: catl-lmp-300mwh
+    fleet_capacity_mwh: 294.5   # MWh — actual deployed (< 300 MWh nominal per unit)
+    fleet_power_mw: 98.16       # MW  — actual deployed (< 100 MW nominal)
+    # unit_count not set — derived as round(294.5 / 300.0) = 1
+
+  grid:
+    model: pcc-substation-945mw
+    # max_export_mw and max_import_mw not overridden — use model defaults (945 / 400 MW)
+
+tariff:
+  # Gansu TOU tariff — 24 entries, index = hour 0–23 (D8)
+  # Valley=250, Mid=450, Peak=620, Critical-peak=780 ¥/MWh
+  # At Δt=1h all steps land on :00; the (24,) table is exact for hourly dispatch.
+  price_table_yuan_per_mwh:
+    [250, 250, 250, 250, 250, 250, 250,   # h=0–6   Valley  (23:00–07:00)
+     450,                                  # h=7     Mid
+     620, 620, 620,                        # h=8–10  Peak
+     780,                                  # h=11    Critical peak (10:30–11:30)
+     450, 450, 450, 450, 450, 450,         # h=12–17 Mid     (11:30–18:00)
+     620,                                  # h=18    Peak    (18:00–19:00)
+     780, 780,                             # h=19–20 Critical peak (19:00–21:00)
+     620, 620,                             # h=21–22 Peak    (21:00–23:00)
+     250]                                  # h=23    Valley
+
+costs:
+  c_deg_yuan_per_mwh:           10.0       # ¥/MWh  — battery degradation proxy (§3.4)
+  voll_yuan_per_mwh:          20000.0      # ¥/MWh  — value of lost load (§3.4)
+  curtail_yuan_per_mwh:         800.0      # ¥/MWh  — curtailment penalty (§3.4)
+  demand_rate_yuan_per_mw_month: 32000.0   # ¥/MW·month — demand charge (§3.7: 32 ¥/kW × 1000)
+  soc_penalty_yuan_per_mwh:   20000.0      # ¥/MWh  — SOC violation penalty (= VOLL)
+  reward_scale:               1.0e-5       # —      — reward normalisation (§3.5)
+  price_spread_yuan_per_mwh:    30.0       # ¥/MWh  — mean buy-sell spread (D7)
+  price_spread_sigma:           10.0       # ¥/MWh  — spread noise std dev (D7)
+
+forecast:
+  sigma_max: 0.10  # — max relative noise at horizon H_max=24 (D6: linear σ = sigma_max × h/24)

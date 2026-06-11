@@ -633,7 +633,7 @@ class TestCompositionRule:
                             "fleet_capacity_mwh": 294.5, "fleet_power_mw": 98.16},
                 "grid": {"model": "pcc-substation-945mw"},
             },
-            "tariff": {"price_table_yuan_per_mwh": list(_EXPECTED_PRICE_TABLE)},
+            "tariff": {"price_table_yuan_per_mwh": [float(x) for x in _EXPECTED_PRICE_TABLE]},
             "costs": {
                 "c_deg_yuan_per_mwh": 10.0, "voll_yuan_per_mwh": 20000.0,
                 "curtail_yuan_per_mwh": 800.0,
@@ -697,7 +697,7 @@ class TestCompositionRule:
                 },
                 "grid": {"model": "pcc-substation-945mw"},
             },
-            "tariff": {"price_table_yuan_per_mwh": list(_EXPECTED_PRICE_TABLE)},
+            "tariff": {"price_table_yuan_per_mwh": [float(x) for x in _EXPECTED_PRICE_TABLE]},
             "costs": {
                 "c_deg_yuan_per_mwh": 10.0, "voll_yuan_per_mwh": 20000.0,
                 "curtail_yuan_per_mwh": 800.0,
@@ -762,7 +762,7 @@ class TestCompositionRule:
                             "fleet_capacity_mwh": 294.5, "fleet_power_mw": 98.16},
                 "grid": {"model": "pcc-substation-945mw"},
             },
-            "tariff": {"price_table_yuan_per_mwh": list(_EXPECTED_PRICE_TABLE)},
+            "tariff": {"price_table_yuan_per_mwh": [float(x) for x in _EXPECTED_PRICE_TABLE]},
             "costs": {
                 "c_deg_yuan_per_mwh": 10.0, "voll_yuan_per_mwh": 20000.0,
                 "curtail_yuan_per_mwh": 800.0,
@@ -839,7 +839,7 @@ class TestCompositionRule:
         assets[device][field] = value
         site = {
             "assets": assets,
-            "tariff": {"price_table_yuan_per_mwh": list(_EXPECTED_PRICE_TABLE)},
+            "tariff": {"price_table_yuan_per_mwh": [float(x) for x in _EXPECTED_PRICE_TABLE]},
             "costs": {
                 "c_deg_yuan_per_mwh": 10.0, "voll_yuan_per_mwh": 20000.0,
                 "curtail_yuan_per_mwh": 800.0,
@@ -928,7 +928,7 @@ class TestCompositionRule:
                             "fleet_capacity_mwh": 294.5, "fleet_power_mw": 98.16},
                 "grid": {"model": "pcc-substation-945mw"},
             },
-            "tariff": {"price_table_yuan_per_mwh": list(_EXPECTED_PRICE_TABLE)},
+            "tariff": {"price_table_yuan_per_mwh": [float(x) for x in _EXPECTED_PRICE_TABLE]},
             "costs": {
                 "c_deg_yuan_per_mwh": 10.0, "voll_yuan_per_mwh": 20000.0,
                 "curtail_yuan_per_mwh": 800.0,
@@ -998,7 +998,7 @@ class TestTariffLength:
                 "grid": {"model": "pcc-substation-945mw"},
             },
             "tariff": {
-                "price_table_yuan_per_mwh": list(_EXPECTED_PRICE_TABLE[:23])  # only 23 entries
+                "price_table_yuan_per_mwh": [float(x) for x in _EXPECTED_PRICE_TABLE[:23]]  # only 23 entries
             },
             "costs": {
                 "c_deg_yuan_per_mwh": 10.0, "voll_yuan_per_mwh": 20000.0,
@@ -1116,7 +1116,7 @@ class TestUnitCounts:
                             "fleet_capacity_mwh": 294.5, "fleet_power_mw": 98.16},
                 "grid": {"model": "pcc-substation-945mw"},
             },
-            "tariff": {"price_table_yuan_per_mwh": list(_EXPECTED_PRICE_TABLE)},
+            "tariff": {"price_table_yuan_per_mwh": [float(x) for x in _EXPECTED_PRICE_TABLE]},
             "costs": {
                 "c_deg_yuan_per_mwh": 10.0, "voll_yuan_per_mwh": 20000.0,
                 "curtail_yuan_per_mwh": 800.0,

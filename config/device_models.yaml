@@ -1,0 +1,50 @@
+schema_version: "1.0.0"
+# Device model library — physics constants keyed by LOCKED registry.json IDs (D23).
+# Non-overridable constants (see contracts/shared/device_model_schema.md §3.1):
+#   wind_turbine: v_cutin_mps, v_rated_mps, v_cutout_mps
+#   pv_panel:     k_T_per_c, eta_inverter
+#   battery:      eta_ch, eta_dis, soc_min, soc_max
+# Site-overridable and fleet params come from config/site_<name>.yaml.
+# economics: {} is a reserved hook for the finance workstream (resolver ignores it).
+
+models:
+
+  # ---- Wind ----
+  vestas-v150-4.2:
+    type: wind_turbine
+    physics:
+      v_cutin_mps:       3.0    # m/s  — cut-in  (§3.1, non-overridable)
+      v_rated_mps:      12.0    # m/s  — rated   (§3.1, non-overridable)
+      v_cutout_mps:     25.0    # m/s  — cut-out (§3.1, non-overridable)
+      hub_height_m:    105.0    # m    — model default; site-overridable
+      rated_mw_per_unit: 4.2    # MW   — nameplate per turbine
+    economics: {}
+
+  # ---- Solar PV ----
+  trina-vertex-n-670w:
+    type: pv_panel
+    physics:
+      k_T_per_c:        -0.003  # /°C  — temperature coefficient (§3.2, non-overridable)
+      eta_inverter:      0.97   # —    — inverter efficiency (non-overridable)
+      degradation_yr1:   0.98   # —    — year-1 output fraction; site-overridable
+    economics: {}
+
+  # ---- Battery ----
+  catl-lmp-300mwh:
+    type: battery
+    physics:
+      eta_ch:               0.97    # —   — charge efficiency  (§3.3, non-overridable)
+      eta_dis:              0.97    # —   — discharge efficiency (non-overridable)
+      soc_min:              0.2     # —   — min SOC fraction (D4, non-overridable)
+      soc_max:              0.9     # —   — max SOC fraction (D4, non-overridable)
+      capacity_mwh_per_unit: 300.0  # MWh — nameplate energy per unit
+      power_mw_per_unit:    100.0   # MW  — nameplate charge/discharge power per unit
+    economics: {}
+
+  # ---- Grid connection ----
+  pcc-substation-945mw:
+    type: grid_connection
+    physics:
+      max_export_mw: 945.0  # MW — PCC export limit (D5); site-overridable
+      max_import_mw: 400.0  # MW — grid import limit (D12); site-overridable
+    economics: {}
