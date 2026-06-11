@@ -142,8 +142,9 @@ def run_eval(
     soc_violations_count = int(jnp.sum(infos.soc_violation_mwh > 0))
     soc_violation_mwh    = float(jnp.sum(infos.soc_violation_mwh))
 
-    # Penalty (reward-shaping, not in total_cost, D13)
-    penalty_yuan = float(jnp.sum(infos.c_penalty_yuan)) if hasattr(infos, "c_penalty_yuan") else 0.0
+    # Penalty (reward-shaping, not in total_cost, D13).
+    # LOCKED EnvInfo field name is penalty_yuan (not c_penalty_yuan).
+    penalty_yuan = float(jnp.sum(infos.penalty_yuan))
 
     return PolicyEvalResult(
         energy_cost_yuan     = energy_cost_yuan,

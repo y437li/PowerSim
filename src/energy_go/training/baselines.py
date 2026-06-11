@@ -126,7 +126,9 @@ def run_baseline(
 
     key = jax.random.PRNGKey(0)
     init_state, _ = reset(key, env_params, data)
-    _, infos = jax.lax.scan(_step, init_state, None, length=8760)
+    # Use env_params.episode_len, not a hardcoded 8760 (eval passes episode_len=8760,
+    # but callers may pass custom episode lengths for testing).
+    _, infos = jax.lax.scan(_step, init_state, None, length=env_params.episode_len)
 
     energy_cost_yuan   = float(jnp.sum(infos.c_energy_yuan))
     demand_charge_yuan = float(jnp.sum(infos.c_demand_charge_yuan))
@@ -140,7 +142,8 @@ def run_baseline(
 
     soc_violations_count = int(jnp.sum(infos.soc_violation_mwh > 0))
     soc_violation_mwh    = float(jnp.sum(infos.soc_violation_mwh))
-    penalty_yuan = float(jnp.sum(infos.c_penalty_yuan)) if hasattr(infos, "c_penalty_yuan") else 0.0
+    # LOCKED EnvInfo field name is penalty_yuan (not c_penalty_yuan).
+    penalty_yuan = float(jnp.sum(infos.penalty_yuan))
 
     return PolicyEvalResult(
         energy_cost_yuan     = energy_cost_yuan,

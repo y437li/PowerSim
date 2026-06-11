@@ -455,6 +455,16 @@ def train(
     from energy_go.training.baselines import run_baseline, NoBatteryPolicy, TouPolicy
     from energy_go.training.telemetry import build_train_metrics, build_eval_compare
 
+    # ---- Immutable-γ guard -------------------------------------------------
+    # γ=0.999 is LOCKED by the spec: demand charge is a monthly signal.
+    # Lowering γ would blind the agent to it.  Reject any attempt to override.
+    if config.gamma != 0.999:
+        raise ValueError(
+            f"train(): config.gamma={config.gamma} != 0.999. "
+            "γ=0.999 is IMMUTABLE (demand charge is a monthly signal — §5 / REBUILD_SPEC §5). "
+            "Do not override it."
+        )
+
     # ---- Run metadata -------------------------------------------------------
     run_id = config.run_id or str(uuid.uuid4())[:8]
     start_time = time.monotonic()
