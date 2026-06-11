@@ -12,7 +12,7 @@
  * Never modify reviewer-added tests (marked // reviewer:).
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 // Golden fixture imports (raw objects; types validated at runtime by the validator)
 import ENV_STEP_A from "../../contracts/shared/telemetry_examples/env_step_a.json";
@@ -542,5 +542,609 @@ describe("reviewer: validate — eval_compare per-policy additive identity (D13)
   it("the unmodified golden eval_compare still passes (no false positive)", async () => {
     const { validate } = await import("../../src/validators/telemetryValidator");
     expect(validate(EVAL_COMPARE).ok).toBe(true);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TV.ROB — Robustness amendment tests (task #29, post-D26)
+// Contract: contracts/frontend/telemetry_validator.md §10–§13
+//
+// These tests are intentionally RED until wsClient.ts is amended to:
+//   1. Call validate() before dispatching data frames (§10.1)
+//   2. Drop frames where ok:false or validate() throws (§10.2–§10.3)
+//   3. Call useTelemetryStore.getState().pushFrameError() on failure (§13.2)
+// And until telemetryStore.ts adds frameErrors / pushFrameError (§13.2).
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── Shared WebSocket mock setup ──────────────────────────────────────────────
+
+type MockWsInstance = {
+  send: ReturnType<typeof vi.fn>;
+  readyState: number;
+  onopen: (() => void) | null;
+  onmessage: ((e: MessageEvent) => void) | null;
+  onerror: (() => void) | null;
+  onclose: (() => void) | null;
+};
+
+/** Inline FrameError shape — mirrors §13.1 of the contract. */
+type FrameError = { ts_utc: string; kind: string; seq: number; errors: string[] };
+
+function makeMockWsInstance(): MockWsInstance {
+  return {
+    send: vi.fn(),
+    readyState: WebSocket.OPEN,
+    onopen: null,
+    onmessage: null,
+    onerror: null,
+    onclose: null,
+  };
+}
+
+// ─── TV.ROB.1–TV.ROB.12: wsClient validate() integration ─────────────────────
+//
+// Uses the REAL validate() (no mock). Invalid frames are constructed so the
+// real validator rejects them — this proves end-to-end that wsClient calls
+// validate() and respects its result.
+
+describe("TV.ROB — wsClient validate() pre-dispatch gate (§10.1)", () => {
+  let mockWs: MockWsInstance;
+
+  beforeEach(() => {
+    mockWs = makeMockWsInstance();
+    vi.stubGlobal("WebSocket", vi.fn().mockImplementation(() => mockWs));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+
+  it("TV.ROB.1 — valid env_step (golden A) → onEnvStep dispatched", async () => {
+    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
+      "../../src/clients/wsClient"
+    );
+    const onEnvStep = vi.fn();
+    createWsClient({
+      url: "ws://localhost/ws/test",
+      onEnvStep,
+      onTrainMetrics: vi.fn(),
+      onEvalCompare: vi.fn(),
+      onStatusChange: vi.fn(),
+    }).connect();
+    mockWs.onmessage?.({ data: JSON.stringify(ENV_STEP_A) } as MessageEvent);
+    expect(onEnvStep).toHaveBeenCalledOnce();
+  });
+
+  it("TV.ROB.2 — env_step with battery field omitted → validate() rejects → onEnvStep NOT dispatched", async () => {
+    // Omitting battery triggers Zod payload_invalid — the exact crash path from PR #46.
+    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
+      "../../src/clients/wsClient"
+    );
+    const onEnvStep = vi.fn();
+    createWsClient({
+      url: "ws://localhost/ws/test",
+      onEnvStep,
+      onTrainMetrics: vi.fn(),
+      onEvalCompare: vi.fn(),
+      onStatusChange: vi.fn(),
+    }).connect();
+    const { battery: _drop, ...payloadNoBattery } = (ENV_STEP_A as any).payload;
+    const badFrame = { ...ENV_STEP_A, payload: payloadNoBattery };
+    mockWs.onmessage?.({ data: JSON.stringify(badFrame) } as MessageEvent);
+    expect(onEnvStep).not.toHaveBeenCalled();
+  });
+
+  it("TV.ROB.3 — invalid env_step → pushFrameError() called on telemetryStore", async () => {
+    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
+      "../../src/clients/wsClient"
+    );
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+    createWsClient({
+      url: "ws://localhost/ws/test",
+      onEnvStep: vi.fn(),
+      onTrainMetrics: vi.fn(),
+      onEvalCompare: vi.fn(),
+      onStatusChange: vi.fn(),
+    }).connect();
+    const { battery: _drop, ...payloadNoBattery } = (ENV_STEP_A as any).payload;
+    mockWs.onmessage?.({
+      data: JSON.stringify({ ...ENV_STEP_A, payload: payloadNoBattery }),
+    } as MessageEvent);
+    const { frameErrors } = useTelemetryStore.getState();
+    expect(frameErrors).toHaveLength(1);
+    expect(frameErrors[0].errors.length).toBeGreaterThan(0);
+  });
+
+  it("TV.ROB.4 — FrameError carries kind, seq, and error codes from validate()", async () => {
+    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
+      "../../src/clients/wsClient"
+    );
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+    createWsClient({
+      url: "ws://localhost/ws/test",
+      onEnvStep: vi.fn(),
+      onTrainMetrics: vi.fn(),
+      onEvalCompare: vi.fn(),
+      onStatusChange: vi.fn(),
+    }).connect();
+    const { battery: _drop, ...payloadNoBattery } = (ENV_STEP_A as any).payload;
+    const badFrame = { ...ENV_STEP_A, payload: payloadNoBattery };
+    mockWs.onmessage?.({ data: JSON.stringify(badFrame) } as MessageEvent);
+    const err = useTelemetryStore.getState().frameErrors[0];
+    expect(err.kind).toBe("env_step");
+    expect(typeof err.seq).toBe("number");
+    expect(err.errors.length).toBeGreaterThan(0);
+    // Error codes should start with 'payload_invalid' (Zod rejection of missing battery)
+    expect(err.errors.some((e: string) => e.startsWith("payload_invalid"))).toBe(true);
+  });
+
+  it("TV.ROB.5 — env_step with battery.soc null → validate() rejects → onEnvStep NOT dispatched", async () => {
+    // null fails z.number() — distinct from the missing-field case
+    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
+      "../../src/clients/wsClient"
+    );
+    const onEnvStep = vi.fn();
+    createWsClient({
+      url: "ws://localhost/ws/test",
+      onEnvStep,
+      onTrainMetrics: vi.fn(),
+      onEvalCompare: vi.fn(),
+      onStatusChange: vi.fn(),
+    }).connect();
+    const badFrame = {
+      ...ENV_STEP_A,
+      payload: {
+        ...(ENV_STEP_A as any).payload,
+        battery: { ...(ENV_STEP_A as any).payload.battery, soc: null },
+      },
+    };
+    mockWs.onmessage?.({ data: JSON.stringify(badFrame) } as MessageEvent);
+    expect(onEnvStep).not.toHaveBeenCalled();
+  });
+
+  it("TV.ROB.6 — valid train_metrics (golden) → onTrainMetrics dispatched", async () => {
+    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
+      "../../src/clients/wsClient"
+    );
+    const onTrainMetrics = vi.fn();
+    createWsClient({
+      url: "ws://localhost/ws/test",
+      onEnvStep: vi.fn(),
+      onTrainMetrics,
+      onEvalCompare: vi.fn(),
+      onStatusChange: vi.fn(),
+    }).connect();
+    mockWs.onmessage?.({ data: JSON.stringify(TRAIN_METRICS) } as MessageEvent);
+    expect(onTrainMetrics).toHaveBeenCalledOnce();
+  });
+
+  it("TV.ROB.7 — train_metrics missing global_step → validate() rejects → onTrainMetrics NOT dispatched", async () => {
+    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
+      "../../src/clients/wsClient"
+    );
+    const onTrainMetrics = vi.fn();
+    createWsClient({
+      url: "ws://localhost/ws/test",
+      onEnvStep: vi.fn(),
+      onTrainMetrics,
+      onEvalCompare: vi.fn(),
+      onStatusChange: vi.fn(),
+    }).connect();
+    const { global_step: _drop, ...payloadNoStep } = (TRAIN_METRICS as any).payload;
+    mockWs.onmessage?.({
+      data: JSON.stringify({ ...TRAIN_METRICS, payload: payloadNoStep }),
+    } as MessageEvent);
+    expect(onTrainMetrics).not.toHaveBeenCalled();
+  });
+
+  it("TV.ROB.8 — valid eval_compare (golden) → onEvalCompare dispatched", async () => {
+    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
+      "../../src/clients/wsClient"
+    );
+    const onEvalCompare = vi.fn();
+    createWsClient({
+      url: "ws://localhost/ws/test",
+      onEnvStep: vi.fn(),
+      onTrainMetrics: vi.fn(),
+      onEvalCompare,
+      onStatusChange: vi.fn(),
+    }).connect();
+    mockWs.onmessage?.({ data: JSON.stringify(EVAL_COMPARE) } as MessageEvent);
+    expect(onEvalCompare).toHaveBeenCalledOnce();
+  });
+
+  it("TV.ROB.9 — status frame bypasses validate() → onServerStatus dispatched (§10.1 bypass)", async () => {
+    // Status frames have no 'payload' field. If wsClient ran validate() on them,
+    // validate() would return ok:false (missing_field:payload) and onServerStatus
+    // would NOT be called. That it IS called proves the bypass path is in effect.
+    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
+      "../../src/clients/wsClient"
+    );
+    const onServerStatus = vi.fn();
+    createWsClient({
+      url: "ws://localhost/ws/test",
+      onEnvStep: vi.fn(),
+      onTrainMetrics: vi.fn(),
+      onEvalCompare: vi.fn(),
+      onStatusChange: vi.fn(),
+      onServerStatus,
+    }).connect();
+    const statusFrame = {
+      kind: "status",
+      state: "ready",
+      session_id: null,
+      step: 0,
+      episode: 0,
+      run_id: null,
+      site_id: null,
+    };
+    mockWs.onmessage?.({ data: JSON.stringify(statusFrame) } as MessageEvent);
+    expect(onServerStatus).toHaveBeenCalledOnce();
+    expect(onServerStatus.mock.calls[0][0]).toMatchObject({ kind: "status", state: "ready" });
+  });
+
+  it("TV.ROB.10 — after invalid frame, next valid frame is dispatched (session survives)", async () => {
+    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
+      "../../src/clients/wsClient"
+    );
+    const onEnvStep = vi.fn();
+    createWsClient({
+      url: "ws://localhost/ws/test",
+      onEnvStep,
+      onTrainMetrics: vi.fn(),
+      onEvalCompare: vi.fn(),
+      onStatusChange: vi.fn(),
+    }).connect();
+    // Invalid frame first
+    const { battery: _drop, ...payloadNoBattery } = (ENV_STEP_A as any).payload;
+    mockWs.onmessage?.({
+      data: JSON.stringify({ ...ENV_STEP_A, payload: payloadNoBattery }),
+    } as MessageEvent);
+    expect(onEnvStep).not.toHaveBeenCalled();
+    // Valid frame next — must be dispatched normally
+    mockWs.onmessage?.({ data: JSON.stringify(ENV_STEP_A) } as MessageEvent);
+    expect(onEnvStep).toHaveBeenCalledOnce();
+    expect(onEnvStep.mock.calls[0][0]).toMatchObject({ kind: "env_step" });
+  });
+
+  it("TV.ROB.11 — invalid frame does NOT change telemetryStore.envStep (store state preserved)", async () => {
+    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
+      "../../src/clients/wsClient"
+    );
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+    // Wire wsClient directly to the store so the store gets the dispatched frames
+    createWsClient({
+      url: "ws://localhost/ws/test",
+      onEnvStep: (msg) => useTelemetryStore.getState().receiveEnvStep(msg),
+      onTrainMetrics: vi.fn(),
+      onEvalCompare: vi.fn(),
+      onStatusChange: vi.fn(),
+    }).connect();
+    // First valid frame populates envStep
+    mockWs.onmessage?.({ data: JSON.stringify(ENV_STEP_A) } as MessageEvent);
+    const stepAfterValid = useTelemetryStore.getState().envStep;
+    expect(stepAfterValid).not.toBeNull();
+    // Invalid frame must NOT overwrite envStep
+    const { battery: _drop, ...payloadNoBattery } = (ENV_STEP_A as any).payload;
+    mockWs.onmessage?.({
+      data: JSON.stringify({ ...ENV_STEP_A, payload: payloadNoBattery, seq: 999 }),
+    } as MessageEvent);
+    expect(useTelemetryStore.getState().envStep).toStrictEqual(stepAfterValid);
+  });
+
+  it("TV.ROB.12 — valid env_step does NOT add to frameErrors (no false positives)", async () => {
+    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
+      "../../src/clients/wsClient"
+    );
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+    createWsClient({
+      url: "ws://localhost/ws/test",
+      onEnvStep: vi.fn(),
+      onTrainMetrics: vi.fn(),
+      onEvalCompare: vi.fn(),
+      onStatusChange: vi.fn(),
+    }).connect();
+    mockWs.onmessage?.({ data: JSON.stringify(ENV_STEP_A) } as MessageEvent);
+    expect(useTelemetryStore.getState().frameErrors).toHaveLength(0);
+  });
+});
+
+// ─── TV.ROB exception safety: validate() throws ───────────────────────────────
+// Isolated describe block with its own doMock/doUnmock lifecycle.
+
+describe("TV.ROB — §10.2 exception safety: validate() throws", () => {
+  let mockWs: MockWsInstance;
+
+  beforeEach(() => {
+    mockWs = makeMockWsInstance();
+    vi.stubGlobal("WebSocket", vi.fn().mockImplementation(() => mockWs));
+    vi.doMock("../../src/validators/telemetryValidator", () => ({
+      validate: vi.fn(() => {
+        throw new Error("internal validator crash");
+      }),
+    }));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.doUnmock("../../src/validators/telemetryValidator");
+    vi.resetModules();
+  });
+
+  it("TV.ROB.13 — validate() throws → dispatch NOT called, no exception propagated, WS alive", async () => {
+    // Use regular import (not importActual) so the doMock is picked up
+    const { createWsClient } = await import("../../src/clients/wsClient");
+    const onEnvStep = vi.fn();
+    createWsClient({
+      url: "ws://localhost/ws/test",
+      onEnvStep,
+      onTrainMetrics: vi.fn(),
+      onEvalCompare: vi.fn(),
+      onStatusChange: vi.fn(),
+    }).connect();
+    expect(() => {
+      mockWs.onmessage?.({ data: JSON.stringify(ENV_STEP_A) } as MessageEvent);
+    }).not.toThrow();
+    expect(onEnvStep).not.toHaveBeenCalled();
+  });
+
+  it("TV.ROB.14 — validate() throws → pushFrameError called with errors:[\"validate_threw\"]", async () => {
+    const { createWsClient } = await import("../../src/clients/wsClient");
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+    createWsClient({
+      url: "ws://localhost/ws/test",
+      onEnvStep: vi.fn(),
+      onTrainMetrics: vi.fn(),
+      onEvalCompare: vi.fn(),
+      onStatusChange: vi.fn(),
+    }).connect();
+    mockWs.onmessage?.({ data: JSON.stringify(ENV_STEP_A) } as MessageEvent);
+    const errs = useTelemetryStore.getState().frameErrors;
+    expect(errs).toHaveLength(1);
+    expect(errs[0].errors).toContain("validate_threw");
+  });
+});
+
+// ─── TV.ROB.15–TV.ROB.18: telemetryStore frameErrors ring buffer (§13.2) ──────
+
+describe("TV.ROB — telemetryStore frameErrors ring buffer (§13.2)", () => {
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  it("TV.ROB.15 — initial state has frameErrors: []", async () => {
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+    expect(useTelemetryStore.getState().frameErrors).toEqual([]);
+  });
+
+  it("TV.ROB.16 — pushFrameError prepends; most-recent at index 0", async () => {
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+    const err1: FrameError = {
+      ts_utc: "2026-06-10T00:00:01Z", kind: "env_step", seq: 1, errors: ["d13_real:5"],
+    };
+    const err2: FrameError = {
+      ts_utc: "2026-06-10T00:00:02Z", kind: "env_step", seq: 2, errors: ["non_finite:battery.soc"],
+    };
+    useTelemetryStore.getState().pushFrameError(err1);
+    useTelemetryStore.getState().pushFrameError(err2);
+    const { frameErrors } = useTelemetryStore.getState();
+    expect(frameErrors).toHaveLength(2);
+    expect(frameErrors[0]).toStrictEqual(err2); // newest first
+    expect(frameErrors[1]).toStrictEqual(err1);
+  });
+
+  it("TV.ROB.17 — ring buffer caps at 10; 11th push evicts the oldest", async () => {
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+    for (let i = 0; i < 11; i++) {
+      useTelemetryStore.getState().pushFrameError({
+        ts_utc: `2026-06-10T00:00:${String(i).padStart(2, "0")}Z`,
+        kind: "env_step",
+        seq: i,
+        errors: [`err_${i}`],
+      });
+    }
+    const { frameErrors } = useTelemetryStore.getState();
+    expect(frameErrors).toHaveLength(10);
+    expect(frameErrors[0].seq).toBe(10);  // most recent
+    expect(frameErrors[9].seq).toBe(1);   // oldest retained (seq=0 evicted)
+  });
+
+  it("TV.ROB.18 — clearHistory() resets frameErrors to []", async () => {
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+    useTelemetryStore.getState().pushFrameError({
+      ts_utc: "2026-06-10T00:00:00Z", kind: "env_step", seq: 0, errors: ["test_err"],
+    });
+    expect(useTelemetryStore.getState().frameErrors).toHaveLength(1);
+    useTelemetryStore.getState().clearHistory();
+    expect(useTelemetryStore.getState().frameErrors).toEqual([]);
+  });
+});
+
+// ─── TV.ROB.19–TV.ROB.20: full golden-fixture pipeline (validate-telemetry skill)
+
+describe("TV.ROB — full golden-fixture wsClient pipeline (validate-telemetry skill)", () => {
+  let mockWs: MockWsInstance;
+
+  beforeEach(() => {
+    mockWs = makeMockWsInstance();
+    vi.stubGlobal("WebSocket", vi.fn().mockImplementation(() => mockWs));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+
+  it("TV.ROB.19 — env_step_a.json through wsClient validates and dispatches with correct envelope fields", async () => {
+    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
+      "../../src/clients/wsClient"
+    );
+    const onEnvStep = vi.fn();
+    createWsClient({
+      url: "ws://localhost/ws/test",
+      onEnvStep,
+      onTrainMetrics: vi.fn(),
+      onEvalCompare: vi.fn(),
+      onStatusChange: vi.fn(),
+    }).connect();
+    mockWs.onmessage?.({ data: JSON.stringify(ENV_STEP_A) } as MessageEvent);
+    expect(onEnvStep).toHaveBeenCalledOnce();
+    const dispatched = onEnvStep.mock.calls[0][0] as Record<string, unknown>;
+    expect(dispatched["kind"]).toBe("env_step");
+    expect(dispatched["run_id"]).toBe((ENV_STEP_A as any).run_id);
+    expect(dispatched["seq"]).toBe((ENV_STEP_A as any).seq);
+    expect(typeof dispatched["ts_utc"]).toBe("string");
+  });
+
+  it("TV.ROB.20 — env_step_b.json through wsClient validates and dispatches (month-boundary demand)", async () => {
+    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
+      "../../src/clients/wsClient"
+    );
+    const onEnvStep = vi.fn();
+    createWsClient({
+      url: "ws://localhost/ws/test",
+      onEnvStep,
+      onTrainMetrics: vi.fn(),
+      onEvalCompare: vi.fn(),
+      onStatusChange: vi.fn(),
+    }).connect();
+    mockWs.onmessage?.({ data: JSON.stringify(ENV_STEP_B) } as MessageEvent);
+    expect(onEnvStep).toHaveBeenCalledOnce();
+    const dispatched = onEnvStep.mock.calls[0][0] as Record<string, unknown>;
+    expect(dispatched["kind"]).toBe("env_step");
+    expect(dispatched["run_id"]).toBe((ENV_STEP_B as any).run_id);
+  });
+});
+
+// ─── reviewer (frontend-reviewer): wrong-TYPE field through the wsClient gate ──
+// TV.ROB.2 covers a missing field and TV.ROB.5 covers null; a wrong-TYPE field (a string
+// where a number is required — a realistic serving-encoder bug) is a DISTINCT Zod rejection
+// path that must ALSO be dropped before dispatch. Completes the missing/null/wrong-type matrix
+// for the D26 gate.
+describe("reviewer — wsClient drops a wrong-type field (Zod type rejection, §10.1)", () => {
+  let mockWs: MockWsInstance;
+  beforeEach(() => {
+    mockWs = makeMockWsInstance();
+    vi.stubGlobal("WebSocket", vi.fn().mockImplementation(() => mockWs));
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+
+  it("reviewer — env_step with battery.soc as a string → validate() rejects → onEnvStep NOT dispatched", async () => {
+    const { createWsClient } = await vi.importActual<typeof import("../../src/clients/wsClient")>(
+      "../../src/clients/wsClient"
+    );
+    const onEnvStep = vi.fn();
+    createWsClient({
+      url: "ws://localhost/ws/test",
+      onEnvStep,
+      onTrainMetrics: vi.fn(),
+      onEvalCompare: vi.fn(),
+      onStatusChange: vi.fn(),
+    }).connect();
+    // battery.soc as the string "0.5" — valid JSON, wrong type. Zod must reject before dispatch.
+    const p = (ENV_STEP_A as any).payload;
+    const badFrame = {
+      ...(ENV_STEP_A as any),
+      payload: { ...p, battery: { ...p.battery, soc: "0.5" } },
+    };
+    mockWs.onmessage?.({ data: JSON.stringify(badFrame) } as MessageEvent);
+    expect(onEnvStep).not.toHaveBeenCalled();
+  });
+});
+
+// ─── TV.ROB.UI: FrameErrorBanner render-integration (§13.3) ──────────────────
+//
+// Stage-2 blocker (frontend-reviewer REQUEST_CHANGES): FrameErrorBanner was built
+// but never mounted. These tests verify it renders correctly when mounted in
+// LiveDashboard and that the mount is in place.
+
+describe("TV.ROB.UI — FrameErrorBanner render-integration (§13.3)", () => {
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  it("TV.ROB.UI.1 — non-empty frameErrors → frame-error-0 visible with kind, seq, and error code", async () => {
+    const React = await import("react");
+    const { render, screen, cleanup } = await import("@testing-library/react");
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+    const { FrameErrorBanner } = await import("../../src/components/FrameErrorBanner");
+
+    // Seed one frame error into the store
+    useTelemetryStore.getState().pushFrameError({
+      ts_utc: "2026-06-11T01:00:00Z",
+      kind: "env_step",
+      seq: 42,
+      errors: ["payload_invalid:battery"],
+    });
+
+    render(React.createElement(FrameErrorBanner, null));
+
+    const node = screen.getByTestId("frame-error-0");
+    expect(node).toBeDefined();
+    // Must include kind, seq, and at least one error code
+    expect(node.textContent).toContain("env_step");
+    expect(node.textContent).toContain("42");
+    expect(node.textContent).toContain("payload_invalid:battery");
+    cleanup();
+  });
+
+  it("TV.ROB.UI.2 — empty frameErrors → no frame-error DOM nodes", async () => {
+    const React = await import("react");
+    const { render, screen, cleanup } = await import("@testing-library/react");
+    const { FrameErrorBanner } = await import("../../src/components/FrameErrorBanner");
+
+    render(React.createElement(FrameErrorBanner, null));
+
+    expect(screen.queryByTestId("frame-error-0")).toBeNull();
+    cleanup();
+  });
+
+  it("TV.ROB.UI.3 — FrameErrorBanner is mounted in LiveDashboard (adjacent to AlertList)", async () => {
+    // Verify the mount is in place — LiveDashboard must import and render FrameErrorBanner.
+    // Strategy: seed a frame error, render LiveDashboard with a valid envStep, assert frame-error-0 visible.
+    const React = await import("react");
+    const { render, screen, cleanup, act } = await import("@testing-library/react");
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+
+    // Populate store with a valid envStep so LiveDashboard renders its full grid
+    await act(async () => {
+      useTelemetryStore.getState().receiveEnvStep(ENV_STEP_A as any);
+      useTelemetryStore.getState().setWsStatus("connected");
+      useTelemetryStore.getState().pushFrameError({
+        ts_utc: "2026-06-11T01:00:00Z",
+        kind: "env_step",
+        seq: 7,
+        errors: ["payload_invalid:battery.soc"],
+      });
+    });
+
+    // Stub heavy child components that aren't relevant to this mount test
+    vi.doMock("../../src/components/live/SocTimeline", () => ({
+      SocTimeline: () => React.createElement("div", { "data-testid": "soc-timeline-stub" }),
+    }));
+    vi.doMock("../../src/components/live/PriceTimeline", () => ({
+      PriceTimeline: () => React.createElement("div", { "data-testid": "price-timeline-stub" }),
+    }));
+    vi.doMock("../../src/scene/SiteScene", () => ({
+      SiteScene: () => null,
+    }));
+
+    const { LiveDashboard } = await import("../../src/routes/LiveDashboard");
+    render(React.createElement(LiveDashboard, null));
+
+    // FrameErrorBanner must be mounted — frame-error-0 visible
+    const node = screen.getByTestId("frame-error-0");
+    expect(node).toBeDefined();
+    expect(node.textContent).toContain("env_step");
+    expect(node.textContent).toContain("7");
+
+    vi.doUnmock("../../src/components/live/SocTimeline");
+    vi.doUnmock("../../src/components/live/PriceTimeline");
+    vi.doUnmock("../../src/scene/SiteScene");
+    cleanup();
   });
 });

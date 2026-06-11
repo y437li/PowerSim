@@ -2,6 +2,26 @@ import { create } from "zustand";
 import type { EnvStepPayload, TelemetryEnvelope, WsStatus } from "../types/telemetry";
 
 const HISTORY_MAX_LEN = 168; // D3: max episode length = 168 steps at Δt=1h
+const FRAME_ERRORS_CAP = 10; // §13.2: ring buffer cap
+
+// ─── FrameError type (§13.1) ────────────────────────────────────────────────
+
+/**
+ * One entry in the frame-validation failure ring buffer.
+ * Populated by wsClient.handleMessage when validate() rejects a data frame.
+ */
+export interface FrameError {
+  /** ISO-8601 timestamp: msg.ts_utc if parseable, else new Date().toISOString() */
+  ts_utc: string;
+  /** msg.kind, or "unknown" if the message was not parseable */
+  kind: string;
+  /** msg.seq, or -1 if the message was not parseable */
+  seq: number;
+  /** Validation error codes from ValidationResult.errors, or ["validate_threw"] */
+  errors: string[];
+}
+
+// ─── Store ───────────────────────────────────────────────────────────────────
 
 export interface TelemetryState {
   // Latest env_step payload (null until first message)
@@ -15,11 +35,15 @@ export interface TelemetryState {
   // Sequence gap detection
   lastSeq: number | null;
   seqGap: boolean;
+  // §13.2: Ring buffer of recent frame validation failures — most-recent-first.
+  frameErrors: FrameError[];
 
   // Actions
   receiveEnvStep: (msg: TelemetryEnvelope) => void;
   clearHistory: () => void;
   setWsStatus: (status: WsStatus) => void;
+  /** Prepend a new FrameError entry; trim the buffer to FRAME_ERRORS_CAP (10). */
+  pushFrameError: (err: FrameError) => void;
 }
 
 export const useTelemetryStore = create<TelemetryState>((set, get) => ({
@@ -29,6 +53,7 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   runId: null,
   lastSeq: null,
   seqGap: false,
+  frameErrors: [],
 
   receiveEnvStep(msg: TelemetryEnvelope) {
     const payload = msg.payload as EnvStepPayload;
@@ -79,10 +104,21 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
       runId: null,
       lastSeq: null,
       seqGap: false,
+      frameErrors: [], // §13.2: reset ring buffer on history clear
     });
   },
 
   setWsStatus(status: WsStatus) {
     set({ wsStatus: status });
+  },
+
+  pushFrameError(err: FrameError) {
+    const { frameErrors } = get();
+    // Prepend (newest-first); trim to cap
+    const next = [err, ...frameErrors];
+    if (next.length > FRAME_ERRORS_CAP) {
+      next.length = FRAME_ERRORS_CAP;
+    }
+    set({ frameErrors: next });
   },
 }));
