@@ -27,18 +27,22 @@ import pytest
 # ---------------------------------------------------------------------------
 
 def _run_in_clean_python(code: str) -> subprocess.CompletedProcess:
-    """Run code in a fresh Python subprocess with jax/jaxlib blocked in sys.modules."""
-    wrapped = textwrap.dedent(f"""\
-        import sys
-        # Block jax and jaxlib so any eager import of either raises ImportError
-        sys.modules['jax'] = None
-        sys.modules['jaxlib'] = None
-        sys.modules['jax.numpy'] = None
-        sys.modules['jax.nn'] = None
-        {code}
-    """)
+    """Run code in a fresh Python subprocess with jax/jaxlib blocked in sys.modules.
+
+    Uses explicit concatenation (not textwrap.dedent f-string) so that multiline
+    `code` arguments with 0-indent lines don't force dedent to find common indent=0,
+    which would leave the header lines indented → IndentationError in the subprocess.
+    """
+    header = (
+        "import sys\n"
+        "# Block jax and jaxlib so any eager import of either raises ImportError\n"
+        "sys.modules['jax'] = None\n"
+        "sys.modules['jaxlib'] = None\n"
+        "sys.modules['jax.numpy'] = None\n"
+        "sys.modules['jax.nn'] = None\n"
+    )
     return subprocess.run(
-        [sys.executable, "-c", wrapped],
+        [sys.executable, "-c", header + code],
         capture_output=True,
         text=True,
     )
