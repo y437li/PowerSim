@@ -281,29 +281,39 @@ def validate(message: dict | str | bytes) -> list[str]:
 
     errs: list[str] = []
 
+    # §11.5 minor-format detection: a message is a "lightweight policy comparison" (not a
+    # full wire envelope) when it carries "type" (not "kind") and has no "schema_version".
+    # These are in-process messages produced by build_eval_compare(step=…) and consumed
+    # only locally; full envelope validation is skipped for them.  All other messages —
+    # including envelopes missing schema_version — are validated strictly by JSON Schema.
+    _is_lightweight = "type" in msg and "schema_version" not in msg
+
     # 1. Major-version guard (F3) — before schema errors
     errs += _version_guard(msg)
 
     # 2. JSON-Schema conformance
-    errs += [
-        f"schema: {e.message} (at {'/'.join(str(x) for x in e.absolute_path)})"
-        for e in sorted(_VALIDATOR.iter_errors(msg), key=lambda e: e.absolute_path)
-    ]
+    if not _is_lightweight:
+        errs += [
+            f"schema: {e.message} (at {'/'.join(str(x) for x in e.absolute_path)})"
+            for e in sorted(_VALIDATOR.iter_errors(msg), key=lambda e: e.absolute_path)
+        ]
 
     # 3. Finiteness
     errs += check_finite(msg)
 
-    # 4. Kind-specific checks
-    kind = msg.get("kind")
-    payload = msg.get("payload", {})
-    if not isinstance(payload, dict):
-        payload = {}
+    # 4. Kind-specific checks (skipped for lightweight messages — D13/conservation checks
+    # are only meaningful on full-envelope wire messages)
+    if not _is_lightweight:
+        kind = msg.get("kind")
+        payload = msg.get("payload", {})
+        if not isinstance(payload, dict):
+            payload = {}
 
-    if kind == "env_step":
-        errs += check_env_step(payload)
-    elif kind == "eval_compare":
-        errs += check_eval_compare(payload)
-    # train_metrics: no additional checks
+        if kind == "env_step":
+            errs += check_env_step(payload)
+        elif kind == "eval_compare":
+            errs += check_eval_compare(payload)
+        # train_metrics: no additional checks
 
     return errs
 

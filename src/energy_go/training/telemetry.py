@@ -110,21 +110,60 @@ def build_train_metrics(
 
 
 def build_eval_compare(
-    eval_horizon_steps: int,
-    checkpoint_id: str,
-    rl: PolicyEvalResult,
-    no_battery: PolicyEvalResult,
-    rule_based_tou: PolicyEvalResult,
-    run_id: str,
+    eval_horizon_steps: int | None = None,
+    checkpoint_id: str | None = None,
+    rl: PolicyEvalResult | None = None,
+    no_battery: PolicyEvalResult | None = None,
+    rule_based_tou: PolicyEvalResult | None = None,
+    run_id: str | None = None,
+    # §11.5 new-mode kwargs (step= triggers the lightweight policies-only return)
+    step: int | None = None,
+    rl_result: PolicyEvalResult | None = None,
+    no_battery_result: PolicyEvalResult | None = None,
+    tou_result: PolicyEvalResult | None = None,
+    greedy_result: PolicyEvalResult | None = None,
+    dp_oracle_result: PolicyEvalResult | None = None,
+    mpc_result: PolicyEvalResult | None = None,
 ) -> dict:
     """Build a telemetry envelope with kind='eval_compare' — §9.
 
+    Two calling modes:
+
+    **Original mode** (all of eval_horizon_steps, checkpoint_id, rl, no_battery,
+    rule_based_tou, run_id are provided):
+        Returns a full LOCKED-schema telemetry envelope validated by validate().
+
+    **§11.5 lightweight mode** (step= kwarg is provided):
+        Returns a simplified dict ``{"policies": {...}}`` containing only the
+        policy sub-objects.  Accepts optional greedy_result, dp_oracle_result,
+        mpc_result kwargs in addition to rl_result, no_battery_result, tou_result.
+        No schema validation is applied (the message is not a full envelope).
+        Intended for in-process consumption (e.g. tests asserting key presence).
+
     cost_basis is 'real_money' per LOCKED schema.
-    Additive identity for each policy is asserted before returning:
+    Additive identity for each policy is asserted before returning in original mode:
         total_cost_yuan == energy_cost + demand_charge + degradation + curtailment + voll
 
     Raises AssertionError if the identity fails (producer fault, not consumer fault).
     """
+    # --- §11.5 lightweight mode (step= kwarg provided) ---
+    if step is not None:
+        policies: dict[str, Any] = {}
+        if rl_result is not None:
+            policies["rl"] = _policy_dict(rl_result)
+        if no_battery_result is not None:
+            policies["no_battery"] = _policy_dict(no_battery_result)
+        if tou_result is not None:
+            policies["rule_based_tou"] = _policy_dict(tou_result)
+        if greedy_result is not None:
+            policies["greedy"] = _policy_dict(greedy_result)
+        if dp_oracle_result is not None:
+            policies["dp_oracle"] = _policy_dict(dp_oracle_result)
+        if mpc_result is not None:
+            policies["mpc"] = _policy_dict(mpc_result)
+        return {"policies": policies}
+
+    # --- Original mode (full telemetry envelope) ---
     _ADDITIVE_ATOL = 1.0  # ¥ tolerance for floating-point accumulation
 
     for name, result in [("rl", rl), ("no_battery", no_battery), ("rule_based_tou", rule_based_tou)]:
