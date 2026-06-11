@@ -175,3 +175,53 @@ present → `"skipped"` + dest byte-unchanged (the committed-fallback guarantee)
 **Verdict: APPROVE (stage 2).** Supersedes my REQUEST_CHANGES. Note: head changed
 `28eaa4e`→`ffc9f75`, so the prior QA_PASS @ `28eaa4e` is stale — QA must re-verify at `ffc9f75`
 before merge.
+
+---
+
+## Re-review — plugin→scripts/ move @ `f14332f` — **REQUEST_CHANGES**
+
+- **Reviewer:** frontend-reviewer · **Date:** 2026-06-11
+
+This commit moves `src/config/registryBuildPlugin.ts` → `scripts/registryBuildPlugin.ts`
+"to fix the §9.5 sandbox `tsc && vite build` TS2307 (fs/path)". It supersedes my APPROVE @
+`ffc9f75`. Verified by running, not by claim.
+
+### The move does NOT achieve its stated goal (proven)
+- **Probe:** injected `const __PROBE__: string = 123;` into `scripts/registryBuildPlugin.ts`
+  and ran `npx tsc` → it reported `scripts/registryBuildPlugin.ts(33,7): error TS2322`. So the
+  file is **still in the tsc program** — `tests/frontend/registry_build_copy.test.ts` does
+  `await import("../../scripts/registryBuildPlugin")`, and `tests/` is in `tsconfig.include`.
+  Moving the plugin out of `src/` does not remove it from `tsc`'s purview while a test imports
+  it. In the sandbox env that produced the original TS2307 (no resolvable `@types/node` →
+  `fs`/`path` unresolved), the error would **persist via the test's import**.
+- The premise "`scripts/` is never typechecked" is false for the default `tsc` (project
+  `tsconfig.json`, `include: ["src","tests"]`), which `npm run build` runs (§9.5 step 5).
+
+### The §9.5 build is independently red (pre-existing, not caused by this PR)
+- `npx tsc` exits **2** with **138 errors** on `origin/main`, `3bc4ba1`, AND `f14332f`
+  (identical — the move changes the tsc outcome by 0). 90 are `toBeInTheDocument` (TS2339):
+  `tsconfig.json` has no `types[]`/jest-dom reference, so `tests/setup.ts`'s
+  `@testing-library/jest-dom/matchers` augmentation is invisible to `tsc`.
+- Therefore `tsc && vite build` never reaches `vite build` — the §9.5 `serving`/`full` build
+  is broken regardless of this PR. CI didn't catch it because CI runs `npm test` (vitest =
+  esbuild, no tsc), not `npm run build`. The PR's "791/791 + 11/11" were vitest too — they do
+  not exercise the `tsc` path this PR claims to fix.
+
+### What's actually correct (keep) / what's missing
+- `vite build` is green (exit 0), RB suite 11/11, `copyRegistryIfNeeded` logic byte-identical
+  (diff = rename + a rationale comment only). The move is harmless and is the right *direction*.
+- **Required fix:** exclude `tests/` from the production build typecheck. e.g. add
+  `tsconfig.app.json` (`extends ./tsconfig.json`, `include: ["src"]`) and set
+  `"build": "tsc -p tsconfig.app.json && vite build"`. That (a) removes the 138 test-only tsc
+  errors from the build, and (b) removes the test's dynamic import of the plugin from the build
+  program — at which point relocating the plugin out of `src/` genuinely closes the TS2307. So
+  **keep the move, but it must be paired with the build-tsconfig split.**
+- Then re-run the **actual `npm run build`** (ideally in a no-devDeps / `--omit=dev` sandbox to
+  mirror §9.5 `serving`) and confirm green — vitest does not substitute for this.
+
+### Scope note
+This touches build/tsconfig architecture and the (not-yet-implemented) §9.5 install task.
+Flagging team-lead + rl-architect on whether the build-tsconfig split belongs in this PR or a
+dedicated task. Either way, `f14332f` as-is should not merge under the banner "§9.5 build fixed."
+
+**Verdict: REQUEST_CHANGES.** Supersedes APPROVE @ ffc9f75.
