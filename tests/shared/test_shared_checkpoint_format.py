@@ -428,10 +428,13 @@ class TestActorForwardNumpy:
         h2 = np.maximum(0.0, h1 @ ckpt.actor_fc2_w + ckpt.actor_fc2_b)
         # out = h2 @ out_w + out_b               — shape (12,); first 6 = mean
         out = h2 @ ckpt.actor_out_w + ckpt.actor_out_b
-        # Step 3: per-component squash
+        # Step 3: clip mean before squash — prevents float32 tanh/sigmoid saturation
+        # (tanh(x)==±1.0 exactly for |x|≳8.7 in float32; violates open-range contract).
+        # ±8.0 is the safe threshold: tanh(8)≈0.99999976 < 1.0 in float32. (D28)
         mean = out[:6]
-        expected_a_bat = np.tanh(mean[0])
-        expected_fractions = 1.0 / (1.0 + np.exp(-mean[1:6]))  # sigmoid
+        mean_clipped = np.clip(mean, -8.0, 8.0)
+        expected_a_bat = np.tanh(mean_clipped[0])
+        expected_fractions = 1.0 / (1.0 + np.exp(-mean_clipped[1:6]))  # sigmoid
 
         api_action = actor_forward_numpy(ckpt, obs)
         assert float(api_action[0]) == pytest.approx(float(expected_a_bat), abs=1e-6), \
