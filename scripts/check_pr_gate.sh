@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # Machine-checkable merge gate for Energy GO PRs (verdict-marker convention, CLAUDE.md).
 #
+# ⚠️  NEVER PIPE THIS SCRIPT — its EXIT CODE *is* the gate (0=mergeable, 1=blocked, 2=lookup/usage).
+#     A pipe (`... | tail`, `| head`, `| grep`, `| tee`) replaces this script's exit status with the
+#     downstream command's, so a BLOCKED gate silently looks like success and merges anyway.
+#     This bug caused two merge breaches. Gate a merge with the BARE form only:
+#         if scripts/check_pr_gate.sh <pr> --required <reviewer>; then gh pr merge <pr> ...; fi
+#     If you must capture output, use a temp file:  out=$(check_pr_gate.sh ...); rc=$?  (NOT a pipe).
+#
 # The GitHub account is shared across all agents, so `gh pr review --approve` 422s on a
 # self-authored PR and cannot be the verdict mechanism. Instead every review/QA verdict is a
 # TOP-LEVEL PR comment whose FIRST line is exactly one of:
