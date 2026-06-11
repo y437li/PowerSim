@@ -272,123 +272,134 @@ class _ReplayBuffer:
 
 
 # ---------------------------------------------------------------------------
-# SAC update step (jit-compiled)
+# SAC update step factory — captures optimizer as a closure (JAX JIT safety)
 # ---------------------------------------------------------------------------
 
-@jax.jit
-def _sac_update(
-    actor_params:    dict,
-    actor_tgt:       dict,   # unused in actor update, kept for symmetry
-    critic1_params:  dict,
-    critic1_tgt:     dict,
-    critic2_params:  dict,
-    critic2_tgt:     dict,
-    log_alpha:       jax.Array,   # scalar
-    actor_opt_state,
-    critic1_opt_state,
-    critic2_opt_state,
-    alpha_opt_state,
-    batch_obs:       jax.Array,   # (B, 107)
-    batch_actions:   jax.Array,   # (B, 6)
-    batch_rewards:   jax.Array,   # (B, 1)
-    batch_next_obs:  jax.Array,   # (B, 107)
-    batch_dones:     jax.Array,   # (B, 1)
-    key:             jax.Array,
-    gamma:           float,
-    tau:             float,
-    target_entropy:  float,
-    optimizer:       optax.GradientTransformation,
-) -> tuple:
-    """One SAC gradient update step — updates actor, twin critics, temperature.
+def _build_sac_update(
+    optimizer: optax.GradientTransformation,
+    gamma: float,
+    tau: float,
+    target_entropy: float,
+):
+    """Return a jit-compiled SAC update function closing over optimizer/hyperparams.
 
-    Returns: (actor_params, critic1_params, critic2_params, critic1_tgt, critic2_tgt,
-              log_alpha, actor_opt_state, critic1_opt_state, critic2_opt_state,
-              alpha_opt_state, actor_loss, critic_loss, ent_coef)
+    The optimizer is NOT passed as a JIT argument because optax
+    GradientTransformation objects contain Python functions that JAX
+    cannot trace over. Capturing it as a closure is the standard pattern.
+
+    Returns: callable with signature:
+        fn(actor_params, critic1_params, critic2_params, critic1_tgt, critic2_tgt,
+           log_alpha, actor_opt_state, critic1_opt_state, critic2_opt_state,
+           alpha_opt_state, batch_obs, batch_actions, batch_rewards,
+           batch_next_obs, batch_dones, key)
+        -> (actor_params, critic1_params, critic2_params, critic1_tgt, critic2_tgt,
+            log_alpha, actor_opt_state, critic1_opt_state, critic2_opt_state,
+            alpha_opt_state, actor_loss, critic_loss, ent_coef)
     """
-    alpha = jnp.exp(log_alpha)
-    B = batch_obs.shape[0]
 
-    key_actor, key_next_action = jax.random.split(key)
+    @jax.jit
+    def _sac_update(
+        actor_params:    dict,
+        critic1_params:  dict,
+        critic2_params:  dict,
+        critic1_tgt:     dict,
+        critic2_tgt:     dict,
+        log_alpha:       jax.Array,   # scalar float32
+        actor_opt_state,
+        critic1_opt_state,
+        critic2_opt_state,
+        alpha_opt_state,
+        batch_obs:       jax.Array,   # (B, 107)
+        batch_actions:   jax.Array,   # (B, 6)
+        batch_rewards:   jax.Array,   # (B, 1)
+        batch_next_obs:  jax.Array,   # (B, 107)
+        batch_dones:     jax.Array,   # (B, 1)
+        key:             jax.Array,
+    ) -> tuple:
+        """One SAC gradient update step — updates actor, twin critics, temperature."""
+        alpha = jnp.exp(log_alpha)
+        B = batch_obs.shape[0]
 
-    # ---- 1. Compute target Q for Bellman backup ----------------------------
-    # Sample next action from current policy (not target actor — standard SAC)
-    next_actions, next_log_probs = jax.vmap(
-        lambda obs, k: _sample_action(actor_params, obs, k)
-    )(batch_next_obs, jax.random.split(key_next_action, B))
+        key_actor, key_next_action = jax.random.split(key)
 
-    q1_next = jax.vmap(lambda o, a: _critic_forward(critic1_tgt, o, a))(batch_next_obs, next_actions)  # (B,)
-    q2_next = jax.vmap(lambda o, a: _critic_forward(critic2_tgt, o, a))(batch_next_obs, next_actions)  # (B,)
-    q_min_next = jnp.minimum(q1_next, q2_next)  # (B,)
+        # ---- 1. Compute target Q for Bellman backup -------------------------
+        next_actions, next_log_probs = jax.vmap(
+            lambda obs, k: _sample_action(actor_params, obs, k)
+        )(batch_next_obs, jax.random.split(key_next_action, B))
 
-    target_q = (
-        batch_rewards.squeeze(1)                             # (B,)
-        + gamma * (1.0 - batch_dones.squeeze(1))             # (B,)
-        * (q_min_next - alpha * next_log_probs)              # (B,)
-    )
-    target_q = jax.lax.stop_gradient(target_q)
+        q1_next = jax.vmap(lambda o, a: _critic_forward(critic1_tgt, o, a))(batch_next_obs, next_actions)
+        q2_next = jax.vmap(lambda o, a: _critic_forward(critic2_tgt, o, a))(batch_next_obs, next_actions)
+        q_min_next = jnp.minimum(q1_next, q2_next)
 
-    # ---- 2. Critic loss (twin critics) ------------------------------------
-    def critic_loss_fn(c1_params, c2_params):
-        q1 = jax.vmap(lambda o, a: _critic_forward(c1_params, o, a))(batch_obs, batch_actions)
-        q2 = jax.vmap(lambda o, a: _critic_forward(c2_params, o, a))(batch_obs, batch_actions)
-        loss_c1 = jnp.mean(jnp.square(q1 - target_q))
-        loss_c2 = jnp.mean(jnp.square(q2 - target_q))
-        return loss_c1 + loss_c2
+        target_q = jax.lax.stop_gradient(
+            batch_rewards.squeeze(1)
+            + gamma * (1.0 - batch_dones.squeeze(1))
+            * (q_min_next - alpha * next_log_probs)
+        )
 
-    critic_loss, (grad_c1, grad_c2) = jax.value_and_grad(
-        critic_loss_fn, argnums=(0, 1)
-    )(critic1_params, critic2_params)
+        # ---- 2. Critic loss -------------------------------------------------
+        def critic_loss_fn(c1_params, c2_params):
+            q1 = jax.vmap(lambda o, a: _critic_forward(c1_params, o, a))(batch_obs, batch_actions)
+            q2 = jax.vmap(lambda o, a: _critic_forward(c2_params, o, a))(batch_obs, batch_actions)
+            return jnp.mean(jnp.square(q1 - target_q)) + jnp.mean(jnp.square(q2 - target_q))
 
-    updates_c1, new_c1_opt = optimizer.update(grad_c1, critic1_opt_state, critic1_params)
-    updates_c2, new_c2_opt = optimizer.update(grad_c2, critic2_opt_state, critic2_params)
-    new_c1_params = optax.apply_updates(critic1_params, updates_c1)
-    new_c2_params = optax.apply_updates(critic2_params, updates_c2)
+        critic_loss, (grad_c1, grad_c2) = jax.value_and_grad(
+            critic_loss_fn, argnums=(0, 1)
+        )(critic1_params, critic2_params)
 
-    # ---- 3. Actor loss ----------------------------------------------------
-    def actor_loss_fn(a_params):
-        sampled_actions, log_probs = jax.vmap(
-            lambda obs, k: _sample_action(a_params, obs, k)
-        )(batch_obs, jax.random.split(key_actor, B))
-        q1 = jax.vmap(lambda o, a: _critic_forward(new_c1_params, o, a))(batch_obs, sampled_actions)
-        q2 = jax.vmap(lambda o, a: _critic_forward(new_c2_params, o, a))(batch_obs, sampled_actions)
-        q_min = jnp.minimum(q1, q2)
-        loss = jnp.mean(alpha * log_probs - q_min)
-        return loss, log_probs  # return log_probs for temperature update
+        updates_c1, new_c1_opt = optimizer.update(grad_c1, critic1_opt_state, critic1_params)
+        updates_c2, new_c2_opt = optimizer.update(grad_c2, critic2_opt_state, critic2_params)
+        new_c1_params = optax.apply_updates(critic1_params, updates_c1)
+        new_c2_params = optax.apply_updates(critic2_params, updates_c2)
 
-    (actor_loss, log_probs_actor), grad_a = jax.value_and_grad(
-        actor_loss_fn, has_aux=True
-    )(actor_params)
-    updates_a, new_a_opt = optimizer.update(grad_a, actor_opt_state, actor_params)
-    new_actor_params = optax.apply_updates(actor_params, updates_a)
+        # ---- 3. Actor loss --------------------------------------------------
+        def actor_loss_fn(a_params):
+            acts, log_probs = jax.vmap(
+                lambda obs, k: _sample_action(a_params, obs, k)
+            )(batch_obs, jax.random.split(key_actor, B))
+            q1 = jax.vmap(lambda o, a: _critic_forward(new_c1_params, o, a))(batch_obs, acts)
+            q2 = jax.vmap(lambda o, a: _critic_forward(new_c2_params, o, a))(batch_obs, acts)
+            q_min = jnp.minimum(q1, q2)
+            loss = jnp.mean(alpha * log_probs - q_min)
+            return loss, log_probs
 
-    # ---- 4. Temperature (log-alpha) update --------------------------------
-    def alpha_loss_fn(log_a):
-        return -jnp.mean(jnp.exp(log_a) * (jax.lax.stop_gradient(log_probs_actor) + target_entropy))
+        (actor_loss, log_probs_actor), grad_a = jax.value_and_grad(
+            actor_loss_fn, has_aux=True
+        )(actor_params)
+        updates_a, new_a_opt = optimizer.update(grad_a, actor_opt_state, actor_params)
+        new_actor_params = optax.apply_updates(actor_params, updates_a)
 
-    alpha_loss, grad_alpha = jax.value_and_grad(alpha_loss_fn)(log_alpha)
-    # log_alpha is a scalar; optax expects a pytree — wrap and unwrap
-    updates_alpha, new_alpha_opt = optimizer.update(grad_alpha, alpha_opt_state)
-    new_log_alpha = optax.apply_updates(log_alpha, updates_alpha)
+        # ---- 4. Temperature (log-alpha) update ------------------------------
+        def alpha_loss_fn(log_a):
+            return -jnp.mean(
+                jnp.exp(log_a) * (jax.lax.stop_gradient(log_probs_actor) + target_entropy)
+            )
 
-    # ---- 5. Polyak target network update ----------------------------------
-    new_c1_tgt = _polyak_update(critic1_tgt, new_c1_params, tau)
-    new_c2_tgt = _polyak_update(critic2_tgt, new_c2_params, tau)
+        _, grad_alpha = jax.value_and_grad(alpha_loss_fn)(log_alpha)
+        updates_alpha, new_alpha_opt = optimizer.update(grad_alpha, alpha_opt_state)
+        new_log_alpha = optax.apply_updates(log_alpha, updates_alpha)
 
-    return (
-        new_actor_params,
-        new_c1_params,
-        new_c2_params,
-        new_c1_tgt,
-        new_c2_tgt,
-        new_log_alpha,
-        new_a_opt,
-        new_c1_opt,
-        new_c2_opt,
-        new_alpha_opt,
-        actor_loss,
-        critic_loss * 0.5,   # report per-critic loss (avg of twin)
-        jnp.exp(new_log_alpha),  # ent_coef
-    )
+        # ---- 5. Polyak target network update --------------------------------
+        new_c1_tgt = _polyak_update(critic1_tgt, new_c1_params, tau)
+        new_c2_tgt = _polyak_update(critic2_tgt, new_c2_params, tau)
+
+        return (
+            new_actor_params,
+            new_c1_params,
+            new_c2_params,
+            new_c1_tgt,
+            new_c2_tgt,
+            new_log_alpha,
+            new_a_opt,
+            new_c1_opt,
+            new_c2_opt,
+            new_alpha_opt,
+            actor_loss,
+            critic_loss * 0.5,          # per-critic average
+            jnp.exp(new_log_alpha),     # ent_coef
+        )
+
+    return _sac_update
 
 
 # ---------------------------------------------------------------------------
@@ -478,6 +489,9 @@ def train(
     critic1_opt_state = optimizer.init(critic1_params)
     critic2_opt_state = optimizer.init(critic2_params)
     alpha_opt_state   = optimizer.init(log_alpha)
+
+    # ---- Build jit-compiled SAC update (closes over optimizer) -----------
+    _sac_update = _build_sac_update(optimizer, config.gamma, config.tau, target_entropy)
 
     # ---- VecNormalize stats -----------------------------------------------
     obs_stats    = init_running_stats(_OBS_DIM)
@@ -631,9 +645,11 @@ def train(
                     cl,
                     ec,
                 ) = _sac_update(
-                    actor_params, actor_params,   # actor tgt unused
-                    critic1_params, critic1_tgt,
-                    critic2_params, critic2_tgt,
+                    actor_params,
+                    critic1_params,
+                    critic2_params,
+                    critic1_tgt,
+                    critic2_tgt,
                     log_alpha,
                     actor_opt_state,
                     critic1_opt_state,
@@ -645,10 +661,6 @@ def train(
                     jnp.array(b_nobs),
                     jnp.array(b_done),
                     k_upd,
-                    config.gamma,
-                    config.tau,
-                    target_entropy,
-                    optimizer,
                 )
 
                 _window_actor_loss  += float(al)
