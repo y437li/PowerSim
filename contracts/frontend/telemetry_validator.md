@@ -218,66 +218,57 @@ them through arithmetic and `JSON.parse` does not guard against hand-constructed
 - `payload.generation.gross_solar_mw` off by 5 MW → `conservation_solar:…`
 - eval_compare `policies.rl.total_cost_yuan` off by 1000 → `eval_total:rl:…`, `ok: false`
 
-**Store-boundary robustness (post-D26 wiring, per §10 amendment):**
-- env_step frame with `payload.battery` omitted → `validate()` returns `ok: false` (Zod) → `receiveEnvStep` skips state update; last-good `envStep` preserved; `droppedFrameCount` incremented; no crash
-- env_step frame with `payload.reward: NaN` → `non_finite:reward` → same skip semantics
-- D13 identity violation (costs don't sum) → `d13_real:…` → skipped + `telemetry_invalid` alert surfaced
-- valid frame after bad one → accepted; store updates; recovery is per-frame, not sticky
+**wsClient robustness (post-D26 wiring):**
+- env_step frame with `payload.battery` omitted → `ok: false` (Zod) → `onEnvStep` NOT called; `pushFrameError()` called; WS alive; next valid frame processes normally
+- env_step frame with `battery.soc: null` → `ok: false` (Zod) → same drop semantics
+- `status` frame → bypasses `validate()` entirely → `onServerStatus` called regardless
+- `validate()` throws internally → frame dropped, no exception propagated, session alive
 
 ---
 
-## §10 Integration: store-boundary validation (amended — task #29, post-D26)
+## §10 Integration with wsClient (amended — task #29)
 
-### §10.1 Primary wiring: validate() at the store boundary
+### §10.1 Mandatory wiring
 
-`validate()` MUST be called inside **`telemetryStore.receiveEnvStep`** (for `env_step` frames)
-and **`trainingStore.receiveTrainMetrics`** (for `train_metrics` frames) **before any state
-update**, on every frame the respective store method receives.
+`validate()` MUST be called inside `wsClient.handleMessage` on every **data frame**
+(`kind ∈ {env_step, train_metrics, eval_compare}`) **before** any store callback is invoked.
 
-The store boundary is the correct validation point because:
-- The payload type is known here (`EnvStepPayload` / `TrainMetricsPayload`)
-- The validator's design says "consumers call `validate()`" — the store IS the consumer
-- This is symmetric with the 3D scene's §3.3 keep-last-valid finiteness guard
-- Per D26, `wsClient` forwards frames (envelope-only awareness); stores are the last
-  enforcement point for payload content
+Control frames (`kind ∈ {status, error}`) and unrecognised kind values MUST bypass
+`validate()` and be handled by their dedicated dispatch paths (`onServerStatus` /
+`onServerError`).  This is required because control frames have no `payload` envelope field
+and `validate()` would always reject them with `missing_field:payload`.
 
-### §10.2 wsClient envelope checks remain unchanged
+### §10.2 Exception safety
 
-`wsClient.ts` MUST NOT call `validate()` on payload content.  Its existing envelope-level
-checks are kept as-is: discard non-JSON, missing-`kind`, future-major-version, and
-`payload === undefined` on data frames.  Routing to store callbacks (`onEnvStep`,
-`onTrainMetrics`) is unconditional once those checks pass.
+The call to `validate()` MUST be wrapped in a `try/catch`.  Any synchronous exception thrown
+by `validate()` is treated identically to a `{ ok: false }` result: the frame is dropped,
+`pushFrameError()` is called with `errors: ["validate_threw"]`, and no dispatch callback is
+invoked.  The exception MUST NOT propagate and MUST NOT close the WebSocket connection.
 
-### §10.3 Skip semantics in receiveEnvStep
+### §10.3 Dispatch rules
 
-When `validate(msg)` returns `ok: false` for an env_step frame:
+| `validate()` outcome | Dispatch to store callback? | `pushFrameError()` called? |
+|----------------------|----------------------------|---------------------------|
+| `ok: true`, no warnings | ✅ Yes | ❌ No |
+| `ok: true`, warnings present | ✅ Yes | ✅ Yes (one entry; `errors = warnings`) |
+| `ok: false` | ❌ No | ✅ Yes |
+| Exception thrown | ❌ No | ✅ Yes (`errors: ["validate_threw"]`) |
 
-1. State update **SKIPPED** — `envStep` and `history` retain their last-good values
-2. `droppedFrameCount` incremented by 1
-3. `lastValidationErrors` replaced with the returned error array
-4. A `"telemetry_invalid"` alert MUST be surfaced via `deriveAlerts` (§13.2)
-
-Structured console warning (always logged for dropped frames):
+Structured log for any dropped frame (console.warn):
 ```
-[telemetryStore] INVALID env_step dropped seq=<seq>: [<error_codes>]
+[wsClient] INVALID frame dropped kind=<kind> seq=<seq>: [<error_codes>]
 ```
 
-> **Keep-last-valid, not field-clamping:** a frame failing finiteness or D13 is untrustworthy
-> as a whole.  Clamping individual NaN/Inf fields would display physically inconsistent state.
-> Preserving the last valid snapshot is the correct behaviour — mirroring the 3D scene's guard.
+### §10.4 Effect on consumers
 
-### §10.4 Skip semantics in receiveTrainMetrics
+After this wiring the dashboard stores (`telemetryStore`, `trainingStore`) only ever receive
+frames that passed full validation.  Dashboard and 3D scene components that access fields like
+`envStep.battery.soc` can rely on the field being present and finite — no per-component
+try/catch required.
 
-When `validate(msg)` returns `ok: false` for a train_metrics frame:
-
-1. `trainingStore` state update SKIPPED
-2. `trainingStore.droppedFrameCount` incremented
-3. `trainingStore.lastValidationErrors` updated
-
-### §10.5 Recovery (per-frame, not sticky)
-
-A valid frame arriving after one or more invalid frames MUST be accepted and update state
-normally.  The skip is purely per-frame — there is no "poisoned" mode.
+The existing ad-hoc `payload === undefined` guard in `wsClient.handleMessage` MUST be kept
+for forward-compatibility (control frames still pass through that code path before the
+kind-specific branch).  For data frames it is superseded by §4.5 (`missing_field:payload`).
 
 ---
 
@@ -292,7 +283,7 @@ Tests import the golden examples from `contracts/shared/telemetry_examples/`:
 These files are the authoritative passing cases; if `validate()` returns `ok: false` for any
 of them, the implementation is wrong.
 
-The robustness store-boundary tests (TV.ROB series) live in
+The robustness integration tests (TV.ROB.*) live in
 `tests/frontend/telemetry_validator.test.tsx` alongside the existing unit tests.
 
 ---
@@ -300,107 +291,91 @@ The robustness store-boundary tests (TV.ROB series) live in
 ## §12 Runtime drop semantics (post-D26)
 
 Per LINEAGE D26 the *serving* layer is resilient — it forwards validation-failing frames
-rather than terminating the stream.  The frontend store's `validate()` call is therefore
-the **last enforcement point** for payload content.
+rather than terminating the stream.  The frontend's `validate()` call in `wsClient` is
+therefore the **last enforcement point**.
 
-When the store drops a frame (§10.3–§10.4):
-- `wsClient` connection MUST remain open (drop is in the store, not the transport layer)
-- Store state MUST NOT change — the previous `envStep` / `history` values remain intact
-- `droppedFrameCount` is incremented and `lastValidationErrors` is updated for UI surfacing
-- The store MUST remain capable of processing the *next* frame correctly
+When the frontend drops a frame (§10.3):
+- The WebSocket connection MUST remain open.
+- Store state MUST NOT change — the previous `envStep` / `history` values remain intact.
+- `pushFrameError()` MUST be called so the UI can alert the operator (§13).
+- The client MUST remain capable of processing the *next* frame correctly.
 
-This is the D26 inverse: serving sends the frame on ("resilience-first"); the store is the
-terminal consumer and discards it ("defense-in-depth").
+This is the inverse of D26 serving behaviour: serving sends the frame on ("resilience-first");
+the frontend is the terminal consumer and drops it ("defense-in-depth").
 
 ---
 
-## §13 Dropped-frame surfacing
+## §13 FrameError surfacing API
 
-### §13.1 telemetryStore additions
-
-`useTelemetryStore` (file: `src/stores/telemetryStore.ts`) gains:
+### §13.1 FrameError type
 
 ```typescript
-/** Count of env_step frames rejected by validate() since last clearHistory(). */
-droppedFrameCount: number;
-
-/** Error codes from the most recently rejected env_step frame; [] if none dropped. */
-lastValidationErrors: string[];
-```
-
-`clearHistory()` MUST reset both: `droppedFrameCount → 0`, `lastValidationErrors → []`.
-Initial state: both at their zero values.
-
-### §13.2 "telemetry_invalid" AlertEvent kind
-
-`AlertEvent.kind` (file: `src/utils/deriveAlerts.ts`) gains the new variant:
-
-```typescript
-kind: "curtailment" | "voll" | "soc_violation" | "telemetry_invalid"
-```
-
-`deriveAlerts(history, droppedFrameCount, lastValidationErrors)` is amended to accept the
-two new arguments.  When `droppedFrameCount > 0` it prepends a `"telemetry_invalid"` entry:
-
-```typescript
-{
-  kind: "telemetry_invalid",
-  stepIndex: -1,           // no valid step number for a dropped frame
-  penaltyYuan: 0,          // not applicable
-  detail: `${droppedFrameCount} frame(s) dropped: ${lastValidationErrors.join("; ")}`,
+export interface FrameError {
+  /** ISO-8601 timestamp: msg.ts_utc if parseable, else new Date().toISOString() */
+  ts_utc: string;
+  /** msg.kind, or "unknown" if the message was not parseable */
+  kind: string;
+  /** msg.seq, or -1 if the message was not parseable */
+  seq: number;
+  /** Validation error codes from ValidationResult.errors, or ["validate_threw"] */
+  errors: string[];
 }
 ```
 
-The alert appears at the top of the alert list (prepended, not sorted with physics alerts).
-It is cleared when `clearHistory()` resets `droppedFrameCount` to 0.
+### §13.2 telemetryStore additions
 
-### §13.3 trainingStore additions
-
-`trainingStore` gains the symmetric fields:
+`useTelemetryStore` (file: `src/stores/telemetryStore.ts`) gains two members:
 
 ```typescript
-droppedFrameCount: number;
-lastValidationErrors: string[];
+/** Ring buffer of recent frame validation failures — most-recent-first. Capacity: 10. */
+frameErrors: FrameError[];
+
+/** Prepend a new FrameError entry; trim the buffer to cap (10). */
+pushFrameError(err: FrameError): void;
 ```
+
+`clearHistory()` MUST also reset `frameErrors` to `[]`.  Initial state: `frameErrors: []`.
+
+Prepend-to-front ensures `frameErrors[0]` is always the most recent error, consistent
+with the newest-first ordering of `deriveAlerts`.
+
+### §13.3 UI surfacing
+
+The `AlertList` component (or a new `FrameErrorBanner` component placed adjacent to it) MUST
+render `frameErrors` so the operator can see that invalid frames were received.
+
+Rendering requirements:
+- Each `FrameError` MUST be reachable by `data-testid="frame-error-<index>"` (0-based).
+- The rendered text MUST include the `kind`, `seq`, and at least one error code.
+- An empty `frameErrors` array MUST produce no frame-error DOM nodes.
+
+> **Implementation choice delegated to implementer:** extending `AlertList` with a separate
+> prop `frameErrors: FrameError[]`, or creating a standalone `FrameErrorBanner` component,
+> are both conformant.  The test pin is the `data-testid` requirement above.
 
 ---
 
-## §14 ErrorBoundary defense-in-depth (A4)
-
-The top-level `ErrorBoundary` (file: `src/components/ErrorBoundary.tsx`) MUST gain a
-`resetKey` prop so that a component crash self-heals when session state changes — instead of
-locking the whole UI permanently until manual reload.
-
-```typescript
-interface ErrorBoundaryProps {
-  children: ReactNode;
-  resetKey?: string | number;  // boundary resets when this value changes
-}
-```
-
-When `resetKey` changes (componentDidUpdate detects `prevProps.resetKey !== this.props.resetKey`),
-the boundary MUST reset its error state and re-render children.
-
-**Wiring in `App.tsx`:** the `ErrorBoundary` is given a `resetKey` derived from
-`useTelemetryStore(s => s.wsStatus + s.runId)` (or similar) so that WS reconnection or a
-new inference session automatically clears a crashed boundary.
-
-This is the defense-in-depth layer; the primary fix (§10.3) prevents most crashes.
-A residual crash from unforeseen edge cases is now self-healing.
-
----
-
-## §15 Acceptance criteria (TV.ROB series)
+## §14 Acceptance criteria (TV.ROB series)
 
 | ID | Test | Must verify |
 |----|------|-------------|
-| TV.ROB.1 | NaN field → receiveEnvStep skips | `payload.reward: NaN` → envStep unchanged, history unchanged, droppedFrameCount=1 |
-| TV.ROB.2 | Infinity field → skipped | `Infinity` in any numeric field → same skip semantics |
-| TV.ROB.3 | Missing sub-object → no throw | `payload.battery` absent → receiveEnvStep does NOT throw; store unchanged |
-| TV.ROB.4 | Recovery — valid after bad | Bad frame skipped, next valid frame accepted; store updates correctly |
-| TV.ROB.5 | Golden regression | env_step_a.json → validate ok:true → envStep updated, history grows |
-| TV.ROB.6 | droppedFrameCount surfaces | bad frame → droppedFrameCount=1, lastValidationErrors non-empty |
-| TV.ROB.7 | D13 violation → skipped + alerted | costs don't sum → ok:false → skipped; `deriveAlerts` includes `"telemetry_invalid"` entry |
-| TV.ROB.8 | ErrorBoundary resetKey | child throws; resetKey changes → boundary resets, children re-render |
-| TV.ROB.9 | Render integration | Component reads `envStep.battery.soc` from store; bad frame rejected → renders last-good value, not "NaN MW", no crash |
-| TV.ROB.10 | trainingStore symmetric | invalid train_metrics → trainingStore skips state update |
+| TV.ROB.1 | wsClient gate — valid env_step dispatched | Real golden A passes validate(), onEnvStep called |
+| TV.ROB.2 | wsClient gate — missing battery drops frame | `payload.battery` absent → onEnvStep NOT called |
+| TV.ROB.3 | wsClient gate — pushFrameError called on drop | frameErrors.length === 1 after invalid frame |
+| TV.ROB.4 | FrameError shape | kind, seq populated; errors contains `payload_invalid:*` |
+| TV.ROB.5 | null field drop | `battery.soc: null` → onEnvStep NOT called |
+| TV.ROB.6 | valid train_metrics dispatched | Real golden train_metrics → onTrainMetrics called |
+| TV.ROB.7 | invalid train_metrics dropped | missing global_step → onTrainMetrics NOT called |
+| TV.ROB.8 | valid eval_compare dispatched | Real golden eval_compare → onEvalCompare called |
+| TV.ROB.9 | status bypass | status frame → onServerStatus called (no payload → bypass confirmed) |
+| TV.ROB.10 | session survives bad frame | invalid → valid → valid frame dispatched correctly |
+| TV.ROB.11 | store state preserved | envStep unchanged after invalid frame |
+| TV.ROB.12 | no false positives | valid env_step → frameErrors stays empty |
+| TV.ROB.13 | exception safety — no dispatch | validate() throws → onEnvStep NOT called, no thrown exception |
+| TV.ROB.14 | exception safety — pushFrameError | validate() throws → frameErrors[0].errors === ["validate_threw"] |
+| TV.ROB.15 | initial state | frameErrors: [] on fresh store |
+| TV.ROB.16 | prepend ordering | second pushFrameError → newest at index 0 |
+| TV.ROB.17 | ring buffer cap | 11th push evicts oldest; length stays 10 |
+| TV.ROB.18 | clearHistory resets errors | clearHistory() → frameErrors: [] |
+| TV.ROB.19 | golden pipeline A | env_step_a.json end-to-end: validate ok:true → dispatched with correct run_id, seq |
+| TV.ROB.20 | golden pipeline B | env_step_b.json end-to-end: validate ok:true → dispatched |
