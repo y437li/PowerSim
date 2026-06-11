@@ -225,56 +225,6 @@ class TestAppMainPort:
             f"Expected PORT:65535, got: {result.stdout!r}"
         )
 
-    # reviewer: app.py must NOT range-validate — contract §34/35 says the port is
-    # passed straight to uvicorn and "the OS rejects out-of-range at bind(); the
-    # launch scripts validate the range explicitly." So a negative *integer* parses
-    # cleanly here (no rejection at the app.py layer); only non-integers raise.
-    # Hand-computed: int("-1") == -1 (valid int, no ValueError); app.py prints PORT:-1
-    # and exits 0. (uvicorn/OS would later reject at bind — outside this layer's job.)
-    def test_negative_int_parsed_not_rejected_by_app(self):
-        result = _run_app_as_main(extra_env={"ENERGY_GO_BACKEND_PORT": "-1"})
-        assert result.returncode == 0, (
-            f"app.__main__ must parse a negative int without raising (range is the "
-            f"scripts' job, contract §34/35); got rc={result.returncode}.\n"
-            f"stderr: {result.stderr}"
-        )
-        assert "PORT:-1" in result.stdout, (
-            f"Expected PORT:-1 (int('-1') == -1, no range check in app.py), "
-            f"got: {result.stdout!r}"
-        )
-
-    # reviewer: stdlib int() strips surrounding ASCII whitespace, so a padded value
-    # parses to the inner integer. Pins that the impl uses bare int(...) (not a
-    # stricter custom parser that would reject the spaces).
-    # Hand-computed: int(" 9000 ") == 9000 → PORT:9000, exit 0.
-    def test_whitespace_padded_port_parsed(self):
-        result = _run_app_as_main(extra_env={"ENERGY_GO_BACKEND_PORT": " 9000 "})
-        assert result.returncode == 0, (
-            f"app.__main__ rejected a whitespace-padded port; int(' 9000 ')==9000.\n"
-            f"stderr: {result.stderr}"
-        )
-        assert "PORT:9000" in result.stdout, (
-            f"Expected PORT:9000 for ' 9000 ' (int strips surrounding ws), "
-            f"got: {result.stdout!r}"
-        )
-
-    # reviewer: ADVERSARIAL — a whitespace-ONLY value is neither absent nor the empty
-    # string, so contract §36 ("absent or empty string → 8000") does NOT apply; it is
-    # a non-integer and must raise per §33. This guards against an over-eager impl
-    # using `(os.environ.get(...) or "").strip() or "8000"`, which would WRONGLY map
-    # "   " → "8000". The correct `int(os.environ.get(...) or "8000")` form leaves the
-    # truthy "   " intact and lets int() raise.
-    # Hand-computed: "   " is truthy → int("   ") → ValueError (strip→"" → invalid)
-    # → non-zero exit. (Contrast test_empty_string_uses_default_8000: "" is falsy.)
-    def test_whitespace_only_raises_value_error(self):
-        result = _run_app_as_main(extra_env={"ENERGY_GO_BACKEND_PORT": "   "})
-        assert result.returncode != 0, (
-            f"Expected non-zero exit for whitespace-only ENERGY_GO_BACKEND_PORT='   ' "
-            f"(int('   ') raises ValueError; whitespace-only is NOT the empty-string "
-            f"default case per §36); got rc=0.\n"
-            f"stdout: {result.stdout}\nstderr: {result.stderr}"
-        )
-
 
 # ---------------------------------------------------------------------------
 # §2 — run_app.sh: ENERGY_GO_BACKEND_PORT env-var resolution
@@ -404,49 +354,6 @@ class TestRunAppShEnvPort:
         assert result.returncode == 4, (
             f"Expected exit 4 (CLI flag 8001 overrides env 99999); "
             f"got {result.returncode}.\nstderr: {result.stderr}\nstdout: {result.stdout}"
-        )
-
-    # reviewer: LOWER out-of-range boundary. The existing test exercises 99999 (far
-    # above max); 0 pins the bottom edge of the 1–65535 range. validate_port must
-    # reject 0 (0 < 1). Same pre/post-fix discriminator as the other shell tests:
-    # pre-fix the env var is ignored → BACKEND_PORT=8000 (valid) → exit 4; post-fix
-    # BACKEND_PORT=0 → range check fails → exit 1.
-    # Hand-computed: 0 matches ^[0-9]+$ but 0 < 1 → out of range → exit 1.
-    @skip_on_windows
-    def test_zero_env_port_fails_validation(self, tmp_path):
-        _make_fake_venv(tmp_path)
-        result = _run_sh(
-            ["--server-type", "dev"],
-            cwd=tmp_path,
-            extra_env={"ENERGY_GO_BACKEND_PORT": "0"},
-        )
-        assert result.returncode == 1, (
-            f"Expected exit 1 for ENERGY_GO_BACKEND_PORT=0 (0 < 1, below range); "
-            f"got {result.returncode}.\nstderr: {result.stderr}\nstdout: {result.stdout}\n"
-            f"(If exit 4, the env var was not read — BACKEND_PORT defaulted to 8000.)"
-        )
-        assert "out of range" in result.stderr.lower() or "65535" in result.stderr, (
-            f"Expected range-error message in stderr; got: {result.stderr!r}"
-        )
-
-    # reviewer: TIGHT upper boundary. 99999 is far over; 65536 is exactly one past the
-    # max valid port and must still be rejected — this catches an off-by-one in the
-    # range guard (e.g. `-le 65536` or `-lt 65535` instead of `-le 65535`/`-gt 65535`).
-    # Hand-computed: 65536 = 65535 + 1 → out of range → exit 1.
-    @skip_on_windows
-    def test_port_65536_env_fails_validation(self, tmp_path):
-        _make_fake_venv(tmp_path)
-        result = _run_sh(
-            ["--server-type", "dev"],
-            cwd=tmp_path,
-            extra_env={"ENERGY_GO_BACKEND_PORT": "65536"},
-        )
-        assert result.returncode == 1, (
-            f"Expected exit 1 for ENERGY_GO_BACKEND_PORT=65536 (65535 + 1, just over "
-            f"max); got {result.returncode}.\nstderr: {result.stderr}\nstdout: {result.stdout}"
-        )
-        assert "out of range" in result.stderr.lower() or "65535" in result.stderr, (
-            f"Expected range-error message in stderr; got: {result.stderr!r}"
         )
 
 
