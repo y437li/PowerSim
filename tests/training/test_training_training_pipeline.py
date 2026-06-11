@@ -1086,3 +1086,32 @@ def test_sub_month_demand_charge_is_zero_per_step():
         state, obs, reward, done, info = step(state, no_battery_action, params, data)
         assert float(info.c_demand_charge_yuan) == pytest.approx(0.0, abs=1e-6), \
             f"Sub-month episode has non-zero c_demand_charge at step {t_idx}"
+
+
+# ---------------------------------------------------------------------------
+# Reviewer-added (backend-reviewer, PR #40 round-2 gate): _EPS div-0 guards
+# ---------------------------------------------------------------------------
+# reviewer: §4.3 adds _EPS=1e-8 specifically to prevent /0 when var is exactly 0
+# reviewer: (a constant-valued batch). That guard was never exercised. These pin
+# reviewer: that normalize_obs / normalize_reward stay finite at var==0.
+
+def test_normalize_reward_var_zero_stays_finite():
+    # reviewer: constant reward batch [[5],[5]] → mean=5, var=0 (pop-var of identical samples).
+    # reviewer: normalize_reward(5) = 5 / sqrt(0 + 1e-8) = 5 / 1e-4 = 50000 → clipped to +10.0; finite.
+    stats = init_running_stats(1)
+    s = update_stats(stats, jnp.array([[5.0], [5.0]]))
+    assert float(s.var[0]) == pytest.approx(0.0, abs=1e-6)
+    r = float(normalize_reward(jnp.array([5.0]), s, clip=10.0))
+    assert math.isfinite(r), f"normalize_reward not finite at var=0: {r}"
+    assert r == pytest.approx(10.0, abs=1e-4)  # 5/1e-4 = 50000 → clip 10
+
+
+def test_normalize_obs_var_zero_stays_finite():
+    # reviewer: constant obs batch [[3],[3]] → var=0; normalize_obs must stay finite (no /0).
+    # reviewer: (3 − 3) / sqrt(0 + 1e-8) = 0 / 1e-4 = 0.0; finite, exactly 0.
+    stats = init_running_stats(1)
+    s = update_stats(stats, jnp.array([[3.0], [3.0]]))
+    assert float(s.var[0]) == pytest.approx(0.0, abs=1e-6)
+    o = float(normalize_obs(jnp.array([3.0]), s, clip=10.0))
+    assert math.isfinite(o), f"normalize_obs not finite at var=0: {o}"
+    assert o == pytest.approx(0.0, abs=1e-4)
