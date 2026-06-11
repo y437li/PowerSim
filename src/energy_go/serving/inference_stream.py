@@ -214,6 +214,10 @@ class _SyntheticEnv:
         self._cum_cost         += cost_total_real_yuan
         self._cum_energy_cost  += c_energy_yuan
 
+        # Capture episode BEFORE incrementing: terminal step (step 167, step_count becomes 168)
+        # must belong to episode 0, not episode 1. Mirrors _JaxEnvSession convention and the
+        # locked contract amendment: "step 167 (done=True, last step of episode 0) → episode=0".
+        current_episode = self.episode
         self.step_count += 1
         # Episode boundary at 168 steps (D3: 7-day train episodes)
         if self.step_count % 168 == 0:
@@ -253,7 +257,7 @@ class _SyntheticEnv:
 
         payload = {
             "step":        self.step_count - 1,
-            "episode":     self.episode,
+            "episode":     current_episode,   # locked convention: terminal step belongs to its episode
             "dt_hours":    1.0,
             "sim_time_utc": f"2026-01-01T{(self.step_count - 1) % 24:02d}:00:00Z",
             "hour_of_day":  (self.step_count - 1) % 24,
