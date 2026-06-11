@@ -523,15 +523,18 @@ class TestDpOracleOrdering:
           Δsoc = 0.01 (71 states), bat_capacity = 294.5 MWh, max_price = 780 ¥/MWh
           Max per-step rounding: Δsoc × bat_cap × max_price = 0.01 × 294.5 × 780 = 2,297 ¥
           After replay through continuous-SOC env, ~12 months × 4 SOC bin crossings × 2,297 ¥
-          ≈ 110,000 ¥ cumulative. Use 100_000 ¥ — tight vs ~750M ¥ year total (<0.014%).
+          ≈ 110,000 ¥ cumulative. Tolerance must be ≥ derived bound; use 150_000 ¥
+          (≈1.4× of 110k margin). A real oracle bug is >> 150k, so it still trips.
           The 3-step exact test keeps +1e-3 (no accumulated error there).
         """
         if run_benchmark is None or DpOraclePolicy is None:
             pytest.skip("DpOraclePolicy / run_benchmark not yet implemented")
         greedy_result  = run_benchmark("greedy",    synthetic_year_data, gansu_params)
         oracle_result  = run_benchmark("dp_oracle", synthetic_year_data, gansu_params)
-        # §3.2 discretization tolerance: 100_000 ¥ ≈ 12 months × 4 bin-crossings × 2,297 ¥/crossing
-        DISCRETIZATION_TOL_YUAN = 100_000.0
+        # §3.2 discretization tolerance: 150_000 ¥ ≥ derived 110k (1.4× margin).
+        # Derivation: 12 months × 4 SOC bin-crossings × 2,297 ¥/crossing ≈ 110,000 ¥.
+        # Must be ≥ derived bound — setting it below (e.g. 100k) risks spurious failure.
+        DISCRETIZATION_TOL_YUAN = 150_000.0
         assert oracle_result.total_cost_yuan <= greedy_result.total_cost_yuan + DISCRETIZATION_TOL_YUAN, (
             f"DP oracle ({oracle_result.total_cost_yuan:.2f} ¥) is more than {DISCRETIZATION_TOL_YUAN:.0f} ¥ "
             f"more expensive than greedy ({greedy_result.total_cost_yuan:.2f} ¥) — "
@@ -542,13 +545,13 @@ class TestDpOracleOrdering:
     def test_dp_oracle_beats_rule_based_tou(self, synthetic_year_data, gansu_params):
         """dp_oracle.total_cost_yuan ≤ rule_based_tou.total_cost_yuan — invariant I2.
 
-        Same §3.2 discretization tolerance as I1 (100_000 ¥).
+        Same §3.2 discretization tolerance as I1 (150_000 ¥ ≥ derived 110k).
         """
         if run_benchmark is None or DpOraclePolicy is None:
             pytest.skip("DpOraclePolicy / run_benchmark not yet implemented")
         tou_result    = run_baseline("rule_based_tou", synthetic_year_data, gansu_params)
         oracle_result = run_benchmark("dp_oracle",     synthetic_year_data, gansu_params)
-        DISCRETIZATION_TOL_YUAN = 100_000.0  # §3.2 SOC-grid resolution; same derivation as I1
+        DISCRETIZATION_TOL_YUAN = 150_000.0  # §3.2 SOC-grid resolution; ≥ derived 110k (same derivation as I1)
         assert oracle_result.total_cost_yuan <= tou_result.total_cost_yuan + DISCRETIZATION_TOL_YUAN, (
             f"DP oracle ({oracle_result.total_cost_yuan:.2f} ¥) more than {DISCRETIZATION_TOL_YUAN:.0f} ¥ "
             f"more expensive than rule-based TOU ({tou_result.total_cost_yuan:.2f} ¥)"
