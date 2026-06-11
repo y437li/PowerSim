@@ -52,6 +52,24 @@ describe("RB.4 — scripts/copy_registry.js mentions dest path", () => {
   });
 });
 
+// ─── RB.7: copy script and plugin have the existsSync guard (partial-checkout safe) ─
+// Guards the CI constraint: builds from sandboxed fixtures without assets/3d/ must not
+// abort. Both the script and plugin must have an existsSync check so they fall back to
+// the committed copy rather than hard-failing when assets/3d/registry.json is absent.
+describe("RB.7 — existsSync guard present in script and plugin (partial-checkout safe)", () => {
+  it("scripts/copy_registry.js contains existsSync guard", () => {
+    const scriptPath = resolve(__dirname, "../../scripts/copy_registry.js");
+    const content = readFileSync(scriptPath, "utf8");
+    expect(content).toContain("existsSync");
+  });
+
+  it("src/config/registryBuildPlugin.ts contains existsSync guard", () => {
+    const pluginPath = resolve(__dirname, "../../src/config/registryBuildPlugin.ts");
+    const content = readFileSync(pluginPath, "utf8");
+    expect(content).toContain("existsSync");
+  });
+});
+
 // ─── RB.6: scripts/copy_registry.js actually RUNS (exit 0 + content correct) ──
 // RB.5 covers the plugin's configResolved() path — but the script (npm pre-hooks) had
 // no functional test. The script uses ESM `import` syntax (required by "type":"module");
