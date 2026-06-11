@@ -22,7 +22,9 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-import jax.numpy as jnp
+# jax.numpy is imported lazily inside the two JAX-only convenience properties
+# (actor_params, obs_stats) — NOT at module level — so that this module can be
+# imported on JAX-free serving boxes (contracts/shared/checkpoint_format.md §6).
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +137,9 @@ class CheckpointData:
         """Actor MLP params dict — compatible with actor_forward(params, obs).
 
         Keys: fc1_w, fc1_b, fc2_w, fc2_b, out_w, out_b (JAX arrays).
+        Requires jax — only call from training/eval code, not from serving.
         """
+        import jax.numpy as jnp  # local import — keeps module JAX-free at import time
         return {
             "fc1_w": jnp.array(self.actor_fc1_w),
             "fc1_b": jnp.array(self.actor_fc1_b),
@@ -150,7 +154,9 @@ class CheckpointData:
         """VecNormalize stats as a RunningStats NamedTuple (JAX arrays).
 
         Compatible with normalize_obs(obs, ckpt.obs_stats, clip=...).
+        Requires jax — only call from training/eval code, not from serving.
         """
+        import jax.numpy as jnp  # local import — keeps module JAX-free at import time
         from energy_go.training.normalizer import RunningStats
         return RunningStats(
             mean  = jnp.array(self.obs_mean),
