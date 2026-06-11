@@ -386,6 +386,7 @@ class TestJaxReferenceParity:
     # Tariff parity (uses PRICE_TABLE_YPW, no step needed)
     # ------------------------------------------------------------------
 
+    @pytest.mark.slow  # requires JAX env import (Suite 2 is skipif JAX unavailable)
     def test_tariff_parity_all_hours(self):
         """PRICE_TABLE_YPW[h] agrees with get_price(h, 0) for all 24 hours."""
         for h in range(24):
@@ -441,7 +442,6 @@ class TestJaxReferenceParity:
     # Single-step full field parity
     # ------------------------------------------------------------------
 
-    @pytest.mark.slow  # builds jax_data (scope=class) and calls jax_env.step
     def test_single_step_parity(
         self, jax_data, noiseless_jax_params, noiseless_ref_params, year_data
     ):
