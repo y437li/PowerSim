@@ -23,82 +23,82 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 # ---------------------------------------------------------------------------
-# Policy cache: run_id → {"weights": dict[str, np.ndarray], "obs_mean": np.ndarray, "obs_std": np.ndarray}
+# Policy cache: run_id → CheckpointData
+# (CheckpointData carries all stats inline — no separate normalization file)
 # ---------------------------------------------------------------------------
 
-_policy_cache: dict[str, dict[str, Any]] = {}
+_policy_cache: "dict[str, Any]" = {}  # run_id → CheckpointData
 
 
 # ---------------------------------------------------------------------------
 # Public utility: policy_forward
-# (tested directly by TestPolicyForwardPass; also used by the WS handler)
+# Thin wrapper around actor_forward_numpy (checkpoint_format.md §6).
+# Signature changed from placeholder (dict, obs) → (CheckpointData, obs).
 # ---------------------------------------------------------------------------
 
-def policy_forward(weights: dict[str, np.ndarray], obs: np.ndarray) -> np.ndarray:
-    """Run the MLP forward pass.
+def policy_forward(checkpoint: Any, obs: np.ndarray) -> np.ndarray:
+    """Run the §6 actor forward pass for a canonical CheckpointData.
 
     Args:
-        weights: dict loaded from policy.npz — keys "w_0", "b_0", ..., "w_N", "b_N"
-                 (N = number of layers; layer 0 = first hidden, layer N-1 = output).
-        obs:     float32 array of shape (obs_dim,), already normalized.
+        checkpoint: CheckpointData loaded via load_checkpoint().
+        obs:        float32 (obs_dim,) raw (un-normalized) observation.
 
     Returns:
-        float32 array of shape (action_dim,) clipped to [−1, 1].
-
-    Activation: tanh for hidden layers (indices 0 … N-2); identity for the output
-    layer (index N-1).  Output clipped to [−1, 1] before returning.
+        float32 (6,) action: [tanh(mean[0]), sigmoid(mean[1:6])].
+        Identical to actor_forward_numpy(checkpoint, obs).
     """
-    n_layers = max(int(k[2:]) for k in weights if k.startswith("w_")) + 1
-    h = obs.astype(np.float32)
-    for i in range(n_layers):
-        h = h @ weights[f"w_{i}"] + weights[f"b_{i}"]
-        if i < n_layers - 1:
-            h = np.tanh(h)          # tanh for every hidden layer
-        # final layer: identity (no activation applied)
-    return np.clip(h, -1.0, 1.0).astype(np.float32)
+    from energy_go.training.checkpoint_format import actor_forward_numpy  # type: ignore
+    return actor_forward_numpy(checkpoint, obs)
 
 
 # ---------------------------------------------------------------------------
-# Policy + normalization loader
+# Checkpoint discovery + loader (canonical §6 only — no legacy policy.npz)
 # ---------------------------------------------------------------------------
 
-def _load_policy(run_id: str, run_dir: Path) -> dict[str, Any]:
-    """Load (or return cached) weights + normalization for run_id."""
+def _step_from_filename(path: Path) -> int:
+    """Extract the integer step number from checkpoint_<run_id>_step<N>.npz.
+
+    Returns -1 if the filename is malformed (does not contain '_step<N>')
+    so callers can filter out stray files without raising.
+    """
+    stem = path.stem  # e.g. "checkpoint_run_001_step500000"
+    if "_step" not in stem:
+        return -1
+    try:
+        return int(stem.rsplit("_step", 1)[1])
+    except (IndexError, ValueError):
+        return -1
+
+
+def _load_checkpoint_for_run(run_id: str, run_dir: Path) -> Any:
+    """Load (or return cached) canonical CheckpointData for run_id.
+
+    Discovery algorithm (contract §Policy loading):
+      - Glob `checkpoint_*.npz` in run_dir.
+      - Pick the file whose `_step<N>` suffix has the highest integer N.
+      - Stray / malformed filenames (no `_step<int>`) are silently skipped.
+
+    Raises:
+        FileNotFoundError: if no valid canonical checkpoint is found.
+    """
     if run_id in _policy_cache:
         return _policy_cache[run_id]
 
-    # Prefer ONNX if available
-    onnx_path = run_dir / "policy.onnx"
-    npz_path  = run_dir / "policy.npz"
+    from energy_go.training.checkpoint_format import load_checkpoint  # type: ignore
 
-    if not onnx_path.exists() and not npz_path.exists():
-        raise FileNotFoundError(f"no policy.npz or policy.onnx in {run_dir}")
-
-    weights: dict[str, np.ndarray] = {}
-    if npz_path.exists():
-        npz = np.load(npz_path)
-        weights = {k: npz[k] for k in npz.files}
-    # ONNX path: extend here when onnxruntime is available; fall back to npz
-
-    # Normalization: identity if absent
-    norm_path = run_dir / "normalization.npz"
-    if norm_path.exists():
-        n = np.load(norm_path)
-        obs_mean = n["obs_mean"].astype(np.float32)
-        obs_std  = n["obs_std"].astype(np.float32)
-    else:
-        # Identity normalization — obs dimension inferred from first weight matrix
-        obs_dim = weights["w_0"].shape[0] if weights else 1
-        obs_mean = np.zeros(obs_dim, dtype=np.float32)
-        obs_std  = np.ones(obs_dim,  dtype=np.float32)
-
-    entry = {"weights": weights, "obs_mean": obs_mean, "obs_std": obs_std}
-    _policy_cache[run_id] = entry
-    return entry
-
-
-def _normalize(obs: np.ndarray, obs_mean: np.ndarray, obs_std: np.ndarray) -> np.ndarray:
-    return (obs - obs_mean) / np.maximum(obs_std, 1e-8)
+    candidates = [
+        (p, _step_from_filename(p))
+        for p in run_dir.glob("checkpoint_*.npz")
+    ]
+    valid = [(p, n) for p, n in candidates if n >= 0]
+    if not valid:
+        raise FileNotFoundError(
+            f"no canonical checkpoint (checkpoint_*.npz) in {run_dir}"
+        )
+    best_path = max(valid, key=lambda x: x[1])[0]
+    checkpoint = load_checkpoint(str(best_path))
+    _policy_cache[run_id] = checkpoint
+    return checkpoint
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +345,7 @@ class _SyntheticEnv:
 class _Session:
     __slots__ = (
         "session_id", "run_id", "site_id", "state",
-        "seq", "env", "policy_entry", "speed",
+        "seq", "env", "checkpoint", "obs", "speed",
     )
 
     def __init__(self) -> None:
@@ -353,9 +353,10 @@ class _Session:
         self.run_id:     str | None = None
         self.site_id:    str | None = None
         self.state: str = "ready"   # ready | running | paused | stopped
-        self.seq: int = 0
-        self.env: _SyntheticEnv | None = None
-        self.policy_entry: dict | None = None
+        self.seq:  int = 0
+        self.env:  _SyntheticEnv | None = None
+        self.checkpoint: Any = None   # CheckpointData; Any avoids a top-level import
+        self.obs:  np.ndarray | None = None   # current obs (carried between steps)
         self.speed: float = 1.0  # Hz; 0.0 = no sleep (D24)
 
 
@@ -419,13 +420,19 @@ async def ws_inference(websocket: WebSocket) -> None:
 
     async def _step_loop() -> None:
         """Async loop: step env → build env_step frame → send."""
-        assert s.env is not None and s.policy_entry is not None
+        assert s.env is not None and s.checkpoint is not None
         while s.state == "running":
-            obs_raw = np.zeros(s.env.obs_dim, dtype=np.float32)
-            obs_norm = _normalize(obs_raw, s.policy_entry["obs_mean"], s.policy_entry["obs_std"])
-            action = policy_forward(s.policy_entry["weights"], obs_norm)
+            # Use obs from env.reset() / previous step; fall back to zeros on first
+            # call if reset somehow wasn't stored (defensive — reset is always called
+            # in the start handler before this loop begins).
+            obs_raw = s.obs if s.obs is not None else np.zeros(s.env.obs_dim, dtype=np.float32)
 
-            _, payload = s.env.step(action)
+            # §6 canonical forward pass: normalization (obs_var/obs_clip) + ReLU MLP
+            # + D28 mean-clip ± 8 + tanh(a_bat) / sigmoid(fractions)
+            action = policy_forward(s.checkpoint, obs_raw)
+
+            next_obs, payload = s.env.step(action)
+            s.obs = next_obs  # carry obs for the next step
 
             # Build LOCKED env_step frame
             frame: dict = {
@@ -492,11 +499,14 @@ async def ws_inference(websocket: WebSocket) -> None:
                     await _send(_error_frame("site_not_found", f"no config/site_{site_id}.yaml"))
                     continue
 
-                # Load policy
+                # Load canonical checkpoint (§6 recipe; no legacy policy.npz)
                 try:
-                    policy_entry = _load_policy(str(run_id), run_dir)
+                    checkpoint = _load_checkpoint_for_run(str(run_id), run_dir)
                 except FileNotFoundError:
-                    await _send(_error_frame("policy_not_found", f"no policy.npz or policy.onnx in checkpoints/{run_id}"))
+                    await _send(_error_frame(
+                        "policy_not_found",
+                        f"no canonical checkpoint in checkpoints/{run_id}",
+                    ))
                     continue
 
                 # Load site YAML
@@ -504,14 +514,14 @@ async def ws_inference(websocket: WebSocket) -> None:
                 with site_path.open() as f:
                     site_yaml = _yaml.safe_load(f)
 
-                s.run_id       = str(run_id)
-                s.site_id      = str(site_id)
-                s.session_id   = str(uuid.uuid4())
-                s.policy_entry = policy_entry
-                s.speed        = speed
-                s.env          = _SyntheticEnv(site_yaml, seed=seed)
-                s.env.reset()
-                s.state        = "running"
+                s.run_id     = str(run_id)
+                s.site_id    = str(site_id)
+                s.session_id = str(uuid.uuid4())
+                s.checkpoint = checkpoint
+                s.speed      = speed
+                s.env        = _SyntheticEnv(site_yaml, seed=seed)
+                s.obs        = s.env.reset()   # initial obs for step 0
+                s.state      = "running"
 
                 await _send(_status_frame(s))
                 # Start stepping asynchronously
@@ -552,12 +562,12 @@ async def ws_inference(websocket: WebSocket) -> None:
                 if s.state != "paused":
                     await _send(_error_frame("bad_state", "step command only valid when paused"))
                     continue
-                # Advance exactly one step
-                assert s.policy_entry is not None
-                obs_raw  = np.zeros(s.env.obs_dim, dtype=np.float32)
-                obs_norm = _normalize(obs_raw, s.policy_entry["obs_mean"], s.policy_entry["obs_std"])
-                action   = policy_forward(s.policy_entry["weights"], obs_norm)
-                _, payload = s.env.step(action)
+                # Advance exactly one step (canonical §6 forward pass)
+                assert s.checkpoint is not None
+                obs_raw  = s.obs if s.obs is not None else np.zeros(s.env.obs_dim, dtype=np.float32)
+                action   = policy_forward(s.checkpoint, obs_raw)
+                next_obs, payload = s.env.step(action)
+                s.obs = next_obs
                 frame = {
                     "schema_version": "1.0.0",
                     "kind": "env_step",
