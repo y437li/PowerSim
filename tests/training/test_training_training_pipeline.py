@@ -305,32 +305,74 @@ class TestRunConfig:
         assert cfg.norm_obs    is True
         assert cfg.norm_reward is True
 
+    def test_default_site_config_id(self):
+        # Must default to "site_gansu" (§3 RunConfig + checkpoint cross-reference §10)
+        assert RunConfig().site_config_id == "site_gansu"
+
 
 # ---------------------------------------------------------------------------
 # § 7 — Baselines
 # ---------------------------------------------------------------------------
 
 class TestNoBatteryPolicy:
-    """NoBatteryPolicy always outputs action=0 — §7.1."""
+    """NoBatteryPolicy outputs a 6-dim action [0.0, 1.0, 0.0, 1.0, 0.0, 0.0] — §7.1.
 
-    def test_action_is_zero_at_valley_hour(self):
-        # Valley hour (h=3, price=250): no-battery policy still returns 0.0
+    Critical: allocating f_sol→load=f_wind→load=0 with a_bat=0 would serve ZERO load from
+    renewable → VOLL every step → 'RL beats no-battery' is trivially/misleadingly true.
+    The correct no-battery baseline directs all renewable to load (f_sol→load=f_wind→load=1).
+    """
+
+    def test_action_shape_is_6(self):
+        # Action must be 6-dim per §2.2 "Energy Router" action space
         policy = NoBatteryPolicy()
         action = policy.action(t=jnp.int32(3))
-        assert float(action) == pytest.approx(0.0, abs=1e-6)
+        assert action.shape == (6,), f"NoBattery action shape {action.shape} != (6,)"
 
-    def test_action_is_zero_at_peak_hour(self):
-        # Peak hour (h=19, price=780): no-battery still 0.0
-        policy = NoBatteryPolicy()
-        action = policy.action(t=jnp.int32(19))
-        assert float(action) == pytest.approx(0.0, abs=1e-6)
-
-    def test_action_is_always_zero_all_hours(self):
-        # Check all 24 hours → action = 0.0
+    def test_a_bat_is_zero(self):
+        # a_bat=0 means no battery activity at any hour
         policy = NoBatteryPolicy()
         for h in range(24):
-            a = float(policy.action(t=jnp.int32(h)))
-            assert a == pytest.approx(0.0, abs=1e-6), f"NoBattery action != 0 at hour {h}"
+            action = policy.action(t=jnp.int32(h))
+            assert float(action[0]) == pytest.approx(0.0, abs=1e-6), \
+                f"NoBattery a_bat != 0 at hour {h}"
+
+    def test_f_sol_load_is_one(self):
+        # f_sol→load=1.0 to serve load from solar and prevent VOLL (§7.1 critical note)
+        policy = NoBatteryPolicy()
+        for h in range(24):
+            action = policy.action(t=jnp.int32(h))
+            assert float(action[1]) == pytest.approx(1.0, abs=1e-6), \
+                f"NoBattery f_sol→load != 1 at hour {h}"
+
+    def test_f_sol_bat_is_zero(self):
+        policy = NoBatteryPolicy()
+        action = policy.action(t=jnp.int32(0))
+        assert float(action[2]) == pytest.approx(0.0, abs=1e-6)
+
+    def test_f_wind_load_is_one(self):
+        # f_wind→load=1.0 to serve load from wind and prevent VOLL (§7.1 critical note)
+        policy = NoBatteryPolicy()
+        for h in range(24):
+            action = policy.action(t=jnp.int32(h))
+            assert float(action[3]) == pytest.approx(1.0, abs=1e-6), \
+                f"NoBattery f_wind→load != 1 at hour {h}"
+
+    def test_f_wind_bat_is_zero(self):
+        policy = NoBatteryPolicy()
+        action = policy.action(t=jnp.int32(0))
+        assert float(action[4]) == pytest.approx(0.0, abs=1e-6)
+
+    def test_f_bat_load_is_zero(self):
+        policy = NoBatteryPolicy()
+        action = policy.action(t=jnp.int32(0))
+        assert float(action[5]) == pytest.approx(0.0, abs=1e-6)
+
+    def test_action_vector_matches_contract(self):
+        # Full 6-vector: [0.0, 1.0, 0.0, 1.0, 0.0, 0.0] (§7.1)
+        policy = NoBatteryPolicy()
+        action = policy.action(t=jnp.int32(9))  # mid-day hour
+        expected = np.array([0.0, 1.0, 0.0, 1.0, 0.0, 0.0], dtype=np.float32)
+        np.testing.assert_allclose(np.array(action), expected, atol=1e-6)
 
     def test_degradation_is_zero_in_eval(self):
         # With p_bat=0 always, no battery throughput → c_degradation_yuan = 0 for the year
@@ -344,59 +386,110 @@ class TestNoBatteryPolicy:
 
 
 class TestTouPolicy:
-    """TouPolicy actions match the tariff tier — §7.2."""
+    """TouPolicy emits a 6-dim action matching the tariff tier — §7.2.
 
-    def test_valley_hour_charges(self):
-        # h=3: PRICE_TABLE_YPW[3]=250 (valley) → action=+1.0 (charge)
-        policy = TouPolicy()
-        a = float(policy.action(t=jnp.int32(3)))
-        assert a == pytest.approx(+1.0, abs=1e-6)
+    Valley  (price=250 ¥/MWh): a_bat=+1, f_sol→load=0, f_sol→bat=1, f_wind→load=0, f_wind→bat=1, f_bat→load=0
+    Mid     (price=450 ¥/MWh): a_bat= 0, f_sol→load=1, f_sol→bat=0, f_wind→load=1, f_wind→bat=0, f_bat→load=0
+    Peak    (price=620 or 780): a_bat=-1, f_sol→load=1, f_sol→bat=0, f_wind→load=1, f_wind→bat=0, f_bat→load=1
+    """
 
-    def test_critical_peak_discharges(self):
-        # h=11: PRICE_TABLE_YPW[11]=780 (critical peak) → action=-1.0 (discharge)
+    def test_action_shape_is_6(self):
+        # TOU policy action must be 6-dim per §2.2 "Energy Router"
         policy = TouPolicy()
-        a = float(policy.action(t=jnp.int32(11)))
-        assert a == pytest.approx(-1.0, abs=1e-6)
+        action = policy.action(t=jnp.int32(3))
+        assert action.shape == (6,), f"TouPolicy action shape {action.shape} != (6,)"
 
-    def test_mid_hour_idles(self):
-        # h=12: PRICE_TABLE_YPW[12]=450 (mid) → action=0.0
+    def test_valley_hour_a_bat_charges(self):
+        # h=3: PRICE_TABLE_YPW[3]=250 (valley) → a_bat=+1.0 (charge)
         policy = TouPolicy()
-        a = float(policy.action(t=jnp.int32(12)))
-        assert a == pytest.approx(0.0, abs=1e-6)
+        action = policy.action(t=jnp.int32(3))
+        assert float(action[0]) == pytest.approx(+1.0, abs=1e-6), "valley a_bat should be +1"
 
-    def test_peak_hour_18_discharges(self):
-        # h=18: PRICE_TABLE_YPW[18]=620 (peak) → action=-1.0 (discharge)
+    def test_valley_hour_renewable_to_battery(self):
+        # Valley: f_sol→bat=1, f_wind→bat=1 (charge from renewable)
+        # f_sol→load=0, f_wind→load=0 (load served from cheap grid)
         policy = TouPolicy()
-        a = float(policy.action(t=jnp.int32(18)))
-        assert a == pytest.approx(-1.0, abs=1e-6)
+        action = policy.action(t=jnp.int32(3))
+        # [a_bat, f_sol→load, f_sol→bat, f_wind→load, f_wind→bat, f_bat→load]
+        expected = np.array([+1.0, 0.0, 1.0, 0.0, 1.0, 0.0], dtype=np.float32)
+        np.testing.assert_allclose(np.array(action), expected, atol=1e-6,
+                                   err_msg="valley hour full 6-vector mismatch")
 
-    def test_peak_hour_21_discharges(self):
-        # h=21: PRICE_TABLE_YPW[21]=620 (peak) → action=-1.0
+    def test_critical_peak_hour_a_bat_discharges(self):
+        # h=11: PRICE_TABLE_YPW[11]=780 (critical peak) → a_bat=-1.0 (discharge)
         policy = TouPolicy()
-        a = float(policy.action(t=jnp.int32(21)))
-        assert a == pytest.approx(-1.0, abs=1e-6)
+        action = policy.action(t=jnp.int32(11))
+        assert float(action[0]) == pytest.approx(-1.0, abs=1e-6), "critical peak a_bat should be -1"
+
+    def test_critical_peak_hour_full_vector(self):
+        # h=11: peak → discharge + all renewable to load + discharge to load
+        # [a_bat=-1, f_sol→load=1, f_sol→bat=0, f_wind→load=1, f_wind→bat=0, f_bat→load=1]
+        policy = TouPolicy()
+        action = policy.action(t=jnp.int32(11))
+        expected = np.array([-1.0, 1.0, 0.0, 1.0, 0.0, 1.0], dtype=np.float32)
+        np.testing.assert_allclose(np.array(action), expected, atol=1e-6,
+                                   err_msg="critical peak hour full 6-vector mismatch")
+
+    def test_mid_hour_a_bat_idles(self):
+        # h=12: PRICE_TABLE_YPW[12]=450 (mid) → a_bat=0.0
+        policy = TouPolicy()
+        action = policy.action(t=jnp.int32(12))
+        assert float(action[0]) == pytest.approx(0.0, abs=1e-6), "mid a_bat should be 0"
+
+    def test_mid_hour_full_vector(self):
+        # h=12: mid → idle battery + all renewable to load
+        # [a_bat=0, f_sol→load=1, f_sol→bat=0, f_wind→load=1, f_wind→bat=0, f_bat→load=0]
+        policy = TouPolicy()
+        action = policy.action(t=jnp.int32(12))
+        expected = np.array([0.0, 1.0, 0.0, 1.0, 0.0, 0.0], dtype=np.float32)
+        np.testing.assert_allclose(np.array(action), expected, atol=1e-6,
+                                   err_msg="mid hour full 6-vector mismatch")
+
+    def test_peak_hour_18_a_bat_discharges(self):
+        # h=18: PRICE_TABLE_YPW[18]=620 (peak) → a_bat=-1.0
+        policy = TouPolicy()
+        action = policy.action(t=jnp.int32(18))
+        assert float(action[0]) == pytest.approx(-1.0, abs=1e-6)
+
+    def test_peak_hour_18_full_vector(self):
+        # h=18: peak → discharge + all renewable to load + f_bat→load=1
+        policy = TouPolicy()
+        action = policy.action(t=jnp.int32(18))
+        expected = np.array([-1.0, 1.0, 0.0, 1.0, 0.0, 1.0], dtype=np.float32)
+        np.testing.assert_allclose(np.array(action), expected, atol=1e-6,
+                                   err_msg="peak h=18 full 6-vector mismatch")
 
     def test_hour_23_charges(self):
-        # h=23: PRICE_TABLE_YPW[23]=250 (valley) → action=+1.0
+        # h=23: PRICE_TABLE_YPW[23]=250 (valley) → a_bat=+1.0
         policy = TouPolicy()
-        a = float(policy.action(t=jnp.int32(23)))
-        assert a == pytest.approx(+1.0, abs=1e-6)
+        action = policy.action(t=jnp.int32(23))
+        assert float(action[0]) == pytest.approx(+1.0, abs=1e-6)
 
-    def test_all_24_hours_have_correct_tier(self):
-        # Verify that the TOU policy action is consistent with PRICE_TABLE_YPW for ALL hours.
-        # valley (price=250): action=+1.0
-        # mid    (price=450): action= 0.0
-        # peak   (price=620 or 780): action=-1.0
+    def test_all_24_hours_a_bat_correct(self):
+        # Verify a_bat (action[0]) is consistent with PRICE_TABLE_YPW for ALL hours.
+        # valley (price=250): a_bat=+1.0
+        # mid    (price=450): a_bat= 0.0
+        # peak/critical (price=620 or 780): a_bat=-1.0
         policy = TouPolicy()
         for h in range(24):
             price = float(PRICE_TABLE_YPW[h])
-            action = float(policy.action(t=jnp.int32(h)))
+            action = policy.action(t=jnp.int32(h))
+            a_bat = float(action[0])
             if price < 450.0:    # valley (250)
-                assert action == pytest.approx(+1.0, abs=1e-6), f"TOU h={h}: expected +1 (valley)"
+                assert a_bat == pytest.approx(+1.0, abs=1e-6), f"TOU h={h}: a_bat expected +1 (valley)"
             elif price == 450.0: # mid
-                assert action == pytest.approx(0.0, abs=1e-6),  f"TOU h={h}: expected 0 (mid)"
+                assert a_bat == pytest.approx(0.0, abs=1e-6),  f"TOU h={h}: a_bat expected 0 (mid)"
             else:                # peak/critical (620, 780)
-                assert action == pytest.approx(-1.0, abs=1e-6), f"TOU h={h}: expected -1 (peak)"
+                assert a_bat == pytest.approx(-1.0, abs=1e-6), f"TOU h={h}: a_bat expected -1 (peak)"
+
+    def test_all_24_hours_fractions_in_range(self):
+        # action[1:6] must all be in [0, 1] for all hours (fraction constraints)
+        policy = TouPolicy()
+        for h in range(24):
+            action = policy.action(t=jnp.int32(h))
+            fractions = np.array(action[1:6])
+            assert np.all(fractions >= 0.0) and np.all(fractions <= 1.0), \
+                f"TOU h={h}: fractions out of [0,1]: {fractions}"
 
     def test_tou_eval_has_zero_penalty(self):
         # Rule-based TOU does not target a specific SOC — env clips at bounds.
@@ -700,13 +793,18 @@ class TestCheckpointRoundTrip:
 
         def deterministic_action(c, raw_obs):
             norm_obs = normalize_obs(raw_obs, c.obs_stats, clip=10.0)
-            # Actor forward pass: tanh(mean)
+            # Actor forward pass: per-component squash (§5.2)
+            # tanh for a_bat (action[0]), sigmoid for 5 fractions (action[1:6])
             from energy_go.training.run_training import actor_forward
             mean, _ = actor_forward(c.actor_params, norm_obs)
-            return jnp.tanh(mean)
+            # mean shape: (6,); split squash
+            a_bat = jnp.tanh(mean[:1])
+            fractions = jax.nn.sigmoid(mean[1:])
+            return jnp.concatenate([a_bat, fractions])  # (6,)
 
         a_before = deterministic_action(ckpt,        obs)
         a_after  = deterministic_action(ckpt_loaded, obs)
+        assert a_before.shape == (6,), f"action shape {a_before.shape} != (6,)"
         np.testing.assert_allclose(np.array(a_before), np.array(a_after), atol=1e-6)
 
     def test_obs_stats_restored_correctly(self, tmp_path):
@@ -754,24 +852,31 @@ class TestDeterminism:
         data = generate_year(key)
         return train(cfg, key, data, emit_fn=None)
 
+    def _deterministic_action(self, ckpt, obs):
+        """Per-component squash of actor_mean: tanh for a_bat, sigmoid for 5 fractions (§5.2)."""
+        from energy_go.training.run_training import actor_forward
+        norm_obs = normalize_obs(obs, ckpt.obs_stats)
+        mean, _ = actor_forward(ckpt.actor_params, norm_obs)
+        # mean shape: (6,); per-component squash
+        a_bat = jnp.tanh(mean[:1])
+        fractions = jax.nn.sigmoid(mean[1:])
+        return jnp.concatenate([a_bat, fractions])  # (6,)
+
     def test_same_seed_same_checkpoint_actions(self):
         ckpt_a = self._run_short(seed=7)
         ckpt_b = self._run_short(seed=7)
         obs = jnp.zeros(107, dtype=jnp.float32)
-
-        from energy_go.training.run_training import actor_forward
-        a_a, _ = actor_forward(ckpt_a.actor_params, normalize_obs(obs, ckpt_a.obs_stats))
-        a_b, _ = actor_forward(ckpt_b.actor_params, normalize_obs(obs, ckpt_b.obs_stats))
-        np.testing.assert_allclose(np.array(jnp.tanh(a_a)), np.array(jnp.tanh(a_b)), atol=1e-6)
+        a_a = self._deterministic_action(ckpt_a, obs)
+        a_b = self._deterministic_action(ckpt_b, obs)
+        assert a_a.shape == (6,), f"action shape {a_a.shape} != (6,)"
+        np.testing.assert_allclose(np.array(a_a), np.array(a_b), atol=1e-6)
 
     def test_different_seeds_different_checkpoints(self):
         ckpt_0 = self._run_short(seed=0)
         ckpt_1 = self._run_short(seed=1)
         obs = jnp.zeros(107, dtype=jnp.float32)
-
-        from energy_go.training.run_training import actor_forward
-        a_0, _ = actor_forward(ckpt_0.actor_params, normalize_obs(obs, ckpt_0.obs_stats))
-        a_1, _ = actor_forward(ckpt_1.actor_params, normalize_obs(obs, ckpt_1.obs_stats))
+        a_0 = self._deterministic_action(ckpt_0, obs)
+        a_1 = self._deterministic_action(ckpt_1, obs)
         # Different seeds → different actions (with overwhelmingly high probability)
         assert not np.allclose(np.array(a_0), np.array(a_1), atol=1e-4), \
             "Different seeds produced identical checkpoint — training is not random"
@@ -793,13 +898,15 @@ class TestVmapCompilation:
 
         # vmap reset
         states, obs = jax.vmap(reset, in_axes=(0, None, None))(keys, params, data)
-        # vmap step with zero actions
-        actions = jnp.zeros((N, 1))
+        # vmap step with NoBattery actions (6-dim; f_sol→load=f_wind→load=1 avoids VOLL)
+        # action: [a_bat=0, f_sol→load=1, f_sol→bat=0, f_wind→load=1, f_wind→bat=0, f_bat→load=0]
+        actions = jnp.tile(jnp.array([[0.0, 1.0, 0.0, 1.0, 0.0, 0.0]]), (N, 1))  # (N, 6)
         new_states, new_obs, rewards, dones, infos = jax.jit(
             jax.vmap(step, in_axes=(0, 0, None, None))
         )(states, actions, params, data)
         assert new_obs.shape == (N, 107)
         assert rewards.shape == (N,)
+        assert actions.shape == (N, 6), f"action shape {actions.shape} != (N, 6)"
 
     def test_4096_envs_vmap_compiles(self):
         # The contract requires n_envs=4096 as the default — test that vmap at this scale compiles.
@@ -815,6 +922,115 @@ class TestVmapCompilation:
         # vmap reset — compilation test only, assert shape
         states, obs = jax.jit(jax.vmap(reset, in_axes=(0, None, None)))(keys, params, data)
         assert obs.shape == (N, 107)
+
+
+# ---------------------------------------------------------------------------
+# § 5 — Policy architecture: actor output shape and ranges, critic input, target_entropy
+# ---------------------------------------------------------------------------
+
+class TestActorOutputShape:
+    """Actor MLP output has shape (6,) and respects per-component squash ranges — §5.2."""
+
+    def _get_short_checkpoint(self):
+        from energy_go.generators.synthetic import generate_year
+        from energy_go.training.run_training import train
+        from energy_go.training.config import RunConfig
+        cfg = RunConfig(total_env_steps=512, n_envs=4, buffer_size=1024, batch_size=32, seed=0)
+        key = jax.random.PRNGKey(0)
+        return train(cfg, key, generate_year(key), emit_fn=None)
+
+    def test_actor_output_shape_is_6(self):
+        # actor_forward returns (mean(6), log_std(6)); mean has shape (6,) — §5.2 Dense(12)
+        from energy_go.training.run_training import actor_forward
+        ckpt = self._get_short_checkpoint()
+        obs = jnp.zeros(107, dtype=jnp.float32)
+        norm_obs = normalize_obs(obs, ckpt.obs_stats)
+        mean, log_std = actor_forward(ckpt.actor_params, norm_obs)
+        assert mean.shape == (6,), f"actor mean shape {mean.shape} != (6,)"
+        assert log_std.shape == (6,), f"actor log_std shape {log_std.shape} != (6,)"
+
+    def test_a_bat_in_open_tanh_range(self):
+        # After tanh squash, action[0] ∈ (-1, 1) — strictly open (never exactly ±1)
+        from energy_go.training.run_training import actor_forward
+        ckpt = self._get_short_checkpoint()
+        # Test with multiple obs vectors
+        for seed in range(5):
+            obs = jax.random.normal(jax.random.PRNGKey(seed), (107,)).astype(jnp.float32)
+            norm_obs = normalize_obs(obs, ckpt.obs_stats)
+            mean, _ = actor_forward(ckpt.actor_params, norm_obs)
+            a_bat = float(jnp.tanh(mean[0]))
+            assert -1.0 < a_bat < 1.0, \
+                f"a_bat={a_bat} out of open (-1, 1) range (tanh squash)"
+
+    def test_fractions_in_open_sigmoid_range(self):
+        # After sigmoid squash, action[1:6] ∈ (0, 1) — strictly open (never exactly 0 or 1)
+        from energy_go.training.run_training import actor_forward
+        ckpt = self._get_short_checkpoint()
+        for seed in range(5):
+            obs = jax.random.normal(jax.random.PRNGKey(seed + 10), (107,)).astype(jnp.float32)
+            norm_obs = normalize_obs(obs, ckpt.obs_stats)
+            mean, _ = actor_forward(ckpt.actor_params, norm_obs)
+            fractions = np.array(jax.nn.sigmoid(mean[1:]))
+            assert np.all(fractions > 0.0) and np.all(fractions < 1.0), \
+                f"fractions {fractions} out of open (0, 1) range (sigmoid squash)"
+
+    def test_deterministic_action_has_shape_6(self):
+        # Full deterministic eval action after per-component squash must be (6,)
+        from energy_go.training.run_training import actor_forward
+        ckpt = self._get_short_checkpoint()
+        obs = jnp.ones(107, dtype=jnp.float32)
+        norm_obs = normalize_obs(obs, ckpt.obs_stats)
+        mean, _ = actor_forward(ckpt.actor_params, norm_obs)
+        a_bat = jnp.tanh(mean[:1])
+        fractions = jax.nn.sigmoid(mean[1:])
+        action = jnp.concatenate([a_bat, fractions])
+        assert action.shape == (6,), f"deterministic action shape {action.shape} != (6,)"
+
+    def test_critic_input_is_113(self):
+        # Critic input = concat(obs(107), action(6)) = 113 — §5.3
+        # critic1_fc1_w must have shape (113, 256) when saved to checkpoint
+        ckpt = self._get_short_checkpoint()
+        # Access critic weights via the checkpoint object (optional keys)
+        if hasattr(ckpt, "critic1_params") and ckpt.critic1_params is not None:
+            # For Flax: check the first Dense layer input size
+            # The first weight matrix of critic1 fc1 should have input dim=113
+            from energy_go.training.checkpoint_format import save_checkpoint, load_checkpoint
+            import tempfile, pathlib
+            with tempfile.TemporaryDirectory() as tmp:
+                path = pathlib.Path(tmp) / "ckpt.npz"
+                save_checkpoint(ckpt, path)
+                loaded = load_checkpoint(path)
+                # critic1_fc1_w: (113, 256) per §4.4 of checkpoint_format contract
+                if loaded.critic1_fc1_w is not None:
+                    assert loaded.critic1_fc1_w.shape == (113, 256), \
+                        f"critic1_fc1_w shape {loaded.critic1_fc1_w.shape} != (113, 256)"
+        else:
+            pytest.skip("critic1_params not present in checkpoint (inference-only mode)")
+
+    def test_target_entropy_is_minus_6(self):
+        # target_entropy = -action_dim = -6.0 (§6.1.5)
+        from energy_go.training.run_training import SAC_TARGET_ENTROPY
+        assert SAC_TARGET_ENTROPY == pytest.approx(-6.0, abs=1e-6), \
+            f"SAC_TARGET_ENTROPY={SAC_TARGET_ENTROPY}, expected -6.0 (action_dim=6)"
+
+    def test_actor_params_shape_fc1_w(self):
+        # actor_fc1_w must have shape (107, 256): input=107-dim obs, output=256 hidden — §5.2
+        from energy_go.training.checkpoint_format import save_checkpoint, load_checkpoint
+        import tempfile, pathlib
+        ckpt = self._get_short_checkpoint()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "ckpt.npz"
+            save_checkpoint(ckpt, path)
+            loaded = load_checkpoint(path)
+            assert loaded.actor_fc1_w.shape == (107, 256), \
+                f"actor_fc1_w {loaded.actor_fc1_w.shape} != (107, 256)"
+            assert loaded.actor_fc2_w.shape == (256, 256), \
+                f"actor_fc2_w {loaded.actor_fc2_w.shape} != (256, 256)"
+            # actor_out_w: (256, 12) — 12 = 2 * 6 = mean(6) + log_std_raw(6)
+            assert loaded.actor_out_w.shape == (256, 12), \
+                f"actor_out_w {loaded.actor_out_w.shape} != (256, 12)"
+            assert loaded.actor_out_b.shape == (12,), \
+                f"actor_out_b {loaded.actor_out_b.shape} != (12,)"
 
 
 # ---------------------------------------------------------------------------
@@ -863,7 +1079,10 @@ def test_sub_month_demand_charge_is_zero_per_step():
     params = EnvParams(episode_len=168)
     state, _ = reset(key, params, data)
 
+    # NoBattery 6-dim action: [a_bat=0, f_sol→load=1, f_sol→bat=0, f_wind→load=1, f_wind→bat=0, f_bat→load=0]
+    # Directing renewable to load avoids VOLL domination (§7.1 critical note)
+    no_battery_action = jnp.array([0.0, 1.0, 0.0, 1.0, 0.0, 0.0])
     for t_idx in range(168):
-        state, obs, reward, done, info = step(state, jnp.array([0.0]), params, data)
+        state, obs, reward, done, info = step(state, no_battery_action, params, data)
         assert float(info.c_demand_charge_yuan) == pytest.approx(0.0, abs=1e-6), \
             f"Sub-month episode has non-zero c_demand_charge at step {t_idx}"

@@ -206,31 +206,52 @@ The actor and twin-Q critics are plain MLPs compatible with `flax.linen.Dense`.
 
 ### 5.1 Action space
 
-Single scalar action: `a ∈ [-1, 1]`
-- `+1` = charge battery at maximum rate (`bat_power_mw = 98.16 MW`)
-- `-1` = discharge at maximum rate
-- `0`  = idle
+**6-dim continuous** per §2.2 ("Energy Router"). Mixed ranges per component:
 
-Deterministic eval policy: `a = tanh(actor_mean(obs))`. The env clips any out-of-range
-value via `jnp.clip(a, -1, 1)` before computing physics (jax_env_core §5.3.3).
+```
+a[0] = a_bat        ∈ [-1, 1]  battery: +1=charge max, −1=discharge max (×98.16 MW)
+a[1] = f_sol→load   ∈ [0, 1]  fraction of solar allocated to load
+a[2] = f_sol→bat    ∈ [0, 1]  fraction of solar allocated to battery
+a[3] = f_wind→load  ∈ [0, 1]  fraction of wind allocated to load
+a[4] = f_wind→bat   ∈ [0, 1]  fraction of wind allocated to battery
+a[5] = f_bat→load   ∈ [0, 1]  fraction of discharge allocated to load (remainder→grid)
+```
+
+If `a[1]+a[2] > 1` or `a[3]+a[4] > 1`, the env renormalises to sum 1 (§2.2/jax_env_core §5.3.2).
+Unallocated renewable goes to grid.
+
+Deterministic eval policy: per-component squash of `actor_mean(normalized_obs)` — see §5.2.
 
 ### 5.2 Actor network
 
+The actor outputs a 6-dim raw vector (mean + log_std per action), squashed per-component to
+respect the mixed ranges of §5.1:
+
 ```
-Input:  obs (107,)
+Input:  obs (107,) — normalised by obs_stats before this forward pass
 Dense(256) → ReLU
 Dense(256) → ReLU
-Dense(2)   → split into (mean, log_std_raw)
+Dense(12)  → split into (mean(6), log_std_raw(6))
+
 log_std = clip(log_std_raw, -5, 2)
-std = exp(log_std)
-# Stochastic (training): action = tanh(mean + std * N(0,1))
-# Deterministic (eval):  action = tanh(mean)
+std     = exp(log_std)
+
+# Per-component squash:
+action[0]   = tanh(mean[0])              # a_bat ∈ (-1, 1)
+action[1:6] = sigmoid(mean[1:6])         # fractions ∈ (0, 1)
+
+# Stochastic (training):
+#   raw[0]   = mean[0]   + std[0]  * N(0,1)  → tanh
+#   raw[1:6] = mean[1:6] + std[1:6]* N(0,1)  → sigmoid
+# Deterministic (eval):
+#   action[0]   = tanh(mean[0])
+#   action[1:6] = sigmoid(mean[1:6])
 ```
 
 ### 5.3 Critic network (×2 for clipped double-Q)
 
 ```
-Input: concat(obs (107,), action (1,)) = (108,)
+Input: concat(obs (107,), action (6,)) = (113,)
 Dense(256) → ReLU
 Dense(256) → ReLU
 Dense(1)   → Q-value scalar
@@ -281,7 +302,7 @@ def train(
    inputs and Q targets respectively. The raw (un-normalised) reward from `env.step()` is what
    is stored in the replay buffer and also what is accumulated for telemetry cost reporting.
 
-5. **Target entropy** for auto ent_coef: `target_entropy = -action_dim = -1.0` (standard SAC).
+5. **Target entropy** for auto ent_coef: `target_entropy = -action_dim = -6.0` (standard SAC; action_dim=6).
 
 6. **Eval cadence:** every `config.eval_every_steps` env steps, call `run_eval()` with the
    current checkpoint and emit an `eval_compare` telemetry message.
@@ -321,35 +342,58 @@ def run_baseline(
 
 ### 7.1 NoBatteryPolicy
 
+Returns a 6-dim action vector with `a_bat = 0` (no battery) and all renewable allocated
+to load so that load is served without VOLL:
+
 ```
-action(obs, state) → 0.0   # always idle — no battery charge or discharge
+action = [0.0, 1.0, 0.0, 1.0, 0.0, 0.0]
+  a_bat      = 0.0  (idle)
+  f_sol→load = 1.0  (all solar to load)
+  f_sol→bat  = 0.0
+  f_wind→load= 1.0  (all wind to load)
+  f_wind→bat = 0.0
+  f_bat→load = 0.0
 ```
 
-Consequence: `p_bat_ch = p_bat_dis = 0` every step. Battery SOC stays at `soc_init = 0.5`.
-No degradation cost. `c_degradation_yuan = 0` for the entire year.
+> **Critical:** allocating `f_sol→load = f_wind→load = 0` with `a_bat = 0` would serve
+> ZERO load from renewable → maximum VOLL every step → "RL beats no-battery" trivially and
+> misleadingly. The above vector is the correct no-battery baseline: renewable always to load,
+> grid imports any shortfall, no battery activity.
+
+Consequence: `p_bat_ch = p_bat_dis = 0` every step; SOC stays at `soc_init = 0.5`.
+`c_degradation_yuan = 0` for the entire year. This is a meaningful baseline.
 
 ### 7.2 TouPolicy (rule-based TOU)
 
-Action purely based on `hour = t % 24` (looked up from `PRICE_TABLE_YPW` in jax_env_core):
+6-dim action based on `price = PRICE_TABLE_YPW[t % 24]`:
 
-| Hours | Price tier | Action |
-|-------|-----------|--------|
-| 0–6, 23 | Valley (250 ¥/MWh) | +1.0 (charge at max) |
-| 7, 12–17 | Mid (450 ¥/MWh) | 0.0 (idle) |
-| 8–10 | Peak (620 ¥/MWh) | −1.0 (discharge at max) |
-| 11 | Critical peak (780 ¥/MWh) | −1.0 (discharge at max) |
-| 18–20 | Critical/Peak (620–780) | −1.0 (discharge at max) |
-| 21–22 | Peak (620 ¥/MWh) | −1.0 (discharge at max) |
+| Price tier | `a_bat` | `f_sol→load` | `f_sol→bat` | `f_wind→load` | `f_wind→bat` | `f_bat→load` |
+|---|---|---|---|---|---|---|
+| Valley (250 ¥/MWh) | +1.0 | 0.0 | 1.0 | 0.0 | 1.0 | 0.0 |
+| Mid (450 ¥/MWh) | 0.0 | 1.0 | 0.0 | 1.0 | 0.0 | 0.0 |
+| Peak/Critical (620–780 ¥/MWh) | −1.0 | 1.0 | 0.0 | 1.0 | 0.0 | 1.0 |
 
-The policy ignores SOC; the env's clip logic handles SOC bounds (D4). The policy is stateless:
-`action(obs, t) = PRICE_TABLE_YPW[t % 24] > 450.0 ? -1.0 : (... == 250.0 ? +1.0 : 0.0)`.
+Rationale:
+- **Valley:** charge battery from renewable; load served from cheap grid import.
+- **Mid:** no battery action; all renewable to load; grid imports shortfall.
+- **Peak/Critical:** discharge battery to load; all renewable to load; no grid import if possible.
 
-Equivalently:
+The policy is stateless. In JAX:
+
 ```python
 price = PRICE_TABLE_YPW[t % 24]
-action = jnp.where(price > 450.0, -1.0,   # peak / critical peak → discharge
-         jnp.where(price < 450.0, +1.0,   # valley → charge
-                                   0.0))  # mid → idle
+is_valley = price < 450.0   # 250 ¥/MWh
+is_peak   = price > 450.0   # 620 or 780 ¥/MWh
+# is_mid  = price == 450.0  (default)
+
+action = jnp.array([
+    jnp.where(is_valley, +1.0, jnp.where(is_peak, -1.0, 0.0)),  # a_bat
+    jnp.where(is_valley,  0.0, 1.0),   # f_sol→load  (0 in valley, 1 otherwise)
+    jnp.where(is_valley,  1.0, 0.0),   # f_sol→bat   (1 in valley, 0 otherwise)
+    jnp.where(is_valley,  0.0, 1.0),   # f_wind→load
+    jnp.where(is_valley,  1.0, 0.0),   # f_wind→bat
+    jnp.where(is_peak,    1.0, 0.0),   # f_bat→load  (1 in peak, 0 otherwise)
+])
 ```
 
 ---
@@ -393,7 +437,7 @@ def run_eval(
 
 ### 8.1 Eval invariants
 
-1. **Deterministic:** eval always uses `action = tanh(actor_mean(normalized_obs))` — no sampling.
+1. **Deterministic:** eval uses per-component squash of `actor_mean(normalized_obs)` — `tanh` for `a_bat`, `sigmoid` for the 5 fractions. No sampling.
 2. **Same data:** `data` is the same synthetic year used for training (caller's responsibility).
 3. **Frozen stats:** `obs_stats` from the checkpoint are NOT updated during eval.
 4. **Raw reward:** the cumulative `reward` from `env.step()` is summed but not used for the
@@ -471,7 +515,7 @@ The test suite MUST include at least one test that:
 ## 10. Checkpoint cross-reference
 
 `CheckpointData` is the return type of `train()` and the input to `run_eval()`. Its fields are
-specified in `contracts/training/checkpoint_format.md` (task #20). For this contract, the
+specified in `contracts/shared/checkpoint_format.md` (task #20, D25 relocated from training/). For this contract, the
 required fields are:
 
 ```python
@@ -521,6 +565,7 @@ in the same PR as this contract. `pyproject.toml` optional extras `[training]` M
 | `VecNormalize` as SB3 object | SB3 `VecNormalize` with `.pkl` file | `RunningStats` NamedTuple in JAX, saved as part of checkpoint (npz) | §7 "Keep VecNormalize logic as explicit running-stat arrays" |
 | `train_freq=1, gradient_steps=1` | SB3 per-env-step | Same policy, JAX-native | Direct port |
 | Python `DummyVecEnv` env | `PowerEnv` (Python) | `energy_go.env.jax_env.step()` + `reset()` (JAX) via import path `energy_go.env.jax_env` | D22b |
+| **N1 — reward normalisation divisor** | SB3 normalises reward by std of **discounted returns** (SB3 `VecNormalize` tracks a running average of the exponentially-weighted discounted return) | This rebuild normalises by the std of **per-step rewards** (`reward_stats.var` updated via Welford on individual step rewards). SB3 convention is to avoid mean-shifting (only divide by std), and this rebuild follows the same convention (no mean subtraction from reward). | Simpler; correct for SAC (which uses 1-step TD targets, not monte-carlo returns). The distinction only matters for extremely long-horizon reward sequences; for a 168-step episode the two approaches are numerically similar. |
 
 ---
 
