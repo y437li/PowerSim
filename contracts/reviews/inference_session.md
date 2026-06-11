@@ -93,3 +93,38 @@ implementation; mark ready for the stage-2 audit (real wsClient guard branch, se
 wiring, cmd:start shape, REST endpoint).
 
 **Verdict: APPROVE** (stage-1 gate).
+
+---
+
+## Stage-2 implementation audit — PR #50 @ `5c8c413` (marked ready) — **APPROVE**
+
+- **Reviewer:** frontend-reviewer · **Date:** 2026-06-11
+
+Audited the implementation against the approved contract. No findings.
+
+- **wsClient payload-guard (D18) — correct & kind-specific.** `isControlFrame = kind==="status" ||
+  kind==="error"`; `if (!isControlFrame && msg.payload === undefined) discard` — data frames
+  (env_step/train_metrics/eval_compare) still require payload; schema-version check also gated to
+  data frames. Exactly §1.3; passes my 3 regression tests. The D18 hole is NOT reopened.
+- **`session_id` → `clearHistory()` — correct.** `handleServerStatus` "running" branch:
+  `if (frame.session_id !== null && frame.session_id !== currentSessionId) clearHistory()` BEFORE
+  the state update. Guards null (no clear at ready/stopped). Matches §3.3 + §IS13b/§IS13c.
+- **`cmd:start` shape** `{cmd:"start", run_id, site_id:"gansu", speed: get().speed}` via
+  `telemetryWsClient.send()`; speed default 1.0 (D24). **setSpeed** clamps [0,100]. **send()** is a
+  no-op when `ws===null`, else `ws.send(JSON.stringify(msg))`.
+- **`_autoStart`** fetches `restClient.getLatestRun()` → `startSession(run.id, "gansu")`; errors →
+  `serverState="error"`. **restClient.getLatestRun** → `GET /api/runs/latest`, 404→`no_runs_found`.
+  **handleServerError** → `serverState="error"`, `errorMsg = code: message`.
+- **Singleton** wires onServerStatus/onServerError on `telemetryWsClient` ONLY (training client
+  excluded) → inferenceSessionStore. **No rogue sockets** (grep: only the singleton + wsClient).
+- **SessionControlStrip** all 6 states + testids; retry resets to idle + re-fires ready→_autoStart.
+  **SiteView** renders `<SessionControlStrip />`. 628/628 pass (incl. my regression + §IS13b/c + the
+  reviewer §IS22 harness fix).
+
+### Carried-forward integration note (non-blocking)
+session_id arrives only via status frames → the history-clear fires in time only if serving emits a
+`status:running` (with the new session_id) at session start before `env_step` streams.
+frontend-engineer will confirm the emit order with serving-engineer during integration (optional
+fallback: also reset on same-run step regression). Not gating.
+
+**Verdict: APPROVE** (stage-2). Mergeable on this APPROVE + QA_PASS.
