@@ -382,6 +382,7 @@ class TestNoBatteryPolicy:
         expected = np.array([0.0, 1.0, 0.0, 1.0, 0.0, 0.0], dtype=np.float32)
         np.testing.assert_allclose(np.array(action), expected, atol=1e-6)
 
+    @pytest.mark.slow  # D30: calls run_baseline() which uses jax.jit + lax.scan over 8760 steps
     def test_degradation_is_zero_in_eval(self):
         # With p_bat=0 always, no battery throughput → c_degradation_yuan = 0 for the year
         # (cost formula: C_deg = c_deg_yuan_per_mwh * (p_bat_ch + p_bat_dis) * Δt
@@ -503,6 +504,7 @@ class TestTouPolicy:
             assert np.all(fractions >= 0.0) and np.all(fractions <= 1.0), \
                 f"TOU h={h}: fractions out of [0,1]: {fractions}"
 
+    @pytest.mark.slow  # D30: calls run_baseline() which uses jax.jit + lax.scan over 8760 steps
     def test_tou_eval_has_zero_penalty(self):
         # Rule-based TOU does not target a specific SOC — env clips at bounds.
         # Verify the result object has penalty_yuan >= 0 (not a negative penalty).
@@ -770,6 +772,7 @@ class TestTelemetryEvalCompare:
 # § 10 — Checkpoint round-trip
 # ---------------------------------------------------------------------------
 
+@pytest.mark.slow  # D30: calls train() which JIT-compiles vmap(step, n_envs) + flashbax
 class TestCheckpointRoundTrip:
     """Save + load produces identical actions — §10 / checkpoint_format contract."""
 
@@ -857,6 +860,7 @@ class TestCheckpointRoundTrip:
 # § 6 — Training loop determinism and JAX compilation
 # ---------------------------------------------------------------------------
 
+@pytest.mark.slow  # D30: calls train() twice — each JIT-compiles the full training loop
 class TestDeterminism:
     """Fixed seed → identical trajectory — §6.8."""
 
@@ -910,6 +914,7 @@ class TestDeterminism:
             "Different seeds produced identical checkpoint — training is not random"
 
 
+@pytest.mark.slow  # D30: explicit jax.jit(vmap(step/reset, N=4096)) XLA compilation
 class TestVmapCompilation:
     """vmap over ≥4096 envs compiles without error — §6.2 / §7."""
 
@@ -964,6 +969,7 @@ class TestVmapCompilation:
 # § 5 — Policy architecture: actor output shape and ranges, critic input, target_entropy
 # ---------------------------------------------------------------------------
 
+@pytest.mark.slow  # D30: calls train() (JAX JIT + vmap compilation) for each test method
 class TestActorOutputShape:
     """Actor MLP output has shape (6,) and respects per-component squash ranges — §5.2."""
 
@@ -1107,6 +1113,7 @@ def test_eval_obs_stats_frozen():
 
 
 # dev: sub-month training episodes must never book c_demand_charge (D21)
+@pytest.mark.slow  # D30: calls generate_year() + jax_env.step 168x (JIT compiles on first call)
 def test_sub_month_demand_charge_is_zero_per_step():
     """A 7-day (168-step) episode must have c_demand_charge = 0 on every step.
     Training demand pressure comes from 2·c_demand_shape only (D21)."""
