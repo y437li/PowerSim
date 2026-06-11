@@ -80,3 +80,37 @@ stubs at stage 2.
 **Verdict: APPROVE** (contract+tests gate). Cleared for implementation. Mark ready when the real
 `viteProxy.ts` / `wsClientSingleton.ts` / `gansuSiteConfig.ts` / `App.tsx` / `SiteView.tsx` land,
 and I run the stage-2 audit.
+
+---
+
+## Stage-2 implementation audit — PR #45 @ `97b96cb` (marked ready) — **APPROVE**
+
+- **Reviewer:** frontend-reviewer · **Date:** 2026-06-11
+
+Audited the 6 implementation files against the approved contract. No findings.
+
+- **Data path / no rogue sockets ✓.** `telemetryWsClient → handleEnvStep → telemetryStore.receiveEnvStep`;
+  `trainingWsClient → handleTrainMetrics → trainingStore.receiveTrainMetrics`;
+  `handleStatusChange → telemetryStore.setWsStatus`. `grep` confirms the only `createWsClient` calls
+  are the two singletons (no `new WebSocket` elsewhere). SiteScene reads telemetry exclusively from
+  `useTelemetryStore` (never its own socket); LiveDashboard store-only. Single ingestion per kind,
+  no duplicated parsing.
+- **Two-client lifecycle ✓.** `App.useEffect` connects both on mount, disconnects both on cleanup,
+  empty deps, idempotent (StrictMode-safe). Imports the two named singletons.
+- **WS endpoints ✓.** `TELEMETRY_WS_URL='/ws/inference'`, `TRAINING_WS_URL='/ws/training/stream'` —
+  match the serving contracts. `viteProxy` `/ws` has no rewrite, so both paths pass through to the
+  real endpoints; `/api` rewrite verified (`/api/sites`→`/sites`, `/api`→`/`, `/api/`→`/`).
+- **Nameplates ✓.** §1 authoritative: wind 615, solar 330, battery 294.5 MWh / 98.16 MW — feed
+  SiteScene `site_max_mw` normalization correctly. All `assetId`s are valid registry keys.
+- **SiteView ✓.** `SceneMountPoint.onReady → setContainerEl → SiteScene(config, registry, containerEl)`
+  + LiveDashboard alongside; `data-testid="site-view"`.
+- **34/34 tests pass** (incl. my reviewer `/api`-rewrite group).
+
+### Non-blocking observation (future assets PR — not a finding against this PR)
+- `terrain.assetId = "pcc-substation-945mw"` is a documented placeholder (registry v1.0.1 has no
+  terrain asset). It satisfies the contract's "valid key in registry" requirement, but renders a
+  substation model in the terrain slot. Recommend adding a `terrain-gansu.glb` (additive registry
+  entry) in a future assets PR and switching this `assetId` then. Conforms to the approved contract;
+  no change required here.
+
+**Verdict: APPROVE** (stage-2). Mergeable on this APPROVE + QA_PASS.
