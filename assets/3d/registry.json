@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.0.1",
   "assets": {
     "vestas-v150-4.2": {
       "path": "turbines/vestas-v150-4.2.glb",
@@ -34,6 +34,87 @@
       "dims_m": { "x": 50, "y": 15, "z": 30 },
       "pivot": { "x": 0, "y": 0, "z": 0 },
       "animation_hooks": {}
+    },
+    "gas-turbine-30mw": {
+      "path": "gas/gas-turbine-30mw.glb",
+      "type": "gas_turbine",
+      "dims_m": { "x": 30, "y": 12, "z": 20 },
+      "pivot": { "x": 0, "y": 0, "z": 0 },
+      "animation_hooks": {
+        "flame_node": "ExhaustFlame"
+      }
+    },
+    "pem-electrolyzer-20mw": {
+      "path": "electrolyzers/pem-electrolyzer-20mw.glb",
+      "type": "electrolyzer",
+      "dims_m": { "x": 30, "y": 10, "z": 15 },
+      "pivot": { "x": 0, "y": 0, "z": 0 },
+      "animation_hooks": {
+        "h2_fill_mesh": "H2TankFill"
+      }
+    },
+    "alkaline-electrolyzer-20mw": {
+      "path": "electrolyzers/alkaline-electrolyzer-20mw.glb",
+      "type": "electrolyzer",
+      "dims_m": { "x": 30, "y": 10, "z": 18 },
+      "pivot": { "x": 0, "y": 0, "z": 0 },
+      "animation_hooks": {
+        "h2_fill_mesh": "H2TankFill"
+      }
+    },
+    "load-commercial": {
+      "path": "loads/load-commercial.glb",
+      "type": "load_building",
+      "dims_m": { "x": 50, "y": 20, "z": 40 },
+      "pivot": { "x": 0, "y": 0, "z": 0 },
+      "animation_hooks": {
+        "activity_material": "BuildingLights"
+      }
+    },
+    "load-residential": {
+      "path": "loads/load-residential.glb",
+      "type": "load_building",
+      "dims_m": { "x": 40, "y": 12, "z": 40 },
+      "pivot": { "x": 0, "y": 0, "z": 0 },
+      "animation_hooks": {
+        "activity_material": "BuildingLights"
+      }
+    },
+    "load-industrial-continuous": {
+      "path": "loads/load-industrial-continuous.glb",
+      "type": "load_building",
+      "dims_m": { "x": 80, "y": 25, "z": 60 },
+      "pivot": { "x": 0, "y": 0, "z": 0 },
+      "animation_hooks": {
+        "activity_material": "BuildingLights"
+      }
+    },
+    "load-industrial-two-shift": {
+      "path": "loads/load-industrial-two-shift.glb",
+      "type": "load_building",
+      "dims_m": { "x": 80, "y": 20, "z": 60 },
+      "pivot": { "x": 0, "y": 0, "z": 0 },
+      "animation_hooks": {
+        "activity_material": "BuildingLights"
+      }
+    },
+    "load-data-center": {
+      "path": "loads/load-data-center.glb",
+      "type": "load_building",
+      "dims_m": { "x": 50, "y": 10, "z": 35 },
+      "pivot": { "x": 0, "y": 0, "z": 0 },
+      "animation_hooks": {
+        "activity_material": "BuildingLights"
+      }
+    },
+    "load-ev-fleet": {
+      "path": "loads/load-ev-fleet.glb",
+      "type": "load_building",
+      "dims_m": { "x": 40, "y": 6, "z": 60 },
+      "pivot": { "x": 0, "y": 0, "z": 0 },
+      "animation_hooks": {
+        "activity_material": "BuildingLights"
+      }
     }
   }
 }

@@ -16,7 +16,11 @@ export type AssetType =
   | "grid_pcc"
   | "grid_connection"
   | "site_element"
-  | "effect";
+  | "effect"
+  // §8 composable assets (v1.0.1, contract: contracts/assets/composable_3d.md)
+  | "gas_turbine"
+  | "electrolyzer"
+  | "load_building";
 
 /** 3D vector used for dimensions and pivot offsets (metres). */
 export interface Vec3 {
@@ -33,6 +37,13 @@ export interface AnimationHooks {
   soc_fill_mesh?: string;
   /** PV surface material name — emissiveIntensity reflects calcEmissive result. */
   irradiance_material?: string;
+  // §8 hooks (v1.0.1, contract: contracts/assets/composable_3d.md §3, forward-spec)
+  /** H₂ tank fill mesh — scale.y = h2_level_kg / h2_tank_capacity_kg ∈ [0,1]. */
+  h2_fill_mesh?: string;
+  /** Load building material — emissiveIntensity = current_load_mw / base_mw ∈ [0,1]. */
+  activity_material?: string;
+  /** Gas turbine exhaust node — visible when p_dispatch_mw > ALERT_EPSILON. */
+  flame_node?: string;
 }
 
 /**
