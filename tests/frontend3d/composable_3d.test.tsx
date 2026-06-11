@@ -377,3 +377,51 @@ describe("AnimationHooks interface has new §8 hook fields (contract §3)", () =
     expect(Object.keys(hooks)).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// reviewer: in-scope edge cases added at the contract+tests gate (frontend-reviewer, PR #38)
+//   - pivot present & finite (schema requires pivot.x/y/z; NaN/missing breaks placement)
+//   - dims_m FINITE (the existing `> 0` check admits Infinity: Infinity > 0 === true)
+//   - new IDs disjoint from the 4 LOCKED Gansu IDs (§8 edge case 3 — no collision)
+//   - each new entry uses one of the 3 NEW §8 AssetType values (no stray legacy type)
+// ---------------------------------------------------------------------------
+describe("reviewer: new §8 registry-metadata robustness", () => {
+  // reviewer: every new entry must carry a finite, base-centred pivot (contract §4)
+  for (const id of NEW_ASSET_IDS) {
+    it(`reviewer: '${id}' has a finite, base-centre pivot {0,0,0} (contract §4)`, () => {
+      const entry = resolveAsset(typedRegistry, id);
+      expect(entry).not.toBeNull();
+      const p = entry!.pivot;
+      expect(Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z)).toBe(true);
+      expect(p).toEqual({ x: 0, y: 0, z: 0 });
+    });
+  }
+
+  // reviewer: dims must be FINITE — `> 0` alone passes Infinity (Infinity > 0 === true),
+  // which would blow up bounding-box / placement math in the scene.
+  for (const id of NEW_ASSET_IDS) {
+    it(`reviewer: '${id}' dims_m are finite (Infinity/NaN must not slip past the >0 check)`, () => {
+      const d = resolveAsset(typedRegistry, id)!.dims_m;
+      expect(Number.isFinite(d.x)).toBe(true);
+      expect(Number.isFinite(d.y)).toBe(true);
+      expect(Number.isFinite(d.z)).toBe(true);
+    });
+  }
+
+  // reviewer: no new ID may collide with a LOCKED Gansu ID (§8 edge case 3) — sets are disjoint
+  it("reviewer: new §8 IDs are disjoint from the 4 LOCKED Gansu IDs (no collision)", () => {
+    const gansu = new Set<string>(GANSU_ASSET_IDS as readonly string[]);
+    for (const id of NEW_ASSET_IDS) {
+      expect(gansu.has(id)).toBe(false);
+    }
+  });
+
+  // reviewer: each new entry's type is one of the 3 NEW §8 values — guards against a new entry
+  // accidentally carrying a legacy/Gansu AssetType.
+  it("reviewer: each new entry uses one of the 3 new §8 AssetType values", () => {
+    const allowed = new Set<string>(["gas_turbine", "electrolyzer", "load_building"]);
+    for (const id of NEW_ASSET_IDS) {
+      expect(allowed.has(resolveAsset(typedRegistry, id)!.type as string)).toBe(true);
+    }
+  });
+});
