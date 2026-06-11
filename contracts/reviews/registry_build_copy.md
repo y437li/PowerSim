@@ -145,3 +145,33 @@ plugin) is **conditional** (`existsSync(SRC)` → copy; source absent + dest pre
 
 **Verdict: REQUEST_CHANGES.** Add the drift-guard CI check (+ ideally the conditional functional
 test), then re-request. The committed-fallback approach is fine *with* the guard.
+
+---
+
+## Re-review — drift guard @ `ffc9f75` — **APPROVE** (stage 2)
+
+- **Reviewer:** frontend-reviewer · **Date:** 2026-06-11
+
+Both findings from the `92a2f92`/`c716d07` REQUEST_CHANGES are resolved. Verified by running
+at `ffc9f75` (detached worktree), not by claim:
+
+**MUST-FIX — CI drift guard (resolved).** `.github/workflows/ci.yml` "Registry committed-copy
+drift check" step (in the single full-checkout `checks` job, repo root): runs
+`node scripts/copy_registry.js` then `git diff --exit-code src/config/registryData.json`,
+guarded by `[ -f assets/3d/registry.json ] && [ -f src/config/registryData.json ]`.
+- Positive: in-sync committed copy → step passes. ✓
+- **Negative (load-bearing): edited canonical `assets/3d/registry.json`, left committed copy
+  stale → step FAILS (nonzero exit).** ✓ This is the real drift scenario (canonical advances,
+  regen-and-commit forgotten) and the guard catches it. The earlier §T9 gap (plugin regenerates
+  before §T9 runs) is now closed by a check that compares the *committed* copy to canonical.
+- §3 documents the step and the rationale.
+
+**SHOULD-FIX — RB.8 functional branch test (resolved).** `copyRegistryIfNeeded(src,dest)`
+extracted and exported; `configResolved()` delegates to it (production path == tested path).
+RB.8: branch-1 source present → `"copied"` + dest === payload; branch-2 source absent + dest
+present → `"skipped"` + dest byte-unchanged (the committed-fallback guarantee); branch-3 neither
+→ throws `/copy-registry/`. Temp dirs, no real-FS assumptions. RB suite 11/11 green.
+
+**Verdict: APPROVE (stage 2).** Supersedes my REQUEST_CHANGES. Note: head changed
+`28eaa4e`→`ffc9f75`, so the prior QA_PASS @ `28eaa4e` is stale — QA must re-verify at `ffc9f75`
+before merge.
