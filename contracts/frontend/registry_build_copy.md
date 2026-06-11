@@ -42,35 +42,25 @@ must be removed to avoid config confusion.
 
 ---
 
-## 1. Vite plugin (`src/config/registryBuildPlugin.ts`)
+## 1. Vite plugin (`scripts/registryBuildPlugin.ts`)
 
-A new plain-TS module (no Vite runtime dependency) that exports a Vite plugin object:
-
-```typescript
-import { copyFileSync, mkdirSync } from "fs";
-import { dirname } from "path";
-
-export const registryBuildPlugin = {
-  name: "copy-registry",
-  configResolved() {
-    mkdirSync(dirname("src/config/registryData.json"), { recursive: true });
-    copyFileSync("assets/3d/registry.json", "src/config/registryData.json");
-  },
-};
-```
+A plain-TS module (no Vite runtime dependency) that exports a Vite plugin object.
+**Lives in `scripts/`** (NOT `src/`) so the browser-targeted `tsconfig.json` (which has
+`"include": ["src", "tests"]` and no `@types/node`) never typechecks it.  Vite and Vitest
+load it through their own esbuild transpiler, which handles Node built-in imports correctly.
 
 The plugin is added to **both** config files:
 
 **`vite.config.ts`** (covers `vite dev` and `vite build`):
 ```typescript
-import { registryBuildPlugin } from "./src/config/registryBuildPlugin";
+import { registryBuildPlugin } from "./scripts/registryBuildPlugin";
 // ...
 plugins: [react(), registryBuildPlugin],
 ```
 
 **`vitest.config.ts`** (covers `npx vitest run` and `npm test`):
 ```typescript
-import { registryBuildPlugin } from "./src/config/registryBuildPlugin";
+import { registryBuildPlugin } from "./scripts/registryBuildPlugin";
 // ...
 plugins: [react(), registryBuildPlugin],
 ```

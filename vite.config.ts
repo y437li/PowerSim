@@ -1,7 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VITE_PROXY_CONFIG } from "./src/config/viteProxy";
-import { registryBuildPlugin } from "./src/config/registryBuildPlugin";
+import { registryBuildPlugin } from "./scripts/registryBuildPlugin";
 
 export default defineConfig({
   // registryBuildPlugin: auto-copies assets/3d/registry.json → src/config/registryData.json

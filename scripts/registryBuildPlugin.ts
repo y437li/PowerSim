@@ -6,6 +6,10 @@
  * always fresh for `vite dev`, `vite build`, and `vitest run` (both configs
  * register this plugin — see vite.config.ts and vitest.config.ts).
  *
+ * This file lives in scripts/ (NOT src/) so that the browser-targeted tsconfig
+ * (which has no @types/node) never typechecks it. Vite and Vitest load it via
+ * their own esbuild transpiler, which handles Node built-in imports correctly.
+ *
  * Contract: contracts/frontend/registry_build_copy.md §1
  */
 

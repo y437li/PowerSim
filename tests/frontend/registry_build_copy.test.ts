@@ -9,7 +9,7 @@
  * These are structural/shape tests — the content-correctness invariant is already
  * covered by app_integration §T9 (deep-equals ASSET_REGISTRY vs registry.json).
  *
- * Note: RB.1/RB.2 are RED until src/config/registryBuildPlugin.ts is created.
+ * Note: RB.1/RB.2 are RED until scripts/registryBuildPlugin.ts is created.
  * RB.3/RB.4 are RED until scripts/copy_registry.js is created.
  */
 
@@ -20,17 +20,17 @@ import { tmpdir } from "os";
 import { execSync } from "child_process";
 
 // ─── RB.1 / RB.2: Vite plugin shape ─────────────────────────────────────────
-// RED until src/config/registryBuildPlugin.ts is created.
+// RED until scripts/registryBuildPlugin.ts is created.
 describe("RB.1 — registryBuildPlugin.name", () => {
   it("is 'copy-registry'", async () => {
-    const { registryBuildPlugin } = await import("../../src/config/registryBuildPlugin");
+    const { registryBuildPlugin } = await import("../../scripts/registryBuildPlugin");
     expect(registryBuildPlugin.name).toBe("copy-registry");
   });
 });
 
 describe("RB.2 — registryBuildPlugin.configResolved", () => {
   it("is a function", async () => {
-    const { registryBuildPlugin } = await import("../../src/config/registryBuildPlugin");
+    const { registryBuildPlugin } = await import("../../scripts/registryBuildPlugin");
     expect(typeof registryBuildPlugin.configResolved).toBe("function");
   });
 });
@@ -64,8 +64,8 @@ describe("RB.7 — existsSync guard present in script and plugin (partial-checko
     expect(content).toContain("existsSync");
   });
 
-  it("src/config/registryBuildPlugin.ts contains existsSync guard", () => {
-    const pluginPath = resolve(__dirname, "../../src/config/registryBuildPlugin.ts");
+  it("scripts/registryBuildPlugin.ts contains existsSync guard", () => {
+    const pluginPath = resolve(__dirname, "../../scripts/registryBuildPlugin.ts");
     const content = readFileSync(pluginPath, "utf8");
     expect(content).toContain("existsSync");
   });
@@ -100,7 +100,7 @@ describe("RB.8 — copyRegistryIfNeeded: functional three-branch test", () => {
   });
 
   it("branch 1 (source present): copies to dest and returns 'copied'", async () => {
-    const { copyRegistryIfNeeded } = await import("../../src/config/registryBuildPlugin");
+    const { copyRegistryIfNeeded } = await import("../../scripts/registryBuildPlugin");
     const src = join(tmpDir, "registry.json");
     const dest = join(tmpDir, "out", "registryData.json");
     const payload = JSON.stringify({ version: "1.0.0", assets: [] });
@@ -112,7 +112,7 @@ describe("RB.8 — copyRegistryIfNeeded: functional three-branch test", () => {
   });
 
   it("branch 2 (source absent, dest exists): no-op, returns 'skipped', dest unchanged", async () => {
-    const { copyRegistryIfNeeded } = await import("../../src/config/registryBuildPlugin");
+    const { copyRegistryIfNeeded } = await import("../../scripts/registryBuildPlugin");
     const src = join(tmpDir, "registry.json"); // intentionally absent
     const dest = join(tmpDir, "registryData.json");
     const fallback = JSON.stringify({ version: "fallback", assets: [] });
@@ -125,7 +125,7 @@ describe("RB.8 — copyRegistryIfNeeded: functional three-branch test", () => {
   });
 
   it("branch 3 (neither exists): throws", async () => {
-    const { copyRegistryIfNeeded } = await import("../../src/config/registryBuildPlugin");
+    const { copyRegistryIfNeeded } = await import("../../scripts/registryBuildPlugin");
     const src = join(tmpDir, "registry.json");  // absent
     const dest = join(tmpDir, "registryData.json"); // absent
     expect(() => copyRegistryIfNeeded(src, dest)).toThrow(/copy-registry/);
@@ -139,7 +139,7 @@ describe("RB.8 — copyRegistryIfNeeded: functional three-branch test", () => {
 // is byte-equal content to the canonical registry — the behaviour the whole PR exists to provide.
 describe("RB.5 (reviewer) — configResolved() copies registry.json → registryData.json (content identical)", () => {
   it("after configResolved(), src/config/registryData.json deep-equals assets/3d/registry.json", async () => {
-    const { registryBuildPlugin } = await import("../../src/config/registryBuildPlugin");
+    const { registryBuildPlugin } = await import("../../scripts/registryBuildPlugin");
     const { readFileSync } = await import("fs");
     // Invoke the plugin's copy hook directly — no Vite/Vitest config wiring needed.
     (registryBuildPlugin.configResolved as () => void)();

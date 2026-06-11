@@ -1,6 +1,6 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
-import { registryBuildPlugin } from "./src/config/registryBuildPlugin";
+import { registryBuildPlugin } from "./scripts/registryBuildPlugin";
 
 export default defineConfig({
   // registryBuildPlugin: auto-copies assets/3d/registry.json → src/config/registryData.json
