@@ -16,6 +16,7 @@
  */
 
 import React, { useEffect, useMemo, useRef } from "react";
+import * as THREE from "three"; // needed for extend(THREE) in Effect 1 — see §3.4
 import { useTelemetryStore } from "../stores/telemetryStore";
 import type { EnvStepPayload, WsStatus } from "../types/telemetry";
 import type { AssetRegistry, SiteSceneConfig } from "./types";
@@ -179,8 +180,14 @@ export function SiteScene({ config, registry, containerEl }: SiteSceneProps): Re
     let cancelled = false;
     (async () => {
       try {
-        const { createRoot } = await import("@react-three/fiber");
+        const { createRoot, extend } = await import("@react-three/fiber");
         if (cancelled) return;
+        // REQUIRED: manual createRoot() does NOT auto-register the THREE namespace.
+        // R3F's <Canvas> component calls extend(THREE) implicitly; manual roots must
+        // do it explicitly or every JSX element throws:
+        //   "AmbientLight is not part of the THREE namespace! Did you forget to extend?"
+        // extend() is idempotent — safe to call on every Effect 1 mount.
+        extend(THREE);
         r3fRootRef.current = createRoot(canvas);
         // Initial render — subsequent re-renders on config/registry change come from Effect 2
         r3fRootRef.current.render(
