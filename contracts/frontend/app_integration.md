@@ -50,56 +50,108 @@ This matches the backend's FastAPI routes which have no `/api` prefix.
 
 ---
 
-## 2. WebSocket client singleton (`src/clients/wsClientSingleton.ts`)
+## 2. WebSocket client singletons (`src/clients/wsClientSingleton.ts`)
 
-A new module that calls `createWsClient` **once** at module-init time, wiring store actions:
+The serving layer exposes **two** WebSocket endpoints with different message kinds:
+
+| Endpoint | kinds served | Source contract |
+|----------|-------------|-----------------|
+| `WS /ws/inference` | `env_step`, `status` | `contracts/serving/inference_stream.md:24` |
+| `WS /ws/training/stream` | `train_metrics` | `contracts/serving/training_proxy.md:98` |
+
+`wsClientSingleton.ts` creates **two** `createWsClient` instances, one per endpoint.
+
+### Exports
 
 ```typescript
 // src/clients/wsClientSingleton.ts
 import { createWsClient, type WsClient } from './wsClient';
+import type { TelemetryEnvelope, WsStatus } from '../types/telemetry';
 import { useTelemetryStore } from '../stores/telemetryStore';
 import { useTrainingStore } from '../stores/trainingStore';
 
-export const wsClientSingleton: WsClient = createWsClient({
-  url: '/ws',
-  onEnvStep: (msg) => useTelemetryStore.getState().receiveEnvStep(msg),
-  onTrainMetrics: (msg) => useTrainingStore.getState().receiveTrainMetrics(msg),
-  onEvalCompare: (_msg) => { /* reserved — no eval_compare consumer in v1 */ },
-  onStatusChange: (status) => useTelemetryStore.getState().setWsStatus(status),
+// URL constants — exported for direct testing (§T_url)
+export const TELEMETRY_WS_URL = '/ws/inference';
+export const TRAINING_WS_URL = '/ws/training/stream';
+
+// Handler functions — exported for direct testing (§T_wire)
+export function handleEnvStep(msg: TelemetryEnvelope): void {
+  useTelemetryStore.getState().receiveEnvStep(msg);
+}
+export function handleTrainMetrics(msg: TelemetryEnvelope): void {
+  useTrainingStore.getState().receiveTrainMetrics(msg);
+}
+export function handleStatusChange(status: WsStatus): void {
+  useTelemetryStore.getState().setWsStatus(status);
+}
+
+// Clients — NOT connected at import time; connected by App.useEffect (§3)
+export const telemetryWsClient: WsClient = createWsClient({
+  url: TELEMETRY_WS_URL,
+  onEnvStep: handleEnvStep,
+  onTrainMetrics: () => {},      // /ws/inference never sends train_metrics
+  onEvalCompare: () => {},       // eval_compare: no v1 consumer
+  onStatusChange: handleStatusChange,
+});
+
+export const trainingWsClient: WsClient = createWsClient({
+  url: TRAINING_WS_URL,
+  onEnvStep: () => {},           // /ws/training/stream never sends env_step
+  onTrainMetrics: handleTrainMetrics,
+  onEvalCompare: () => {},
+  onStatusChange: () => {},      // training WS status not exposed in UI (TrainingPanel
+                                 // reads wsStatus from telemetryStore — confirmed correct)
 });
 ```
 
 Rules:
-- The singleton is not connected at import time — `connect()` is called by `App`.
-- The URL `/ws` is relative; the Vite proxy (§1) rewrites it to `ws://localhost:8000` in dev, and the production server must serve the WS endpoint at the same path.
-- `evalCompare` handler is a no-op; this is intentional (no eval_compare consumer exists yet). It does NOT suppress the `wsClient` unknown-kind warning for genuinely unknown kinds.
+- Neither client connects at import time — `connect()` is called by `App`.
+- URLs are relative; Vite proxy (§1) rewrites `/ws/*` during dev.
+- `handleStatusChange` routes to `telemetryStore.setWsStatus`. `trainingWsClient`'s
+  `onStatusChange` is a no-op — both panels read `wsStatus` from `telemetryStore`.
+- `evalCompare` handlers are no-ops (no v1 consumer); this does NOT suppress `wsClient`
+  unknown-kind warnings for genuinely unknown kinds.
 
-**Shape:** `{ connect(): void; disconnect(): void }` — identical to `WsClient` from `wsClient.ts`.
+**Acceptance criteria (§T2):** `telemetryWsClient` and `trainingWsClient` each have
+`typeof connect === 'function'` and `typeof disconnect === 'function'` (real module, via
+`vi.importActual`).
 
-**Acceptance criterion (§T2):** Exports `wsClientSingleton` with `typeof connect === 'function'` and `typeof disconnect === 'function'`.
+**Acceptance criteria (§T_url):** `TELEMETRY_WS_URL === '/ws/inference'` and
+`TRAINING_WS_URL === '/ws/training/stream'`.
+
+**Acceptance criteria (§T_wire):** Calling `handleEnvStep(envStepEnvelope)` routes to
+`telemetryStore.receiveEnvStep`; calling `handleTrainMetrics(trainMetricsEnvelope)` routes to
+`trainingStore.receiveTrainMetrics`; calling `handleStatusChange('connected')` routes to
+`telemetryStore.setWsStatus`.
 
 ---
 
 ## 3. App-level ws lifecycle (`src/App.tsx`)
 
-`App` gains a `useEffect` that connects on mount and disconnects on unmount:
+`App` gains a `useEffect` that connects **both** clients on mount and disconnects both on unmount:
 
 ```typescript
 useEffect(() => {
-  wsClientSingleton.connect();
-  return () => wsClientSingleton.disconnect();
+  telemetryWsClient.connect();
+  trainingWsClient.connect();
+  return () => {
+    telemetryWsClient.disconnect();
+    trainingWsClient.disconnect();
+  };
 }, []); // empty array — connect once on mount, disconnect on tree teardown
 ```
 
-The effect **precedes** the router render in the component body (standard React order: effects register after render, but the empty-dep effect fires once after the first paint — before any data arrives).
-
-`wsClient.ts` guarantees `connect()` is idempotent (no-op if already connecting/connected).
+`wsClient.ts` guarantees `connect()` is idempotent (no-op if already connecting/connected), so
+React 18 StrictMode's double-invocation (mount→unmount→mount) is safe: the synthetic unmount
+disconnects cleanly, and the second mount re-connects without side effects.
 
 **Acceptance criteria (§T3, §T4):**
-- §T3: Mounting `<App>` inside `MemoryRouter` calls `wsClientSingleton.connect()` exactly once.
-- §T4: Unmounting `<App>` calls `wsClientSingleton.disconnect()` exactly once.
+- §T3: Mounting `<App>` inside `MemoryRouter` calls `telemetryWsClient.connect()` exactly once
+  **and** `trainingWsClient.connect()` exactly once.
+- §T4: Unmounting `<App>` calls `telemetryWsClient.disconnect()` exactly once **and**
+  `trainingWsClient.disconnect()` exactly once.
 
-Both tests mock `wsClientSingleton` at the module level to avoid real WebSocket connections.
+Both tests mock the `wsClientSingleton` module at module level to avoid real WebSocket connections.
 
 ---
 
@@ -148,23 +200,28 @@ Exports two named constants:
 
 ### `GANSU_SITE_CONFIG: SiteSceneConfig`
 
-Representative static configuration for the Gansu site (REBUILD_SPEC §3):
+Representative static configuration for the Gansu site. **Nameplates from
+`docs/spec/section_01_overview.md:12`** (authoritative source — NOT D4 which is SOC bounds,
+NOT D12 which is import limit):
 
 | Field | Value | Source |
 |-------|-------|--------|
 | `site_id` | `"gansu"` | site name |
-| `wind_capacity_mw` | `400` | §3 nameplate (D4) |
-| `solar_capacity_mw` | `330` | §3 nameplate |
+| `wind_capacity_mw` | **`615`** | §1 overview (615 MW nameplate; 400 = import limit D12) |
+| `solar_capacity_mw` | **`330`** | §1 overview |
 | `turbines` | ≥ 1 × `vestas-v150-4.2` | registry key |
 | `pv_arrays` | ≥ 1 × `trina-vertex-n-670w` | registry key |
 | `battery.assetId` | `"catl-lmp-300mwh"` | registry key |
-| `battery.capacity_mwh` | `300` | §3 |
-| `battery.max_charge_mw` | `60` | §3 |
-| `battery.max_discharge_mw` | `60` | §3 |
+| `battery.capacity_mwh` | **`294.5`** | §1 overview (294.5 MWh) |
+| `battery.max_charge_mw` | **`98.16`** | §1 overview (98.16 MW) |
+| `battery.max_discharge_mw` | **`98.16`** | §1 overview (98.16 MW) |
 | `grid.pcc.assetId` | valid key in registry | |
 | `terrain.assetId` | valid key in registry | |
 
 All `assetId` values **must** be valid keys in `ASSET_REGISTRY.assets`.
+
+These nameplates feed `SiteScene`'s flow-line normalization (`site_max_mw`); incorrect values
+would mis-scale every power-flow animation.
 
 ### `ASSET_REGISTRY: AssetRegistry`
 
@@ -176,7 +233,10 @@ export const ASSET_REGISTRY = rawRegistry as unknown as AssetRegistry;
 ```
 
 **Acceptance criteria (§T8, §T9):**
-- §T8: `GANSU_SITE_CONFIG.site_id === 'gansu'`, `turbines.length >= 1`, and
+- §T8: `GANSU_SITE_CONFIG.site_id === 'gansu'`, `turbines.length >= 1`,
+  `wind_capacity_mw === 615`, `solar_capacity_mw === 330`,
+  `battery.capacity_mwh === 294.5`, `battery.max_charge_mw === 98.16`,
+  `battery.max_discharge_mw === 98.16`, and
   `ASSET_REGISTRY.assets[GANSU_SITE_CONFIG.battery.assetId]` is defined.
 - §T9: `ASSET_REGISTRY` deep-equals the raw import of `assets/3d/registry.json`.
 
