@@ -50,3 +50,20 @@ describe("RB.4 — scripts/copy_registry.js mentions dest path", () => {
     expect(content).toContain("src/config/registryData.json");
   });
 });
+
+// ─── reviewer (frontend-reviewer): RB.5 — the copy MECHANISM actually works ──
+// RB.1–4 are structural (plugin name, hook-is-a-function, script source contains path strings) —
+// none execute the copy. §T9 verifies content only indirectly (and only if the plugin/hook ran in
+// that test invocation). RB.5 invokes the hook directly and asserts the produced registryData.json
+// is byte-equal content to the canonical registry — the behaviour the whole PR exists to provide.
+describe("RB.5 (reviewer) — configResolved() copies registry.json → registryData.json (content identical)", () => {
+  it("after configResolved(), src/config/registryData.json deep-equals assets/3d/registry.json", async () => {
+    const { registryBuildPlugin } = await import("../../src/config/registryBuildPlugin");
+    const { readFileSync } = await import("fs");
+    // Invoke the plugin's copy hook directly — no Vite/Vitest config wiring needed.
+    (registryBuildPlugin.configResolved as () => void)();
+    const copied = JSON.parse(readFileSync("src/config/registryData.json", "utf8"));
+    const canonical = JSON.parse(readFileSync("assets/3d/registry.json", "utf8"));
+    expect(copied).toEqual(canonical);
+  });
+});
