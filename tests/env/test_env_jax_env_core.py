@@ -1027,3 +1027,125 @@ class TestReviewerPerSourceFlowIdentities:
         lhs = (float(info.p_bat_to_load_mw) + float(info.p_bat_to_grid_mw)
                + float(info.p_bat_curtailed_mw))
         assert abs(lhs - float(info.p_bat_dis_mw)) < 1e-3
+
+
+class TestImportCapPriority:
+    # reviewer: F-IMPORT discriminating test — backend-reviewer PR #33 audit.
+    # reviewer: Verifies §3.6 rule #9 load-first priority when
+    # reviewer: load_deficit < max_import < load_deficit + P_grid_to_bat_raw.
+    # reviewer: Old (wrong) code gave battery first claim; new code serves load first.
+
+    def test_load_served_before_battery_under_import_cap(self):
+        """reviewer: Discriminating scenario: load_deficit=350, bat_raw=98.16,
+        reviewer: max_import=400 → 350 < 400 < 350+98.16=448.16.
+        reviewer:
+        reviewer: Correct (load-first, §3.6 rule #9):
+        reviewer:   grid_to_load         = min(350, 400) = 350 MW
+        reviewer:   import_headroom_for_bat = 400 - 350 = 50 MW
+        reviewer:   P_grid_to_bat_actual = min(98.16, 50) = 50 MW
+        reviewer:   P_import             = 350 + 50 = 400 MW
+        reviewer:   load_unserved        = 0 MW  (zero VOLL)
+        reviewer:   c_voll_yuan          = 20000 * 0 * 1.0 = 0 ¥
+        reviewer:
+        reviewer: Wrong (battery-first, old behaviour):
+        reviewer:   P_grid_to_bat_actual = min(98.16, 400) = 98.16 MW
+        reviewer:   grid_to_load         = 400 - 98.16 = 301.84 MW
+        reviewer:   load_unserved        = 350 - 301.84 = 48.16 MW
+        reviewer:   c_voll_yuan          = 20000 * 48.16 ≈ 963,200 ¥  (spurious)
+        reviewer:
+        reviewer: Setup: nighttime (solar irr=0 → P_pv=0, wind=0 → P_wind=0),
+        reviewer: load=350 MW, a_bat=1.0 (max charge), soc=0.5.
+        reviewer: P_ch_target = 1.0 × 98.16 = 98.16 MW
+        reviewer: P_ren_to_bat = 0 → P_grid_to_bat_raw = 98.16 MW (no SOC clip at soc=0.5).
+        """
+        params = EnvParams()
+        # Nighttime: irr=0 (P_pv=0), wind=0 (P_wind=0), temp=25°C, load=350 MW
+        data = (
+            jnp.zeros((8760, 4), dtype=jnp.float32)
+            .at[0, 2].set(25.0)   # temp=25°C (irrelevant since irr=0)
+            .at[0, 3].set(350.0)  # load=350 MW
+        )
+        state = _state(soc=0.5, month_peak=0.0, t=0)
+        # a_bat=1.0 (max charge from grid), all allocation fractions=0
+        action = _action(a_bat=1.0)
+
+        _, _, _, _, info = step(state, action, params, data)
+
+        # Load fully served — no spurious VOLL
+        assert float(info.p_load_unserved_mw) == pytest.approx(0.0, abs=1e-3), (
+            "Load (350 MW) must be fully served before battery charging; "
+            f"got load_unserved={float(info.p_load_unserved_mw):.3f} MW"
+        )
+        assert float(info.c_voll_yuan) == pytest.approx(0.0, abs=1.0), (
+            f"Zero VOLL expected; got c_voll={float(info.c_voll_yuan):.1f} ¥"
+        )
+        # Battery charging reduced to remaining headroom: 400 - 350 = 50 MW
+        assert float(info.p_grid_to_bat_mw) == pytest.approx(50.0, abs=1e-3), (
+            "Battery import headroom = 400 - 350 = 50 MW; "
+            f"got p_grid_to_bat={float(info.p_grid_to_bat_mw):.3f} MW"
+        )
+        # Total import at cap
+        assert float(info.p_import_mw) == pytest.approx(400.0, abs=1e-3), (
+            "P_import = 350 + 50 = 400 MW (at cap); "
+            f"got p_import={float(info.p_import_mw):.3f} MW"
+        )
+
+    def test_no_spurious_voll_when_load_exactly_at_import_limit(self):
+        """reviewer: Edge: load_deficit == max_import → battery gets zero headroom.
+        reviewer:
+        reviewer:   load_deficit = 400 MW (= max_import), P_grid_to_bat_raw = 98.16 MW
+        reviewer:   grid_to_load         = min(400, 400) = 400 MW
+        reviewer:   import_headroom_for_bat = 400 - 400 = 0 MW
+        reviewer:   P_grid_to_bat_actual = min(98.16, 0) = 0 MW
+        reviewer:   P_import             = 400 + 0 = 400 MW
+        reviewer:   load_unserved        = 0 MW
+        reviewer:   c_voll_yuan          = 0 ¥
+        """
+        params = EnvParams()
+        data = (
+            jnp.zeros((8760, 4), dtype=jnp.float32)
+            .at[0, 2].set(25.0)
+            .at[0, 3].set(400.0)  # load == max_import
+        )
+        state = _state(soc=0.5, month_peak=0.0, t=0)
+        action = _action(a_bat=1.0)
+
+        _, _, _, _, info = step(state, action, params, data)
+
+        assert float(info.p_load_unserved_mw) == pytest.approx(0.0, abs=1e-3), (
+            "Load at import limit: zero unserved"
+        )
+        assert float(info.p_grid_to_bat_mw) == pytest.approx(0.0, abs=1e-3), (
+            "Battery gets zero headroom when load uses full import cap"
+        )
+        assert float(info.p_import_mw) == pytest.approx(400.0, abs=1e-3)
+
+    def test_load_shed_only_when_load_exceeds_import_limit(self):
+        """reviewer: Edge: load_deficit > max_import → battery gets zero, load is shed.
+        reviewer:
+        reviewer:   load_deficit = 500 MW, P_grid_to_bat_raw = 98.16 MW, max_import = 400 MW
+        reviewer:   grid_to_load         = min(500, 400) = 400 MW
+        reviewer:   load_unserved        = 500 - 400 = 100 MW
+        reviewer:   import_headroom_for_bat = 400 - 400 = 0 MW
+        reviewer:   P_grid_to_bat_actual = 0 MW
+        reviewer:   P_import             = 400 MW
+        reviewer:   c_voll_yuan          = 20000 * 100 * 1.0 = 2,000,000 ¥
+        """
+        params = EnvParams()
+        data = (
+            jnp.zeros((8760, 4), dtype=jnp.float32)
+            .at[0, 2].set(25.0)
+            .at[0, 3].set(500.0)  # load > max_import
+        )
+        state = _state(soc=0.5, month_peak=0.0, t=0)
+        action = _action(a_bat=1.0)
+
+        _, _, _, _, info = step(state, action, params, data)
+
+        # load_unserved = 500 - 400 = 100 MW
+        assert float(info.p_load_unserved_mw) == pytest.approx(100.0, abs=1e-3)
+        # battery gets no import when load already consumes the full cap
+        assert float(info.p_grid_to_bat_mw) == pytest.approx(0.0, abs=1e-3)
+        assert float(info.p_import_mw) == pytest.approx(400.0, abs=1e-3)
+        # c_voll = 20000 * 100 * 1.0 = 2,000,000 ¥
+        assert float(info.c_voll_yuan) == pytest.approx(2_000_000.0, rel=1e-4)

@@ -443,14 +443,10 @@ def env_step(
     p_import_required     = grid_to_load_required + p_g2b
 
     if p_import_required > params.grid_max_import_mw:
-        if params.grid_max_import_mw < p_g2b:
-            # Import limit < battery charge demand → battery partially starved, load fully shed
-            p_g2b_actual  = params.grid_max_import_mw
-            grid_to_load  = 0.0
-        else:
-            # Import limit ≥ p_g2b → honour battery charge, cap load
-            p_g2b_actual  = p_g2b
-            grid_to_load  = min(grid_to_load_required, params.grid_max_import_mw - p_g2b)
+        # §3.6 row 9: load has first claim on import headroom
+        grid_to_load            = min(grid_to_load_required, params.grid_max_import_mw)
+        import_headroom_for_bat = max(0.0, params.grid_max_import_mw - grid_to_load)
+        p_g2b_actual            = min(p_g2b, import_headroom_for_bat)
 
         load_unserved = (load
                          - p_wind_to_load - p_solar_to_load

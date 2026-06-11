@@ -154,6 +154,9 @@ class EnvInfo(NamedTuple):
     p_bat_curtailed_mw:  jax.Array  # battery curtailed at PCC (non-zero when bat_to_grid > export headroom)
     p_grid_to_bat_mw:    jax.Array  # grid → battery (actual, after import cap)
     p_grid_to_load_mw:   jax.Array  # grid → load
+    # ---- Constraint-signal bools (for harness telemetry, no physics recompute needed) ----
+    load_capped:        jax.Array   # bool — True when load-cap scaling was applied (P_to_load_total > load_mw)
+    import_cap_active:  jax.Array   # bool — True when import cap reduced grid_to_bat with load fully served
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +369,7 @@ def step(
         load_mw / (P_to_load_total + 1e-30),
         1.0,
     )
+    load_capped = P_to_load_total > load_mw
 
     P_sol_to_load  = P_sol_to_load_raw  * scale_to_load
     P_wind_to_load = P_wind_to_load_raw * scale_to_load
@@ -419,23 +423,24 @@ def step(
     P_bat_curtailed  = P_bat_to_grid_pre_curt  - P_bat_to_grid
 
     # ------------------------------------------------------------------
-    # STEP 7 — Grid import (§3.6 rule #9)
+    # STEP 7 — Grid import (§3.6 rule #9): load-first priority
+    # "Load served first, then battery charging reduced, then load shed."
     # ------------------------------------------------------------------
     P_load_served_no_grid = P_sol_to_load + P_wind_to_load + P_bat_to_load
     load_deficit   = jnp.maximum(0.0, load_mw - P_load_served_no_grid)
-    P_import_raw   = load_deficit + P_grid_to_bat_raw
-    P_import_avail = jnp.minimum(P_import_raw, params.grid_max_import_mw)
 
-    # If import is capped: reduce grid-to-bat first (down to 0), then shed load
-    P_grid_to_bat_actual = jnp.minimum(P_grid_to_bat_raw, P_import_avail)
-    P_grid_to_bat_actual = jnp.maximum(0.0, P_grid_to_bat_actual)
+    # Load has first claim on import headroom (up to max_import_mw)
+    grid_to_load  = jnp.minimum(load_deficit, params.grid_max_import_mw)
+    load_unserved = jnp.maximum(0.0, load_deficit - grid_to_load)
 
-    grid_to_load    = jnp.maximum(0.0, P_import_avail - P_grid_to_bat_actual)
-    P_load_served   = P_load_served_no_grid + grid_to_load
-    load_unserved   = jnp.maximum(0.0, load_mw - P_load_served)
+    # Battery charging gets whatever headroom remains after load is served
+    import_headroom_for_bat = jnp.maximum(0.0, params.grid_max_import_mw - grid_to_load)
+    P_grid_to_bat_actual    = jnp.minimum(P_grid_to_bat_raw, import_headroom_for_bat)
+    P_grid_to_bat_actual    = jnp.maximum(0.0, P_grid_to_bat_actual)
+    import_cap_active = (load_unserved < 1e-6) & (P_grid_to_bat_actual < P_grid_to_bat_raw - 1e-6)
 
-    # Recompute consistent P_import
-    P_import = grid_to_load + P_grid_to_bat_actual
+    P_load_served = P_load_served_no_grid + grid_to_load
+    P_import      = grid_to_load + P_grid_to_bat_actual
 
     # ------------------------------------------------------------------
     # STEP 8 — Price lookup (D7, D8)
@@ -537,6 +542,8 @@ def step(
         p_bat_curtailed_mw  = P_bat_curtailed,
         p_grid_to_bat_mw    = P_grid_to_bat_actual,
         p_grid_to_load_mw   = grid_to_load,
+        load_capped         = load_capped,
+        import_cap_active   = import_cap_active,
     )
 
     return new_state, obs, reward, done, info

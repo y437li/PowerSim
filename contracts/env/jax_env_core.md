@@ -170,6 +170,9 @@ class EnvInfo(NamedTuple):
     # Grid source
     p_grid_to_bat_mw:    jax.Array   # grid → battery (actual, after import cap; ≤ P_grid_to_bat_raw)
     p_grid_to_load_mw:   jax.Array   # grid → load (after import cap)
+    # ---- Constraint-signal bools (additive, for harness; no physics recompute in harness) ----
+    load_capped:        jax.Array   # bool — True when load-cap scaling applied (§5.3.5 STEP 4)
+    import_cap_active:  jax.Array   # bool — True when import cap reduced grid_to_bat, load fully served
 ```
 
 **Per-source identity checks (must hold for any step output):**
@@ -178,6 +181,10 @@ p_curtailed_mw == p_sol_curtailed_mw + p_wind_curtailed_mw + p_bat_curtailed_mw
 p_import_mw == p_grid_to_bat_mw + p_grid_to_load_mw
 p_export_mw == p_sol_to_grid_mw + p_wind_to_grid_mw + p_bat_to_grid_mw
 ```
+
+**Constraint signal semantics:**
+- `load_capped`: `P_to_load_total > load_mw` before proportional scaling
+- `import_cap_active`: `(load_unserved < 1e-6) & (P_grid_to_bat_actual < P_grid_to_bat_raw - 1e-6)` — cap reduced battery charging with zero load shed
 
 ### 3.4 `SyntheticYear` type alias
 
