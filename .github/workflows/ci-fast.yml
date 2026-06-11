@@ -1,4 +1,14 @@
-name: ci
+# Energy GO CI — FAST tier (D30).
+# This is the REQUIRED status check: it runs on EVERY pull_request and on push:[main].
+# No `paths:` filter — it always runs. Target wall-clock < 10 min.
+#
+# It deselects slow+acceptance tests (`-m "not slow"`). Heavy compute (env battery,
+# full-year parity, large JAX compile) and real-install/venv acceptance run in the
+# conditional `ci-slow-env` / `ci-slow-acceptance` workflows + nightly.
+#
+# Merge-gate model (CLAUDE.md, D30): CI is an EARLY SIGNAL, not the gate. The
+# authoritative merge gate is QA's local qa-verification run + reviewer APPROVE.
+name: ci-fast
 
 on:
   pull_request:
@@ -6,7 +16,7 @@ on:
     branches: [main]
 
 jobs:
-  checks:
+  fast:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,27 +32,9 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-
-      - name: Install Python 3.11 via uv (acceptance-test toolchain)
-        # install_app.sh uses `uv venv --python 3.11`; without this step uv cannot
-        # locate CPython 3.11 and exits 3 (dependency install failed) before any
-        # port-binding logic can run, causing test_acceptance_launch_exit5 to see
-        # exit 3 instead of exit 5.
-        run: uv python install 3.11
-
-      - name: Regenerate package-lock.json for Linux
-        # package-lock.json is committed from macOS and omits @rollup/rollup-linux-x64-gnu.
-        # npm ci inside install_app.sh (acceptance test) fails with exit 3 on Linux unless
-        # the lock is regenerated here.  The Frontend-tests step already does this; this
-        # pre-step makes the lock Linux-compatible before the Python acceptance tests copy
-        # it from REPO_ROOT into their tmp dirs.
-        run: |
-          if [ -f package.json ]; then
-            rm -f package-lock.json
-            npm install --package-lock-only --ignore-scripts
-          fi
+      # NOTE: the `uv python install 3.11` + Linux package-lock regen steps that the
+      # old single job carried live in ci-slow-acceptance.yml now — they are
+      # prerequisites of the §9.5 acceptance tests ONLY, not of the fast tier.
 
       - name: Telemetry schema validation (golden examples)
         shell: bash
@@ -52,14 +44,14 @@ jobs:
           # PYTHONPATH makes it importable without a heavy jax install.
           PYTHONPATH=src python scripts/validate_telemetry.py --examples
 
-      - name: Python tests
+      - name: Python tests (fast — deselect slow+acceptance)
         shell: bash
         run: |
           if [ -d tests ] && find tests -name 'test_*.py' | grep -q .; then
             if [ -f pyproject.toml ]; then
               # --no-deps on the package itself skips sbx-rl (heavy optional training lib);
               # jax[cpu]+jaxlib, serving, and training framework deps are installed explicitly
-              # so the training suite (78 tests) and serving suite execute in CI.
+              # so the training suite and serving suite execute in CI.
               pip install --no-deps -e .
               pip install \
                 "pytest>=8.0" "pytest-asyncio>=0.23" "anyio>=4.0" "pytest-xdist>=3.5" \
@@ -70,7 +62,8 @@ jobs:
             else
               pip install pytest jax numpy
             fi
-            pytest tests/ -q
+            # `not slow` excludes BOTH heavy-compute (slow) and acceptance (slow+acceptance).
+            pytest tests/ -m "not slow" -q
           else
             echo "No Python tests yet — skipping"
           fi

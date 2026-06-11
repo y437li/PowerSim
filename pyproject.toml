@@ -84,5 +84,6 @@ python_functions = ["test_*"]
 addopts = "-q"
 asyncio_mode = "auto"
 markers = [
-    "slow: marks tests as slow (full install + venv creation); deselect with -m 'not slow'",
+    "slow: heavy-compute tests excluded from the required `fast` CI job — full env battery, large JAX compile/vmap, full-year 8760-step JAX<->reference parity, AND real-install/venv acceptance (which are ALSO marked `acceptance`). Deselect with -m 'not slow' (D30).",
+    "acceptance: real-install / venv / subprocess §9.5 acceptance tests (install_app/run_app). These are ALSO marked `slow` (so `not slow` excludes them too); the conditional `slow-acceptance` CI job selects them with -m 'acceptance' (D30).",
 ]

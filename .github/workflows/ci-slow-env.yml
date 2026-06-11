@@ -1,0 +1,62 @@
+# Energy GO CI — SLOW-ENV tier (D30).
+# Heavy-compute env/training tests: full env battery, large JAX compile/vmap,
+# full-year 8760-step JAX<->reference parity. Selected with `-m "slow and not acceptance"`
+# and parallelised with pytest-xdist (`-n auto`).
+#
+# NOT a required check — CI is an early signal, not the merge gate (CLAUDE.md, D30).
+#
+# Triggers (workflow-level `paths:` gating — the simplest robust per-job filter is a
+# dedicated workflow file keyed by paths; see D30):
+#   - pull_request ONLY when env/generators/reference/training source or their tests change;
+#   - nightly cron + push:[main] always (these have no paths filter and run regardless).
+name: ci-slow-env
+
+on:
+  pull_request:
+    paths:
+      - "src/energy_go/env/**"
+      - "src/energy_go/generators/**"
+      - "src/reference/**"
+      - "tests/env/**"
+      - "tests/shared/**"
+      - "src/energy_go/training/**"
+      # also re-run if the marker taxonomy / deps change:
+      - "pyproject.toml"
+      - ".github/workflows/ci-slow-env.yml"
+  push:
+    branches: [main]
+  schedule:
+    # Nightly safety net (07:00 UTC). Same time as ci-nightly's full suite.
+    - cron: "0 7 * * *"
+
+jobs:
+  slow-env:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Slow env/parity tests (compute toolchain)
+        shell: bash
+        run: |
+          if [ -d tests ] && find tests -name 'test_*.py' | grep -q .; then
+            # --no-deps on the package skips sbx-rl; the compute deps (jax[cpu]+flax+optax+
+            # flashbax + numpy) are what the env battery / full-year parity / JAX compile
+            # tests need. No frontend/acceptance toolchain here.
+            pip install --no-deps -e .
+            pip install \
+              "pytest>=8.0" "pytest-xdist>=3.5" \
+              "numpy>=1.26" "pyyaml>=6.0" "jsonschema>=4.21" \
+              "jax[cpu]>=0.4.25" "flax>=0.8.0" "optax>=0.2.0" "flashbax>=0.1.0"
+            # `slow and not acceptance` = heavy compute only (acceptance runs in ci-slow-acceptance).
+            # -n auto parallelises across cores via pytest-xdist.
+            # TODO(D30): if PR #33's full-year 8760-step parity makes even `-n auto` exceed
+            # ~50 min, the longest-horizon tests may need an additional nightly-only marker
+            # (e.g. `nightly`) — do NOT invent it now; this job runs nightly anyway as a net.
+            pytest tests/ -m "slow and not acceptance" -q -n auto
+          else
+            echo "No Python tests yet — skipping"
+          fi

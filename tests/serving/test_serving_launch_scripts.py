@@ -529,6 +529,7 @@ def installed_serving_cpu(tmp_path_factory):
 
 
 @pytest.mark.slow
+@pytest.mark.acceptance
 @skip_on_windows
 def test_idempotent_rerun_is_noop_sh(installed_serving_cpu):
     """Second identical run exits 0 and prints 'up to date' or 'nothing to do'."""
@@ -552,6 +553,7 @@ def test_idempotent_rerun_is_noop_sh(installed_serving_cpu):
 
 
 @pytest.mark.slow
+@pytest.mark.acceptance
 @skip_on_windows
 def test_idempotent_does_not_delete_config_sh(installed_serving_cpu):
     """Idempotent rerun must never delete config/ files (§9.4)."""
@@ -566,6 +568,7 @@ def test_idempotent_does_not_delete_config_sh(installed_serving_cpu):
 
 
 @pytest.mark.slow
+@pytest.mark.acceptance
 @skip_on_windows
 def test_uninstall_removes_venv_sh(installed_serving_cpu):
     """--uninstall removes .venv/ and .run/ but not config/."""
@@ -588,6 +591,7 @@ def test_uninstall_removes_venv_sh(installed_serving_cpu):
 
 
 @pytest.mark.slow
+@pytest.mark.acceptance
 @skip_on_windows
 def test_uninstall_preserves_config_sh(installed_serving_cpu):
     """--uninstall must not remove config/ (§9.4)."""
@@ -597,6 +601,7 @@ def test_uninstall_preserves_config_sh(installed_serving_cpu):
 
 
 @pytest.mark.slow
+@pytest.mark.acceptance
 @skip_on_windows
 def test_purge_without_uninstall_exits_1_sh(tmp_path):
     """--purge alone (without --uninstall) must exit 1."""
@@ -925,6 +930,7 @@ class TestNoSecretsInScripts:
 
 
 @pytest.mark.slow
+@pytest.mark.acceptance
 @skip_on_windows
 def test_acceptance_serving_cpu_creates_venv_sh(tmp_path):
     """§9.5: install serving + cpu --no-launch produces a .venv with serving deps."""
@@ -965,6 +971,7 @@ def test_acceptance_serving_cpu_creates_venv_sh(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.acceptance
 @skip_on_windows
 def test_acceptance_training_no_node_sh(tmp_path):
     """§9.5: --server-type training --no-launch installs training deps and no Node/frontend."""
@@ -998,6 +1005,7 @@ def test_acceptance_training_no_node_sh(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.acceptance
 @skip_on_windows
 def test_acceptance_serving_idempotent_second_run_sh(tmp_path):
     """§9.5: re-running serving install is idempotent (second run exits 0, no changes)."""
@@ -1095,6 +1103,7 @@ class TestRunStateFiles:
     """
 
     @pytest.mark.slow
+    @pytest.mark.acceptance
     @skip_on_windows
     def test_pids_json_valid_after_launch(self, tmp_path):
         """If a server is launched, .run/pids.json must be valid JSON."""
@@ -1126,6 +1135,7 @@ class TestRunStateFiles:
 
 
 @pytest.mark.slow
+@pytest.mark.acceptance
 @skip_on_windows
 def test_acceptance_serving_venv_excludes_training_deps_sh(tmp_path):
     """T1: serving install must NOT install optax, flax, or sbx in the venv.
@@ -1173,6 +1183,7 @@ def test_acceptance_serving_venv_excludes_training_deps_sh(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.acceptance
 @skip_on_windows
 def test_acceptance_serving_builds_frontend_bundle_sh(tmp_path):
     """T3: serving install must produce a built frontend bundle (dist/ or configured output).
@@ -1237,6 +1248,7 @@ def test_acceptance_serving_builds_frontend_bundle_sh(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.acceptance
 @skip_on_windows
 def test_acceptance_launch_exit5_on_bound_port_sh(tmp_path):
     """T6: launching with an already-bound port must exit 5 (contract §10 code 5).
@@ -1294,6 +1306,7 @@ def test_acceptance_launch_exit5_on_bound_port_sh(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.acceptance
 @skip_on_windows
 def test_acceptance_jax_importable_in_serving_venv_sh(tmp_path):
     """T7: after serving install, `import jax` must succeed inside the venv (B3).
@@ -1362,6 +1375,7 @@ def test_health_endpoint_gap_acknowledged():
 
 
 @pytest.mark.slow
+@pytest.mark.acceptance
 @skip_on_windows
 def test_purge_preserves_config_but_removes_checkpoints_sh(tmp_path):
     # reviewer: the suite pins uninstall-preserves-config but NOT the riskier

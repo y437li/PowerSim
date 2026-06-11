@@ -1,0 +1,89 @@
+# Energy GO CI — NIGHTLY tier (D30).
+# Safety net: runs the FULL suite (no `-m` deselect) so nothing silently rots between
+# the path-filtered slow tiers. Cron only, on the default branch.
+#
+# NOT a required check. Carries the union of every toolchain (compute + acceptance +
+# frontend) because it runs everything.
+name: ci-nightly
+
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch: {}  # allow manual full-suite runs
+
+jobs:
+  nightly:
+    # Cron on main only: guard against forks/branches inheriting the schedule.
+    if: github.repository == 'y437li/PowerSim'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Convention checks
+        run: bash scripts/check_conventions.sh
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install Python 3.11 via uv (acceptance-test toolchain)
+        run: uv python install 3.11
+
+      - name: Regenerate package-lock.json for Linux
+        run: |
+          if [ -f package.json ]; then
+            rm -f package-lock.json
+            npm install --package-lock-only --ignore-scripts
+          fi
+
+      - name: Telemetry schema validation (golden examples)
+        shell: bash
+        run: |
+          pip install "jsonschema>=4.21"
+          PYTHONPATH=src python scripts/validate_telemetry.py --examples
+
+      - name: Python tests (FULL suite — no deselect)
+        shell: bash
+        run: |
+          if [ -d tests ] && find tests -name 'test_*.py' | grep -q .; then
+            pip install --no-deps -e .
+            pip install \
+              "pytest>=8.0" "pytest-asyncio>=0.23" "anyio>=4.0" "pytest-xdist>=3.5" \
+              "fastapi>=0.110" "httpx>=0.27" "starlette>=0.36" \
+              "pyyaml>=6.0" "numpy>=1.26" "websockets>=12" "uvicorn[standard]>=0.29" \
+              "jsonschema>=4.21" \
+              "jax[cpu]>=0.4.25" "flax>=0.8.0" "optax>=0.2.0" "flashbax>=0.1.0"
+            # Full suite incl. both slow tiers — the safety net.
+            pytest tests/ -q
+          else
+            echo "No Python tests yet — skipping"
+          fi
+
+      - name: Frontend tests
+        shell: bash
+        run: |
+          if [ -f package.json ] && find tests -name '*.test.ts*' 2>/dev/null | grep -q .; then
+            rm -f package-lock.json
+            npm install
+            npm test
+          else
+            echo "No frontend tests yet — skipping"
+          fi
+
+      - name: Registry committed-copy drift check
+        shell: bash
+        run: |
+          if [ -f assets/3d/registry.json ] && [ -f src/config/registryData.json ]; then
+            node scripts/copy_registry.js
+            git diff --exit-code src/config/registryData.json || \
+              (echo "ERROR: src/config/registryData.json is stale — re-run 'node scripts/copy_registry.js' and commit the result" && exit 1)
+          else
+            echo "Registry drift check skipped (partial checkout or file absent)"
+          fi
