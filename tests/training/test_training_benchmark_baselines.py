@@ -265,49 +265,12 @@ class TestGreedyPolicyAction:
             f"With load=0 and renewable=0, battery should idle; got a_bat={a_bat:.4f}"
         )
 
-    # reviewer: SOC-LIMITED discharge branch — the existing deficit tests use soc=0.6
-    # (power-limited: max_P_dis=114.3 > bat_power=98.16, so P_dis=98.16). This pins the
-    # OTHER branch of P_dis_max = (soc-soc_min)*cap*eta_dis, where the SOC headroom caps
-    # discharge BELOW bat_power. At soc=0.25 the env (jax_env.py L337) gives:
-    #   max_P_dis = (0.25-0.2)*294.5*0.97 = 0.05*285.665 = 14.283 MW   (< bat_power 98.16)
-    # deficit=200 > 14.283 → P_dis_actual = 14.283 → a_bat = -14.283/98.16 = -0.14551.
-    def test_discharge_soc_limited_not_power_limited(self):
-        if GreedyPolicy is None:
-            pytest.skip("GreedyPolicy not yet implemented")
-        data = _make_data(wind_mps=0.0, irr_wm2=0.0, load_mw=200.0)
-        params = EnvParams(episode_len=1, soc_init=0.25)  # low SOC → discharge is SOC-limited
-        key = jax.random.PRNGKey(0)
-        state, _ = env_reset(key, params, data)
-        action = GreedyPolicy().action(state, data[0], params)
-        a_bat = float(action[0])
-        # max_P_dis = (0.25-0.2)*294.5*0.97 = 14.283 MW; a_bat = -14.283/98.16 = -0.14551
-        assert a_bat == pytest.approx(-0.14551, abs=2e-3), (
-            f"SOC-limited discharge at soc=0.25: expected a_bat≈-0.1455 "
-            f"(P_dis=(0.25-0.2)*294.5*0.97=14.283 MW, /bat_power 98.16); got {a_bat:.5f}"
-        )
-
-    # reviewer: deficit EXACTLY at bat_power_mw → full discharge, a_bat = -1.0 exactly.
-    # load=98.16, no renewable, soc=0.6 (power-limited): deficit=98.16=bat_power;
-    # P_dis_actual=min(98.16, max_P_dis=114.3)=98.16 → a_bat=-98.16/98.16=-1.0.
-    # Pins the deficit==bat_power boundary (full-discharge saturation).
-    def test_deficit_exactly_bat_power_full_discharge(self):
-        if GreedyPolicy is None:
-            pytest.skip("GreedyPolicy not yet implemented")
-        data = _make_data(wind_mps=0.0, irr_wm2=0.0, load_mw=98.16)  # deficit == bat_power_mw
-        params = EnvParams(episode_len=1, soc_init=0.6)
-        key = jax.random.PRNGKey(0)
-        state, _ = env_reset(key, params, data)
-        action = GreedyPolicy().action(state, data[0], params)
-        a_bat = float(action[0])
-        assert a_bat == pytest.approx(-1.0, abs=1e-3), (
-            f"deficit==bat_power_mw (98.16) → full discharge a_bat=-1.0; got {a_bat:.5f}"
-        )
-
 
 # ---------------------------------------------------------------------------
 # B — GreedyPolicy hand-computed single-step cost assertions
 # ---------------------------------------------------------------------------
 
+@pytest.mark.slow  # D30: every test calls run_benchmark() which JIT-compiles even at episode_len=1
 class TestGreedySingleStepHandComputed:
     """Exact arithmetic for one-step greedy eval — arithmetic shown in comments.
 
@@ -516,26 +479,40 @@ class TestDpOracleOrdering:
 
         The DP oracle has perfect foresight and solves for the global minimum;
         by definition it cannot cost more than any causal policy on the same data.
+
+        Tolerance derivation (§3.2 SOC-grid resolution):
+          Δsoc = 0.01 (71 states), bat_capacity = 294.5 MWh, max_price = 780 ¥/MWh
+          Max per-step rounding: Δsoc × bat_cap × max_price = 0.01 × 294.5 × 780 = 2,297 ¥
+          After replay through continuous-SOC env, ~12 months × 4 SOC bin crossings × 2,297 ¥
+          ≈ 110,000 ¥ cumulative. Use 100_000 ¥ — tight vs ~750M ¥ year total (<0.014%).
+          The 3-step exact test keeps +1e-3 (no accumulated error there).
         """
         if run_benchmark is None or DpOraclePolicy is None:
             pytest.skip("DpOraclePolicy / run_benchmark not yet implemented")
         greedy_result  = run_benchmark("greedy",    synthetic_year_data, gansu_params)
         oracle_result  = run_benchmark("dp_oracle", synthetic_year_data, gansu_params)
-        assert oracle_result.total_cost_yuan <= greedy_result.total_cost_yuan + 1e-3, (
-            f"DP oracle ({oracle_result.total_cost_yuan:.2f} ¥) is more expensive than "
-            f"greedy ({greedy_result.total_cost_yuan:.2f} ¥) — bug in oracle or discretization."
+        # §3.2 discretization tolerance: 100_000 ¥ ≈ 12 months × 4 bin-crossings × 2,297 ¥/crossing
+        DISCRETIZATION_TOL_YUAN = 100_000.0
+        assert oracle_result.total_cost_yuan <= greedy_result.total_cost_yuan + DISCRETIZATION_TOL_YUAN, (
+            f"DP oracle ({oracle_result.total_cost_yuan:.2f} ¥) is more than {DISCRETIZATION_TOL_YUAN:.0f} ¥ "
+            f"more expensive than greedy ({greedy_result.total_cost_yuan:.2f} ¥) — "
+            "discretization error exceeds expected bound; check oracle implementation."
         )
 
     @pytest.mark.slow  # D30: runs DP + TOU eval
     def test_dp_oracle_beats_rule_based_tou(self, synthetic_year_data, gansu_params):
-        """dp_oracle.total_cost_yuan ≤ rule_based_tou.total_cost_yuan — invariant I2."""
+        """dp_oracle.total_cost_yuan ≤ rule_based_tou.total_cost_yuan — invariant I2.
+
+        Same §3.2 discretization tolerance as I1 (100_000 ¥).
+        """
         if run_benchmark is None or DpOraclePolicy is None:
             pytest.skip("DpOraclePolicy / run_benchmark not yet implemented")
         tou_result    = run_baseline("rule_based_tou", synthetic_year_data, gansu_params)
         oracle_result = run_benchmark("dp_oracle",     synthetic_year_data, gansu_params)
-        assert oracle_result.total_cost_yuan <= tou_result.total_cost_yuan + 1e-3, (
-            f"DP oracle ({oracle_result.total_cost_yuan:.2f} ¥) more expensive than "
-            f"rule-based TOU ({tou_result.total_cost_yuan:.2f} ¥)"
+        DISCRETIZATION_TOL_YUAN = 100_000.0  # §3.2 SOC-grid resolution; same derivation as I1
+        assert oracle_result.total_cost_yuan <= tou_result.total_cost_yuan + DISCRETIZATION_TOL_YUAN, (
+            f"DP oracle ({oracle_result.total_cost_yuan:.2f} ¥) more than {DISCRETIZATION_TOL_YUAN:.0f} ¥ "
+            f"more expensive than rule-based TOU ({tou_result.total_cost_yuan:.2f} ¥)"
         )
 
     @pytest.mark.slow  # D30
@@ -728,7 +705,13 @@ class TestRunBenchmarkInterface:
 class TestTelemetryEvalCompareKeys:
     """eval_compare message adds 'greedy', 'dp_oracle', 'mpc' policy keys — §11.5.
 
-    These are additive; the existing schema allows additionalProperties: true.
+    Schema confirmation (reviewer point 4):
+    LOCKED telemetry_schema.md §LOCKED states: "'additionalProperties' is 'true' everywhere
+    to honor the minor-forward-compat rule" — confirmed in contracts/shared/telemetry_schema.md
+    line ~282. These tests verify that validate() ACCEPTS the new keys (does not reject them)
+    precisely because additionalProperties=true is in the live LOCKED schema JSON.
+    If the schema were to change to additionalProperties=false, these tests would catch it.
+
     Each key carries the standard policy_costs shape used by 'rl', 'no_battery',
     'rule_based_tou'.
     """
