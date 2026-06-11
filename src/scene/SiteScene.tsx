@@ -23,6 +23,8 @@ import { resolveAsset } from "./registry";
 import { calcRotorOmega } from "./turbineAnimation";
 import { calcSocFill } from "./batteryAnimation";
 import { calcFlowWidth, calcFlowSpeed, calcEmissive } from "./flowAnimation";
+import { isPayloadFinite } from "./isPayloadFinite";
+import { SceneContent } from "./SceneContent";
 
 // ─── Vestas V150-4.2 default wind-curve parameters (Gansu parity) ────────────
 const DEFAULT_V_CUTIN_MPS = 3;
@@ -60,37 +62,9 @@ const FLOW_EDGES: FlowEdgeDef[] = [
   { key: "wind_curtailed",  source: "turbine-field", target: "curtailment", flowField: "wind_curtailed_mw"  },
 ];
 
-// ─── Finiteness guard (§3.3) ─────────────────────────────────────────────────
-
-/**
- * Check that every numeric field in an EnvStepPayload is finite.
- * Returns true if the message is safe to use; false if any NaN/Inf found.
- */
-function isPayloadFinite(step: EnvStepPayload): boolean {
-  // Check scalar fields
-  const scalars: number[] = [
-    step.step, step.episode, step.dt_hours,
-    step.hour_of_day, step.minute_of_hour,
-    step.wind_speed_mps, step.irradiance_wm2, step.temperature_c,
-    step.load_mw, step.price_buy_yuan_per_mwh, step.price_sell_yuan_per_mwh,
-    step.battery.soc, step.battery.p_charge_mw, step.battery.p_discharge_mw,
-    step.battery.p_max_charge_mw, step.battery.p_max_discharge_mw,
-    step.battery.soc_violation_mwh, step.battery.capacity_mwh,
-    step.generation.gross_solar_mw, step.generation.gross_wind_mw,
-    step.pcc.export_mw, step.pcc.import_mw,
-    step.pcc.max_export_mw, step.pcc.max_import_mw,
-    step.month_peak_mw, step.reward,
-  ];
-  for (const v of scalars) {
-    if (!isFinite(v)) return false;
-  }
-  // Check flows block
-  const flows = Object.values(step.flows) as number[];
-  for (const v of flows) {
-    if (!isFinite(v)) return false;
-  }
-  return true;
-}
+// ─── isPayloadFinite imported from ./isPayloadFinite (extracted in scene_graph) ─
+// (Previously defined inline here; moved to src/scene/isPayloadFinite.ts so that
+//  SceneContent can share the same guard without duplication.)
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
@@ -184,7 +158,16 @@ export function SiteScene({ config, registry, containerEl }: SiteSceneProps): Re
   const totalDrawCalls =
     turbineDrawCalls + config.pv_arrays.length + 1 /* battery */ + 1 /* pcc */ + 14; /* flow lines */
 
-  // ── 6. Canvas creation in containerEl ────────────────────────────────────
+  // ── 6. R3F root ref (shared across both canvas effects) ─────────────────
+  const r3fRootRef = useRef<{
+    render(el: React.ReactElement): void;
+    unmount(): void;
+  } | null>(null);
+
+  // ── 7. Effect 1: canvas creation + R3F root (re-runs when containerEl changes) ──
+  // On first mount, creates the canvas, loads @react-three/fiber, creates the R3F
+  // root, and fires an initial render. Cleanup unmounts the root and removes the canvas.
+  // config/registry are intentionally omitted from deps — Effect 2 handles re-renders.
   useEffect(() => {
     if (!containerEl) return;
 
@@ -193,32 +176,44 @@ export function SiteScene({ config, registry, containerEl }: SiteSceneProps): Re
     canvas.setAttribute("data-testid", "scene-canvas");
     containerEl.appendChild(canvas);
 
-    // Attempt to mount React Three Fiber renderer onto the canvas.
-    // In JSDOM / non-WebGL environments this silently no-ops — the canvas
-    // element still exists for the DOM assertions.
-    let r3fRoot: { unmount(): void } | null = null;
+    let cancelled = false;
     (async () => {
       try {
         const { createRoot } = await import("@react-three/fiber");
-        r3fRoot = createRoot(canvas);
-        // Scene graph is driven by the data bridge state; we pass nothing for now
-        // because the real scene graph is built in a follow-up once the registry is locked.
+        if (cancelled) return;
+        r3fRootRef.current = createRoot(canvas);
+        // Initial render — subsequent re-renders on config/registry change come from Effect 2
+        r3fRootRef.current.render(
+          React.createElement(SceneContent, { config, registry })
+        );
       } catch {
         // WebGL not available (test / headless environment) — canvas element suffices
       }
     })();
 
     return () => {
-      if (r3fRoot) {
-        try { r3fRoot.unmount(); } catch { /* ignore */ }
+      cancelled = true;
+      if (r3fRootRef.current) {
+        try { r3fRootRef.current.unmount(); } catch { /* ignore */ }
+        r3fRootRef.current = null;
       }
       if (canvas.parentNode === containerEl) {
         containerEl.removeChild(canvas);
       }
     };
-  }, [containerEl]);
+  }, [containerEl]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── 7. Render data bridge ─────────────────────────────────────────────────
+  // ── 8. Effect 2: re-render when config or registry changes ───────────────
+  // SceneContent reads live telemetry via useTelemetryStore internally, so only
+  // config/registry changes (typically static) need to trigger a new render call.
+  useEffect(() => {
+    if (!r3fRootRef.current) return;
+    r3fRootRef.current.render(
+      React.createElement(SceneContent, { config, registry })
+    );
+  }, [config, registry]);
+
+  // ── 9. Render data bridge ─────────────────────────────────────────────────
   // Hidden div tree that exposes all animation state as data attributes.
   // Tests query these; the R3F scene reads the same state variables.
   const showOverlay = shouldShowOverlay(wsStatus, rawEnvStep);

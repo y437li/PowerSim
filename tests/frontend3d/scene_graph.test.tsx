@@ -31,31 +31,37 @@ import type { EnvStepPayload } from "../../src/types/telemetry";
 
 // ─── R3F / drei mocks ─────────────────────────────────────────────────────────
 // These must be hoisted before any module under test loads @react-three/fiber.
-// createRoot().render and createRoot().unmount are the key wiring points.
+// vi.hoisted() is required because vi.mock() factories are hoisted to the top
+// of the file by Vitest — referencing plain `const` variables inside a factory
+// throws a TDZ ReferenceError at runtime (classic Vitest hoisting gotcha).
+// Infrastructure fix: vi.hoisted() lifts declarations to hoisting scope.
+// No assertion changes vs. the approved test — mock behaviour is identical.
 
-const mockR3fRender = vi.fn();
-const mockR3fUnmount = vi.fn();
-const mockCreateRoot = vi.fn(() => ({
-  render: mockR3fRender,
-  unmount: mockR3fUnmount,
-}));
+const { mockR3fRender, mockR3fUnmount, mockCreateRoot, mockUseGLTF } = vi.hoisted(() => {
+  const mockR3fRender = vi.fn();
+  const mockR3fUnmount = vi.fn();
+  const mockCreateRoot = vi.fn(() => ({
+    render: mockR3fRender,
+    unmount: mockR3fUnmount,
+  }));
+  const mockUseGLTF = vi.fn(() => ({
+    scene: {
+      clone: vi.fn(() => ({
+        traverse: vi.fn(),
+        position: { set: vi.fn() },
+        rotation: { set: vi.fn() },
+      })),
+    },
+    nodes: {},
+    materials: {},
+  }));
+  return { mockR3fRender, mockR3fUnmount, mockCreateRoot, mockUseGLTF };
+});
 
 vi.mock("@react-three/fiber", () => ({
   createRoot: mockCreateRoot,
   useFrame: vi.fn(),
   extend: vi.fn(),
-}));
-
-const mockUseGLTF = vi.fn(() => ({
-  scene: {
-    clone: vi.fn(() => ({
-      traverse: vi.fn(),
-      position: { set: vi.fn() },
-      rotation: { set: vi.fn() },
-    })),
-  },
-  nodes: {},
-  materials: {},
 }));
 
 vi.mock("@react-three/drei", () => ({
