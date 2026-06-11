@@ -547,6 +547,32 @@ class TestGansuParity:
             err_msg="EnvParams().price_table != PRICE_TABLE_YPW",
         )
 
+    # --- Parametrized all-fields parity sweep (future-proof gate) ---
+
+    @pytest.mark.parametrize("field", [
+        f for f in EnvParams()._fields
+        if f != "price_table"  # (24,) array — tested by test_price_table_* above
+    ])
+    def test_all_envparams_scalar_fields_parity(self, resolved, field):
+        """Every scalar EnvParams field from resolve_gansu() must equal EnvParams() default.
+
+        # reviewer: complete-by-construction parametric parity sweep (rl-architect, PR #79)
+        # Auto-covers any scalar field added to EnvParams in the future.
+        # price_table is excluded (array type, tested separately).
+        # Arithmetic: resolved values come from site YAML float literals; they must
+        # reproduce the same IEEE-754 value as the EnvParams() Python float literals.
+        # pytest.approx(rel=1e-9) catches unit-conversion bugs while allowing
+        # float representation noise in the YAML round-trip.
+        """
+        params, _, _ = resolved
+        resolved_val = getattr(params, field)
+        default_val = getattr(EnvParams(), field)
+        assert resolved_val == pytest.approx(default_val, rel=1e-9), (
+            f"EnvParams.{field}: resolve_gansu() returned {resolved_val!r}, "
+            f"expected EnvParams() default {default_val!r}. "
+            f"A composition bug or YAML round-trip error introduced a drift."
+        )
+
 
 # ===========================================================================
 # 3. TestCompositionRule — non-overridable physics raises DeviceModelError
@@ -756,6 +782,105 @@ class TestCompositionRule:
             "hub_height_m site override (120.0) must take precedence over model default (105.0)"
         )
 
+    # ---------------------------------------------------------------------------
+    # Parametrized rejection of ALL non-overridable physics fields
+    # ---------------------------------------------------------------------------
+
+    def _make_minimal_dm(self, tmp_path):
+        """Helper: write a minimal device_models.yaml with Gansu models."""
+        dm = {
+            "schema_version": "1.0.0",
+            "models": {
+                "vestas-v150-4.2": {
+                    "type": "wind_turbine",
+                    "physics": {
+                        "v_cutin_mps": 3.0, "v_rated_mps": 12.0,
+                        "v_cutout_mps": 25.0, "hub_height_m": 105.0,
+                        "rated_mw_per_unit": 4.2,
+                    },
+                    "economics": {},
+                },
+                "trina-vertex-n-670w": {
+                    "type": "pv_panel",
+                    "physics": {"k_T_per_c": -0.003, "eta_inverter": 0.97,
+                                "degradation_yr1": 0.98},
+                    "economics": {},
+                },
+                "catl-lmp-300mwh": {
+                    "type": "battery",
+                    "physics": {"eta_ch": 0.97, "eta_dis": 0.97, "soc_min": 0.2,
+                                "soc_max": 0.9, "capacity_mwh_per_unit": 300.0,
+                                "power_mw_per_unit": 100.0},
+                    "economics": {},
+                },
+                "pcc-substation-945mw": {
+                    "type": "grid_connection",
+                    "physics": {"max_export_mw": 945.0, "max_import_mw": 400.0},
+                    "economics": {},
+                },
+            },
+        }
+        dm_path = tmp_path / "device_models.yaml"
+        with open(dm_path, "w") as f:
+            yaml.dump(dm, f)
+        return dm_path
+
+    def _make_site_with_override(self, tmp_path, device, field, value):
+        """Helper: write a site YAML that illegally overrides one physics constant."""
+        # Base valid site
+        assets = {
+            "wind":    {"model": "vestas-v150-4.2",    "fleet_rated_mw": 615.0},
+            "solar":   {"model": "trina-vertex-n-670w", "fleet_capacity_mw": 330.0},
+            "battery": {"model": "catl-lmp-300mwh",
+                        "fleet_capacity_mwh": 294.5, "fleet_power_mw": 98.16},
+            "grid":    {"model": "pcc-substation-945mw"},
+        }
+        # Inject the illegal override into the correct device section
+        assets[device][field] = value
+        site = {
+            "assets": assets,
+            "tariff": {"price_table_yuan_per_mwh": list(_EXPECTED_PRICE_TABLE)},
+            "costs": {
+                "c_deg_yuan_per_mwh": 10.0, "voll_yuan_per_mwh": 20000.0,
+                "curtail_yuan_per_mwh": 800.0,
+                "demand_rate_yuan_per_mw_month": 32000.0,
+                "soc_penalty_yuan_per_mwh": 20000.0, "reward_scale": 1e-5,
+                "price_spread_yuan_per_mwh": 30.0, "price_spread_sigma": 10.0,
+            },
+            "forecast": {"sigma_max": 0.10},
+        }
+        site_path = tmp_path / "site_bad.yaml"
+        with open(site_path, "w") as f:
+            yaml.dump(site, f)
+        return site_path
+
+    @pytest.mark.parametrize("device,field,value", [
+        # wind_turbine non-overridable (§3.1)
+        ("wind",    "v_cutin_mps",  2.5),    # cut-in; illegal override (3.0 in model)
+        ("wind",    "v_rated_mps",  10.0),   # rated; illegal override (12.0 in model)
+        ("wind",    "v_cutout_mps", 20.0),   # cut-out; illegal override (25.0 in model)
+        # pv_panel non-overridable (§3.2)
+        ("solar",   "k_T_per_c",   -0.004), # temperature coeff; illegal (−0.003 in model)
+        ("solar",   "eta_inverter", 0.95),   # inverter eff; illegal (0.97 in model)
+        # battery non-overridable (§3.3 / D4)
+        ("battery", "eta_ch",  0.95),        # charge eff; illegal (0.97 in model)
+        ("battery", "eta_dis", 0.95),        # discharge eff; illegal (0.97 in model)
+        ("battery", "soc_min", 0.1),         # SOC floor; illegal (0.2 in model / D4)
+        ("battery", "soc_max", 0.95),        # SOC ceiling; illegal (0.9 in model / D4)
+    ])
+    def test_override_any_nonoverridable_field_raises(self, tmp_path, device, field, value):
+        """Every non-overridable physics constant must raise DeviceModelError if overridden.
+
+        # reviewer: per-field override rejection coverage, all 9 fields (rl-architect +
+        # backend-reviewer, PR #79).  An impl that forgets to guard a single field would
+        # pass the old 2-field test but fail here.  Parametrized so each field is an
+        # independent test case with a clear name in the failure output.
+        """
+        dm_path = self._make_minimal_dm(tmp_path)
+        site_path = self._make_site_with_override(tmp_path, device, field, value)
+        with pytest.raises(DeviceModelError, match=field):
+            resolve_site(site_path, dm_path)
+
     def test_unknown_model_id_raises(self, tmp_path):
         """Site referencing a model_id not in device_models.yaml raises DeviceModelError."""
         dm = {
@@ -890,3 +1015,122 @@ class TestTariffLength:
 
         with pytest.raises(ValueError, match="24"):
             resolve_site(site_path, dm_path)
+
+
+# ===========================================================================
+# 5. TestUnitCounts — resolver exposes discrete unit counts for A/E instancing
+# ===========================================================================
+
+get_unit_counts = getattr(resolver, "get_unit_counts", None)
+
+class TestUnitCounts:
+    """get_unit_counts() exposes the canonical rounding rule (§4.1).
+
+    # reviewer: unit-count resolver output (rl-architect + frontend-reviewer, PR #79)
+    # Ensures A/E consumers (3D instanced fleet, composition panel) never re-implement
+    # the rounding in TS.  Arithmetic shown for Gansu values.
+    """
+
+    def test_get_unit_counts_exists(self):
+        """resolver module must export get_unit_counts."""
+        assert get_unit_counts is not None, (
+            "energy_go.env.resolver must export get_unit_counts (§4.1)"
+        )
+
+    def test_gansu_wind_unit_count(self):
+        """Gansu wind: round(615.0 / 4.2) = 146 turbines.
+
+        Hand-derived: 615.0 / 4.2 = 146.428... → round() = 146.
+        (Not floor: 146 × 4.2 = 613.2 MW; spec rounds up to 615 fleet MW override.)
+        """
+        counts = get_unit_counts(_SITE_GANSU_PATH, _DEVICE_MODELS_PATH)
+        # 615.0 / 4.2 = 146.428... → round(146.428) = 146
+        assert counts["wind"] == 146, (
+            f"Expected 146 wind turbines; got {counts['wind']}. "
+            f"Derived: round(615.0 / 4.2) = round(146.43) = 146"
+        )
+
+    def test_gansu_battery_unit_count(self):
+        """Gansu battery: round(294.5 / 300.0) = 1 unit.
+
+        Hand-derived: 294.5 / 300.0 = 0.9817 → round() = 1.
+        (Single 300 MWh unit deployed at 294.5 MWh actual capacity.)
+        """
+        counts = get_unit_counts(_SITE_GANSU_PATH, _DEVICE_MODELS_PATH)
+        # 294.5 / 300.0 = 0.9817 → round(0.9817) = 1
+        assert counts["battery"] == 1, (
+            f"Expected 1 battery unit; got {counts['battery']}. "
+            f"Derived: round(294.5 / 300.0) = round(0.982) = 1"
+        )
+
+    def test_explicit_unit_count_takes_precedence(self, tmp_path):
+        """site YAML unit_count field overrides the derived rounding formula.
+
+        # reviewer: explicit-override beats formula (§4.1 contract).
+        # Arithmetic: site sets unit_count=150 explicitly; derived would be
+        # round(615.0/4.2)=146. Explicit must win.
+        """
+        dm = {
+            "schema_version": "1.0.0",
+            "models": {
+                "vestas-v150-4.2": {
+                    "type": "wind_turbine",
+                    "physics": {"v_cutin_mps": 3.0, "v_rated_mps": 12.0,
+                                "v_cutout_mps": 25.0, "hub_height_m": 105.0,
+                                "rated_mw_per_unit": 4.2},
+                    "economics": {},
+                },
+                "trina-vertex-n-670w": {
+                    "type": "pv_panel",
+                    "physics": {"k_T_per_c": -0.003, "eta_inverter": 0.97,
+                                "degradation_yr1": 0.98},
+                    "economics": {},
+                },
+                "catl-lmp-300mwh": {
+                    "type": "battery",
+                    "physics": {"eta_ch": 0.97, "eta_dis": 0.97, "soc_min": 0.2,
+                                "soc_max": 0.9, "capacity_mwh_per_unit": 300.0,
+                                "power_mw_per_unit": 100.0},
+                    "economics": {},
+                },
+                "pcc-substation-945mw": {
+                    "type": "grid_connection",
+                    "physics": {"max_export_mw": 945.0, "max_import_mw": 400.0},
+                    "economics": {},
+                },
+            },
+        }
+        dm_path = tmp_path / "device_models.yaml"
+        with open(dm_path, "w") as f:
+            yaml.dump(dm, f)
+
+        site_explicit = {
+            "assets": {
+                "wind": {
+                    "model": "vestas-v150-4.2",
+                    "fleet_rated_mw": 615.0,
+                    "unit_count": 150,      # explicit — overrides round(615/4.2)=146
+                },
+                "solar": {"model": "trina-vertex-n-670w", "fleet_capacity_mw": 330.0},
+                "battery": {"model": "catl-lmp-300mwh",
+                            "fleet_capacity_mwh": 294.5, "fleet_power_mw": 98.16},
+                "grid": {"model": "pcc-substation-945mw"},
+            },
+            "tariff": {"price_table_yuan_per_mwh": list(_EXPECTED_PRICE_TABLE)},
+            "costs": {
+                "c_deg_yuan_per_mwh": 10.0, "voll_yuan_per_mwh": 20000.0,
+                "curtail_yuan_per_mwh": 800.0,
+                "demand_rate_yuan_per_mw_month": 32000.0,
+                "soc_penalty_yuan_per_mwh": 20000.0, "reward_scale": 1e-5,
+                "price_spread_yuan_per_mwh": 30.0, "price_spread_sigma": 10.0,
+            },
+            "forecast": {"sigma_max": 0.10},
+        }
+        site_path = tmp_path / "site_explicit.yaml"
+        with open(site_path, "w") as f:
+            yaml.dump(site_explicit, f)
+
+        counts = get_unit_counts(site_path, dm_path)
+        assert counts["wind"] == 150, (
+            f"Explicit unit_count=150 must override derived 146; got {counts['wind']}"
+        )

@@ -221,6 +221,26 @@ def resolve_gansu(
 
     Acceptance gate: resolve_gansu()[0] == EnvParams() must hold bit-exactly.
     """
+
+def get_unit_counts(
+    site_config_path: str | Path,
+    device_models_path: str | Path = "config/device_models.yaml",
+) -> dict[str, int]:
+    """Return resolved unit counts for discretely-instanced assets.
+
+    Applies the canonical rounding rule (§4.1) or the explicit `unit_count`
+    override from the site YAML (explicit takes precedence).
+
+    Returns a dict with keys "wind" and "battery".
+    PV and grid are fleet-only — no per-unit count exposed.
+
+    For Gansu:
+        {"wind": 146, "battery": 1}
+        (146 = round(615.0 / 4.2), 1 = round(294.5 / 300.0))
+
+    Used by the serving REST endpoint so A/E consumers (3D instanced fleet,
+    composition panel) never re-implement the rounding in TS.
+    """
 ```
 
 **`resolve_gansu()` must return `(EnvParams(...), 107, 6)`** — obs_dim=107 (§2.1
