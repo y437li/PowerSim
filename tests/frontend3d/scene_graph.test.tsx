@@ -37,7 +37,7 @@ import type { EnvStepPayload } from "../../src/types/telemetry";
 // Infrastructure fix: vi.hoisted() lifts declarations to hoisting scope.
 // No assertion changes vs. the approved test — mock behaviour is identical.
 
-const { mockR3fRender, mockR3fUnmount, mockCreateRoot, mockUseGLTF } = vi.hoisted(() => {
+const { mockR3fRender, mockR3fUnmount, mockCreateRoot, mockUseGLTF, mockExtend } = vi.hoisted(() => {
   const mockR3fRender = vi.fn();
   const mockR3fUnmount = vi.fn();
   const mockCreateRoot = vi.fn(() => ({
@@ -55,13 +55,16 @@ const { mockR3fRender, mockR3fUnmount, mockCreateRoot, mockUseGLTF } = vi.hoiste
     nodes: {},
     materials: {},
   }));
-  return { mockR3fRender, mockR3fUnmount, mockCreateRoot, mockUseGLTF };
+  // mockExtend added for fix/frontend3d-scene-extend regression test (§6 req 21-22):
+  // extend(THREE) must be called before createRoot().render() on every manual-root mount.
+  const mockExtend = vi.fn();
+  return { mockR3fRender, mockR3fUnmount, mockCreateRoot, mockUseGLTF, mockExtend };
 });
 
 vi.mock("@react-three/fiber", () => ({
   createRoot: mockCreateRoot,
   useFrame: vi.fn(),
-  extend: vi.fn(),
+  extend: mockExtend,
 }));
 
 vi.mock("@react-three/drei", () => ({
@@ -219,6 +222,7 @@ beforeEach(() => {
   mockR3fUnmount.mockClear();
   mockCreateRoot.mockClear();
   mockUseGLTF.mockClear();
+  mockExtend.mockClear();
 });
 
 // =============================================================================
@@ -753,6 +757,79 @@ describe("Animation driver golden values (via SiteScene data bridge)", () => {
     const emissive = Number(pv!.getAttribute("data-emissive"));
     expect(Number.isFinite(emissive)).toBe(true);
     expect(emissive).toBeCloseTo(0.5, 6);
+  });
+});
+
+// =============================================================================
+// §6 req 21-22 — extend(THREE) regression (fix/frontend3d-scene-extend)
+// Browser crash: "AmbientLight is not part of the THREE namespace! Did you
+// forget to extend?" — manual createRoot() does NOT auto-register THREE;
+// the <Canvas> component does this implicitly, manual roots must call extend().
+// =============================================================================
+
+describe("SiteScene — extend(THREE) called before render on manual-root mount", () => {
+  /** Helper: mount + flush async IIFE. */
+  async function mountAndFlush() {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    await act(async () => {
+      render(<SiteScene config={GANSU_CONFIG} registry={GANSU_REGISTRY} containerEl={div} />);
+      await Promise.resolve();
+    });
+    return div;
+  }
+
+  it("extend is called at least once after mounting (namespace must be registered)", async () => {
+    // RED until SiteScene.tsx calls extend(THREE) in Effect 1.
+    // Without this call, R3F throws "AmbientLight is not part of the THREE namespace".
+    await mountAndFlush();
+    expect(mockExtend).toHaveBeenCalled();
+  });
+
+  it("extend is called with the THREE namespace (arg has AmbientLight, Mesh, etc.)", async () => {
+    // The argument must be the full THREE namespace — not undefined, null, or a subset.
+    // Arithmetic: THREE.AmbientLight is a class; THREE.Mesh is a class.
+    await mountAndFlush();
+    expect(mockExtend).toHaveBeenCalled();
+    const arg = mockExtend.mock.calls[0][0] as Record<string, unknown>;
+    // These classes must be present in the THREE namespace passed to extend()
+    expect(arg).toHaveProperty("AmbientLight");
+    expect(arg).toHaveProperty("DirectionalLight");
+    expect(arg).toHaveProperty("Mesh");
+  });
+
+  it("extend is called BEFORE r3fRoot.render() — correct registration order (§6 req 21)", async () => {
+    // Order must be: extend(THREE) → createRoot(canvas) → render(<SceneContent>).
+    // R3F uses the registered namespace to resolve JSX elements at render time,
+    // so extend must precede the first render call.
+    const callOrder: string[] = [];
+    mockExtend.mockImplementation(() => { callOrder.push("extend"); });
+    mockR3fRender.mockImplementation(() => { callOrder.push("render"); });
+
+    await mountAndFlush();
+
+    // Both must have been called
+    expect(callOrder).toContain("extend");
+    expect(callOrder).toContain("render");
+    // extend must come first
+    expect(callOrder.indexOf("extend")).toBeLessThan(callOrder.indexOf("render"));
+  });
+
+  it("extend is called exactly once per Effect 1 mount (idempotent but not skipped)", async () => {
+    // extend() is idempotent in R3F — calling it again is harmless. But it must
+    // not be skipped, and it should not be called multiple extra times per mount.
+    await mountAndFlush();
+    expect(mockExtend).toHaveBeenCalledTimes(1);
+  });
+
+  it("containerEl=null → extend is NOT called (Effect 1 skips when no container)", async () => {
+    await act(async () => {
+      render(
+        <SiteScene config={GANSU_CONFIG} registry={GANSU_REGISTRY} containerEl={null} />
+      );
+      await Promise.resolve();
+    });
+    expect(mockExtend).not.toHaveBeenCalled();
   });
 });
 
