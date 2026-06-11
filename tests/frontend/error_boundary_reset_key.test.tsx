@@ -246,3 +246,47 @@ describe("EB.RK.7 — prevResetKey tracking: re-render with same new key does no
     expect(screen.getByTestId("child-ok")).toBeDefined();
   });
 });
+
+// ─── reviewer (frontend-reviewer): healthy key-change THEN crash — no spurious reset ──
+// Guards the §2.3 `elif (!hasError && resetKey !== prevResetKey) → update prevResetKey` branch.
+// If an impl updates prevResetKey ONLY on reset (omits the healthy-tracking elif), then a crash
+// on a key that already changed while healthy would see resetKey !== (stale)prevResetKey and
+// reset→re-render→re-throw→re-catch — a render loop, not a clean single catch. The boundary must
+// catch the crash cleanly and STAY in error (the key was already seen, so no reset is owed).
+describe("EB.RK.8 (reviewer) — key changed while healthy, then crash → clean catch, stays errored", () => {
+  it("healthy key 'a'→'b' (no crash) → then crash with key 'b' → error UI shown and stable (no reset loop)", () => {
+    const { rerender } = render(
+      <ErrorBoundary resetKey="session-a">
+        <MaybeThrow shouldThrow={false} />
+      </ErrorBoundary>
+    );
+    expect(screen.getByTestId("child-ok")).toBeDefined();
+
+    // Key changes while healthy → prevResetKey must advance to "session-b" (the elif branch).
+    rerender(
+      <ErrorBoundary resetKey="session-b">
+        <MaybeThrow shouldThrow={false} />
+      </ErrorBoundary>
+    );
+    expect(screen.getByTestId("child-ok")).toBeDefined();
+
+    // Now the child crashes with the SAME (already-seen) key "session-b".
+    // Correct: clean single catch, no reset (b === prevResetKey b). Buggy elif: reset loop.
+    rerender(
+      <ErrorBoundary resetKey="session-b">
+        <MaybeThrow shouldThrow={true} />
+      </ErrorBoundary>
+    );
+    expect(screen.queryByTestId("child-ok")).toBeNull();
+    expect(screen.getByRole("alert")).toBeDefined();
+
+    // Stable: a same-key rerender keeps the error UI (no oscillation / spurious self-reset).
+    rerender(
+      <ErrorBoundary resetKey="session-b">
+        <MaybeThrow shouldThrow={true} />
+      </ErrorBoundary>
+    );
+    expect(screen.queryByTestId("child-ok")).toBeNull();
+    expect(screen.getByRole("alert")).toBeDefined();
+  });
+});
