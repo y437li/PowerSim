@@ -164,8 +164,9 @@ def build_work_dir(tmp_path: Path, *, with_run: bool = True) -> Path:
         train_curve.write_text(
             "\n".join(json.dumps(r) for r in TRAIN_CURVE_RECORDS) + "\n"
         )
-        # Minimal policy stub (policy.npz existence check)
-        (run / "policy.npz").write_bytes(b"\x93NUMPY")  # minimal magic bytes
+        # Canonical checkpoint stub — has_policy checks checkpoint_*.npz with _step in stem
+        # (task #38 fix; policy.npz was legacy format never produced by real training).
+        (run / "checkpoint_run_001_step500000.npz").write_bytes(b"\x93NUMPY")
 
     return tmp_path
 
@@ -385,7 +386,7 @@ class TestRunListEndpoints:
     def test_run_has_has_policy_true(self, client):
         r = client.get("/runs")
         run = next(r for r in r.json()["runs"] if r["id"] == "run_001")
-        assert run["has_policy"] is True  # policy.npz exists in work_dir fixture
+        assert run["has_policy"] is True  # canonical checkpoint_run_001_step500000.npz in work_dir fixture
 
     def test_list_runs_empty_when_no_checkpoints(self, empty_client):
         r = empty_client.get("/runs")

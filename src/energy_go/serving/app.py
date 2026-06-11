@@ -48,7 +48,11 @@ async def _lifespan(app: FastAPI):
         _d = generate_year(_k)
         _k, _wk = jax.random.split(_k)
         _ws, _ = _jax_env_mod.reset(_wk, _jax_env_mod.EnvParams(), _d)
-        _jax_env_mod.step(_ws, jnp.zeros(1), _jax_env_mod.EnvParams(), _d)
+        # 6-dim action: a_bat + 5 flow fractions (jax_env.py L264-269).
+        # Shape+dtype must match production policy_forward output exactly so JAX
+        # caches the right compiled entry. jnp.zeros(1) would IndexError at trace
+        # time AND cache-miss at runtime even if it succeeded.
+        _jax_env_mod.step(_ws, jnp.zeros(6, dtype=jnp.float32), _jax_env_mod.EnvParams(), _d)
         log.info("JAX JIT warmup complete (reset + step compiled)")
     except Exception as exc:  # ImportError, RuntimeError (no AVX), etc.
         log.debug("JAX JIT warmup skipped at startup: %s", exc)
