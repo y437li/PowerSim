@@ -386,6 +386,49 @@ class TestEnergyConservation:
                 + r["wind_to_grid_mwh"] + r["wind_curtailed_mwh"])  # 160+40+0+0 = 200
         assert lhs == pytest.approx(rhs, rel=1e-4)
 
+    # reviewer: AGGREGATE-vs-per-source consistency for curtailment. The env defines
+    # p_curtailed_mw = p_sol_curtailed + p_wind_curtailed + p_bat_curtailed (EnvInfo
+    # aggregate). Accumulated, curtailed_mwh must equal the sum of the three per-source
+    # curtailed accumulators. The per-source conservation tests above don't cross-check
+    # the AGGREGATE field against its parts — this pins that consistency.
+    # 4 steps: p_curtailed=25 = wind 10 + pv 10 + bat 5 → curtailed_mwh=100;
+    #          wind_curt=40, pv_curt=40, bat_curt=20 → sum=100.
+    def test_aggregate_curtailed_equals_per_source_sum(self):
+        _acc = _import_accumulate()
+        infos = _make_mock_infos(
+            4,
+            p_curtailed_mw=25.0,
+            p_wind_curtailed_mw=10.0, p_sol_curtailed_mw=10.0, p_bat_curtailed_mw=5.0,
+        )
+        r = _acc(infos)
+        lhs = r["curtailed_mwh"]                                          # 4×25 = 100
+        rhs = r["wind_curtailed_mwh"] + r["pv_curtailed_mwh"] + r["bat_curtailed_mwh"]  # 40+40+20
+        assert lhs == pytest.approx(rhs, rel=1e-4), (
+            f"aggregate curtailed_mwh={lhs:.4f} ≠ Σ per-source {rhs:.4f} "
+            "(curtailed_mwh must equal wind+pv+bat curtailed)"
+        )
+
+    # reviewer: grid-import decomposition — ties to the F-IMPORT fix (§3.6 row 9):
+    # the env guarantees P_import = grid_to_load + grid_to_bat. Accumulated,
+    # grid_import_mwh must equal grid_to_bat_mwh + grid_to_load_mwh. A load-first
+    # F-IMPORT regression (battery-first import) would break this identity.
+    # 6 steps: p_import=150 = grid_to_bat 50 + grid_to_load 100 → grid_import_mwh=900;
+    #          grid_to_bat=300, grid_to_load=600 → sum=900.
+    def test_grid_import_equals_to_bat_plus_to_load(self):
+        _acc = _import_accumulate()
+        infos = _make_mock_infos(
+            6,
+            p_import_mw=150.0,
+            p_grid_to_bat_mw=50.0, p_grid_to_load_mw=100.0,
+        )
+        r = _acc(infos)
+        lhs = r["grid_import_mwh"]                                  # 6×150 = 900
+        rhs = r["grid_to_bat_mwh"] + r["grid_to_load_mwh"]          # 300+600 = 900
+        assert lhs == pytest.approx(rhs, rel=1e-4), (
+            f"grid_import_mwh={lhs:.4f} ≠ grid_to_bat+grid_to_load {rhs:.4f} "
+            "(F-IMPORT §3.6 row 9: P_import = grid_to_load + grid_to_bat)"
+        )
+
 
 # ---------------------------------------------------------------------------
 # 4. D13 cost identity: energy_cost_yuan = c_import_yuan - r_export_yuan
