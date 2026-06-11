@@ -190,6 +190,17 @@ case "$ARCH" in
         die 2 "Unsupported arch: $ARCH. Remediation: Supported architectures are x86_64 and arm64 (Apple Silicon)." ;;
 esac
 
+# Detect Apple Silicon regardless of Rosetta 2 translation.
+# Under Rosetta, `uname -m` reports x86_64 even on ARM hardware, so a pure
+# $ARCH check misses all Rosetta-translated processes.  The canonical test is
+# `sysctl.proc_translated == 1` — set by the kernel for every Rosetta process.
+IS_APPLE_SILICON=0
+if [[ "$OS" == "Darwin" ]] && {
+        [[ "$ARCH" == "arm64" || "$ARCH" == "aarch64" ]] || \
+        [[ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" == "1" ]]; }; then
+    IS_APPLE_SILICON=1
+fi
+
 # ── serving always uses CPU ───────────────────────────────────────────────────
 if [[ "$SERVER_TYPE" == "serving" && "${ACCEL:-}" == "gpu" ]]; then
     warn "serving type always uses CPU accelerator; --accel gpu ignored."
@@ -300,7 +311,7 @@ fi
 
 # ── select pyproject extras ───────────────────────────────────────────────────
 if [[ "$ACCEL" == "gpu" ]]; then
-    if [[ "$OS" == "Darwin" && ( "$ARCH" == "arm64" || "$ARCH" == "aarch64" ) ]]; then
+    if [[ "$OS" == "Darwin" && "$IS_APPLE_SILICON" == "1" ]]; then
         JAX_EXTRAS="jax-gpu-metal"
     else
         JAX_EXTRAS="jax-gpu-cuda"
@@ -348,7 +359,7 @@ if [[ ! -d ".venv" ]]; then
     # picking an x86 interpreter, which would install x86 jaxlib and fail with AVX errors.
     # The `|| true` lets us continue if the install fails (e.g. no internet); the venv
     # creation below falls back to any available Python.
-    if [[ "$OS" == "Darwin" ]] && [[ "$ARCH" == "arm64" || "$ARCH" == "aarch64" ]]; then
+    if [[ "$OS" == "Darwin" ]] && [[ "$IS_APPLE_SILICON" == "1" ]]; then
         info "ARM macOS detected — ensuring native arm64 Python 3.11..."
         # Prefer arch -arm64 to force native ARM64 even when this script runs under
         # Rosetta (x86_64 process context).  Without this, uv installs an x86_64
@@ -380,10 +391,10 @@ fi
 # could not deliver an ARM64 Python (e.g. uv itself is x86_64-only), abort with
 # exit 2 so the caller knows to reinstall uv as a native arm64 binary.
 # An x86_64 Python on ARM would install AVX-only jaxlib wheels that crash on import.
-if [[ "$OS" == "Darwin" ]] && [[ "$ARCH" == "arm64" || "$ARCH" == "aarch64" ]]; then
+if [[ "$OS" == "Darwin" ]] && [[ "$IS_APPLE_SILICON" == "1" ]]; then
     _VENV_MACHINE="$(".venv/bin/python" -c "import platform; print(platform.machine())" 2>/dev/null || echo "unknown")"
     if [[ "$_VENV_MACHINE" == "x86_64" ]]; then
-        die 2 "ARM host ($ARCH) but venv Python is x86_64 (Rosetta or x86_64-only uv). Installing jaxlib would deliver AVX-only binaries that crash on Apple Silicon (Rosetta 2 does not translate AVX). Remediation: Reinstall uv as a native arm64 binary — 'curl -LsSf https://astral.sh/uv/install.sh | arch -arm64 sh' — then re-run this script."
+        die 2 "ARM host but venv Python is x86_64 (Rosetta or x86_64-only uv). Installing jaxlib would deliver AVX-only binaries that crash on Apple Silicon (Rosetta 2 does not translate AVX). Remediation: Reinstall uv as a native arm64 binary — 'curl -LsSf https://astral.sh/uv/install.sh | arch -arm64 sh' — then re-run this script."
     fi
 fi
 
