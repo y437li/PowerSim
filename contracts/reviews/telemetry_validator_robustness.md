@@ -89,3 +89,28 @@ implementation — expected gate state.
 **Verdict: REQUEST_CHANGES.** The drop/safety is correct and well-tested; mount the banner +
 add the render-integration test so the dropped-frame surfacing actually reaches the operator,
 then re-request.
+
+---
+
+## Stage-2 re-audit — PR #53 @ `663e9d3` — **APPROVE**
+
+- **Reviewer:** frontend-reviewer · **Date:** 2026-06-11
+
+Blocker resolved. FrameErrorBanner is now **mounted** in `LiveDashboard.tsx` (line 53, immediately
+after `<AlertList />`) — `git grep FrameErrorBanner` finds the mount site; §13.3 "MUST render" is
+satisfied, so dropped frames now reach the operator. Verified:
+- **TV.ROB.UI.3** is a genuine render-integration test: renders the real `LiveDashboard` (valid
+  envStep + seeded `pushFrameError`) and asserts `frame-error-0` is visible in the dashboard output
+  (stubs Recharts/R3F children). UI.1/UI.2 cover kind/seq/error text + empty→no-nodes.
+- FrameErrorBanner selector→no-selector (`const { frameErrors = [] } = useTelemetryStore()`) is
+  perf-neutral (it's a child of LiveDashboard, which re-renders every frame regardless) and fixes
+  test-mock compatibility.
+- `live_dashboard.test.tsx` change is **mock-sync only** (added `frameErrors: []` + `pushFrameError`
+  to `emptyTelemetryState`) — no assertion changes to the approved suite.
+- The wsClient §10 gate + telemetryStore §13 API (verified correct in the prior audit) are unchanged
+  by this fix. 707/707.
+
+Both prior threads resolved; 0 unresolved. The malformed-frame drop (safety) AND surfacing
+(visibility) are now complete.
+
+**Verdict: APPROVE** (stage-2). Mergeable on this + QA_PASS. Unblocks the task #23 cutover.
