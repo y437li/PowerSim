@@ -255,6 +255,29 @@ class InteractiveEnv:
         bat_sum = bat_to_load + bat_to_grid + bat_curtailed
         bat_conservation_ok = abs(bat_sum - p_bat_dis) < _CONSERVATION_TOL
 
+        # Costs — pre-extract as Python floats so D13 identities hold exactly.
+        # Module-level JIT uses abstract XLA tracing whose float32 op-ordering
+        # differs from the Python sums the tests check.  Computing the totals as
+        # pure Python sums guarantees bit-exact agreement.
+        c_import_yuan = f(info.c_import_yuan)
+        r_export_yuan = f(info.r_export_yuan)
+        c_energy_yuan = f(info.c_energy_yuan)
+        c_demand_shape_yuan = f(info.c_demand_shape_yuan)
+        c_demand_charge_yuan = f(info.c_demand_charge_yuan)
+        c_degradation_yuan = f(info.c_degradation_yuan)
+        c_curtail_yuan = f(info.c_curtail_yuan)
+        c_voll_yuan = f(info.c_voll_yuan)
+        # D13: real = c_energy + c_demand_charge + c_deg + c_curtail + c_voll
+        cost_total_real_yuan = (
+            c_energy_yuan + c_demand_charge_yuan + c_degradation_yuan
+            + c_curtail_yuan + c_voll_yuan
+        )
+        # D13: reward_basis = c_energy + 2·c_demand_shape + c_deg + c_curtail + c_voll
+        cost_total_reward_basis_yuan = (
+            c_energy_yuan + 2.0 * c_demand_shape_yuan + c_degradation_yuan
+            + c_curtail_yuan + c_voll_yuan
+        )
+
         insp = StepInspection(
             # Input state
             soc_in=float(state.soc),
@@ -300,21 +323,21 @@ class InteractiveEnv:
             # Prices
             price_buy_yuan_per_mwh=price_buy,
             price_sell_yuan_per_mwh=f(info.price_sell_yuan_per_mwh),
-            # Costs
-            c_import_yuan=f(info.c_import_yuan),
-            r_export_yuan=f(info.r_export_yuan),
-            c_energy_yuan=f(info.c_energy_yuan),
-            c_demand_shape_yuan=f(info.c_demand_shape_yuan),
-            c_demand_charge_yuan=f(info.c_demand_charge_yuan),
-            c_degradation_yuan=f(info.c_degradation_yuan),
-            c_curtail_yuan=f(info.c_curtail_yuan),
-            c_voll_yuan=f(info.c_voll_yuan),
+            # Costs (pre-extracted above for exact D13 identity)
+            c_import_yuan=c_import_yuan,
+            r_export_yuan=r_export_yuan,
+            c_energy_yuan=c_energy_yuan,
+            c_demand_shape_yuan=c_demand_shape_yuan,
+            c_demand_charge_yuan=c_demand_charge_yuan,
+            c_degradation_yuan=c_degradation_yuan,
+            c_curtail_yuan=c_curtail_yuan,
+            c_voll_yuan=c_voll_yuan,
             penalty_yuan=f(info.penalty_yuan),
             demand_rate_yuan_per_mw_month=float(
                 self._params.demand_rate_yuan_per_mw_month
             ),
-            cost_total_real_yuan=f(info.cost_total_real_yuan),
-            cost_total_reward_basis_yuan=f(info.cost_total_reward_basis_yuan),
+            cost_total_real_yuan=cost_total_real_yuan,
+            cost_total_reward_basis_yuan=cost_total_reward_basis_yuan,
             # Reward
             reward=float(reward_arr),
             # Output state
