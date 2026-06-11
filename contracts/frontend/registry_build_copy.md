@@ -141,8 +141,10 @@ Developer workflow when updating `assets/3d/registry.json`:
 2. Run `npm test` (pretest hook auto-copies the updated file)
 3. Commit both `assets/3d/registry.json` and the updated `src/config/registryData.json`
 
-The source of truth is `assets/3d/registry.json` (LOCKED, `registry.json` v1.0.1). The
-`src/config/registryData.json` file is a derived artifact and must not be committed.
+The source of truth is `assets/3d/registry.json` (LOCKED, `registry.json` v1.0.1).
+`src/config/registryData.json` is the committed fallback; it is **not** gitignored and
+**must** be kept in the index so partial-checkout builds (§9.5 serving fixture) can
+resolve the import without `assets/3d/` present.
 
 ---
 
@@ -150,10 +152,11 @@ The source of truth is `assets/3d/registry.json` (LOCKED, `registry.json` v1.0.1
 
 - `gansuSiteConfig.ts` continues to import `./registryData.json` unchanged — no code changes.
 - `app_integration §T9` (deep-equals `ASSET_REGISTRY` vs raw `assets/3d/registry.json`)
-  remains the correctness gate; it now also implicitly verifies that the plugin ran.
-- On a fresh checkout without running Vite/tests, `src/config/registryData.json` will not
-  exist. Running `npm run dev`, `npm test`, `npx vitest run` (via Vite), or
-  `node scripts/copy_registry.js` generates it before any import resolution.
+  remains the correctness gate; it now also implicitly verifies that the plugin ran when
+  both files exist.
+- On a fresh checkout, `src/config/registryData.json` is present immediately (committed
+  fallback). Running `npm run dev`, `npm test`, or `npx vitest run` refreshes it with the
+  latest `assets/3d/registry.json` when that file is available.
 
 ---
 
