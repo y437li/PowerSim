@@ -1,4 +1,7 @@
 import type { TelemetryEnvelope, ServerStatusFrame, ServerErrorFrame } from "../types/telemetry";
+import { validate } from "../validators/telemetryValidator";
+import { useTelemetryStore } from "../stores/telemetryStore";
+import type { FrameError } from "../stores/telemetryStore";
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -34,6 +37,20 @@ export interface WsClient {
 // ─── Implementation ──────────────────────────────────────────────────────────
 
 const SUPPORTED_MAJOR = 1;
+
+/**
+ * Build a FrameError from a raw (possibly malformed) message and a list of
+ * error/warning codes. Falls back gracefully when envelope fields are absent.
+ */
+function buildFrameError(msg: unknown, errors: string[]): FrameError {
+  const m = msg as Record<string, unknown> | null;
+  return {
+    ts_utc: typeof m?.ts_utc === "string" ? m.ts_utc : new Date().toISOString(),
+    kind: typeof m?.kind === "string" ? m.kind : "unknown",
+    seq: typeof m?.seq === "number" ? m.seq : -1,
+    errors,
+  };
+}
 
 /**
  * Convert a relative WebSocket path to an absolute ws:// / wss:// URL.
@@ -154,6 +171,36 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         return;
       }
       // Minor forward compat: major === SUPPORTED_MAJOR but minor > 0 → accepted with unknown fields ignored
+    }
+
+    // §10 (D26 gate): call validate() on all data frames before dispatch.
+    // Control frames (status, error) bypass — they carry no payload and
+    // validate() would always reject them with missing_field:payload.
+    if (!isControlFrame) {
+      let vResult: ReturnType<typeof validate>;
+      try {
+        vResult = validate(msg);
+      } catch {
+        // §10.2: exception → treat as ok:false, errors:["validate_threw"]
+        const err = buildFrameError(msg, ["validate_threw"]);
+        console.warn(
+          `[wsClient] INVALID frame dropped kind=${err.kind} seq=${err.seq}: [validate_threw]`
+        );
+        useTelemetryStore.getState().pushFrameError(err);
+        return;
+      }
+      if (!vResult.ok) {
+        const err = buildFrameError(msg, vResult.errors);
+        console.warn(
+          `[wsClient] INVALID frame dropped kind=${err.kind} seq=${err.seq}: [${vResult.errors.join(", ")}]`
+        );
+        useTelemetryStore.getState().pushFrameError(err);
+        return;
+      }
+      // ok:true with warnings → dispatch AND record (§10.3)
+      if (vResult.warnings.length > 0) {
+        useTelemetryStore.getState().pushFrameError(buildFrameError(msg, vResult.warnings));
+      }
     }
 
     // Dispatch by kind
