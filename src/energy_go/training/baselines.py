@@ -602,12 +602,13 @@ class DpOraclePolicy:
         Returns:
             (6,) float32 action
         """
-        t = int(env_state.t)
-        a_bat = float(self.optimal_actions[t])
-        # Use greedy renewable routing fractions; override a_bat with DP value
+        # JAX dynamic indexing — valid inside lax.scan / @jax.jit
+        # (do NOT use int(env_state.t): concretizing a traced value fails in jit)
+        a_bat = self.optimal_actions[env_state.t]  # scalar float32 JAX array
+        # Use greedy renewable routing fractions; override only a_bat with DP value
         greedy = GreedyPolicy()
         greedy_action = greedy.action(env_state, step_data, params)
-        return greedy_action.at[0].set(jax.numpy.float32(a_bat))
+        return greedy_action.at[0].set(a_bat.astype(jnp.float32))
 
 
 # ---------------------------------------------------------------------------
