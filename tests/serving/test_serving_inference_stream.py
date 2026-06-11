@@ -1741,6 +1741,33 @@ class TestHasPolicyCanonical:
         finally:
             self._cleanup_rest_client(client)
 
+    # reviewer: RE-ADDED — this case was dropped by e1e6acd's test restructure.
+    # A legacy policy.npz must NOT suppress a present canonical checkpoint. When BOTH
+    # checkpoint_*.npz (canonical) and policy.npz (legacy) exist, the canonical-discovery
+    # glob finds the checkpoint → has_policy True. Guards against an implementation that
+    # returns early/False on seeing the legacy file (or ANDs the two checks). Pure
+    # filesystem — hand-verifiable: glob("checkpoint_*.npz") is non-empty regardless of
+    # the legacy policy.npz also being present.
+    def test_has_policy_true_with_both_canonical_and_legacy(self, tmp_path):
+        pytest.importorskip("energy_go.serving.app")
+        run = self._make_run_dir(tmp_path, "run_hp_both")
+        _make_canonical_checkpoint(run, run_id="run_hp_both")
+        _make_policy_npz(run / "policy.npz")  # legacy file present alongside canonical
+        client = self._make_rest_client(tmp_path)
+        try:
+            resp = client.get("/runs")
+            assert resp.status_code == 200
+            runs = resp.json()["runs"]
+            hp_run = next((r for r in runs if r["id"] == "run_hp_both"), None)
+            assert hp_run is not None, "run_hp_both not found in /runs response"
+            assert hp_run["has_policy"] is True, (
+                "has_policy must be True when a canonical checkpoint_*.npz exists, even "
+                "if a legacy policy.npz is also present (canonical discovery must not be "
+                f"suppressed by the legacy file); got {hp_run['has_policy']!r}"
+            )
+        finally:
+            self._cleanup_rest_client(client)
+
 
 # ===========================================================================
 # TestRealEnvEpisodeBoundary (task #48 — real env episode handling)
