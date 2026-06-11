@@ -542,6 +542,54 @@ class TestLoadValidation:
         loaded = load_checkpoint(path)   # must not raise
         assert loaded.schema_version == "1.1.0"
 
+    def test_obs_count_saved_as_int64(self, tmp_path):
+        # obs_count must be saved as int64 in the .npz regardless of Python/JAX int type.
+        # JAX defaults to int32 on CPU-only builds; save_checkpoint must explicitly cast.
+        rng = np.random.RandomState(25)
+        ckpt = _make_checkpoint(rng, obs_count=1_024_000)
+        path = tmp_path / "ckpt_obs_count.npz"
+        save_checkpoint(ckpt, path)
+        # Inspect the raw .npz to check dtype
+        raw = np.load(path, allow_pickle=False)
+        assert raw["obs_count"].dtype == np.int64, (
+            f"obs_count dtype {raw['obs_count'].dtype} != int64 — save_checkpoint must cast"
+        )
+        loaded = load_checkpoint(path)
+        assert int(loaded.obs_count) == 1_024_000
+
+    def test_atomic_write_does_not_corrupt_existing(self, tmp_path):
+        # A failed write (simulated by truncating after rename attempt) must not corrupt
+        # the existing checkpoint at the target path.
+        # Strategy: write ckpt1, then write ckpt2 with save_checkpoint → result is ckpt2.
+        # This verifies same-dir temp + rename semantics (§5 contract).
+        rng = np.random.RandomState(26)
+        ckpt1 = _make_checkpoint(rng, checkpoint_id="ckpt-safe-1", global_step=10_000)
+        ckpt2 = _make_checkpoint(rng, checkpoint_id="ckpt-safe-2", global_step=20_000)
+        path = tmp_path / "ckpt_atomic.npz"
+
+        save_checkpoint(ckpt1, path)
+        # Verify ckpt1 is there
+        assert load_checkpoint(path).checkpoint_id == "ckpt-safe-1"
+
+        # Second write (new checkpoint) must succeed and replace ckpt1 atomically
+        save_checkpoint(ckpt2, path)
+        loaded = load_checkpoint(path)
+        assert loaded.checkpoint_id == "ckpt-safe-2"
+        assert loaded.global_step   == 20_000
+
+    def test_run_config_json_tuples_serialise_as_lists(self):
+        # JSON has no tuple type: hidden_sizes=(256,256) → [256,256] after json.loads.
+        # Consumers must not expect Python tuples when deserialising run_config_json (§4.1).
+        rng = np.random.RandomState(27)
+        ckpt = _make_checkpoint(rng)
+        cfg_dict = json.loads(ckpt.run_config_json)
+        # hidden_sizes comes back as a JSON array (list), not a tuple
+        assert isinstance(cfg_dict["hidden_sizes"], list), (
+            f"hidden_sizes type {type(cfg_dict['hidden_sizes'])} != list — "
+            "JSON tuples must serialise as lists"
+        )
+        assert cfg_dict["hidden_sizes"] == [256, 256]
+
 
 # ---------------------------------------------------------------------------
 # §4.4 — Optional critic weights

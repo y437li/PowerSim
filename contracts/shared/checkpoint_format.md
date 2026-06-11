@@ -64,7 +64,7 @@ with a descriptive message if any required key is absent.
 | `global_step` | `int64` | scalar | Environment steps consumed when this checkpoint was written. |
 | `created_at_utc` | `str` | scalar | ISO-8601 UTC wall-clock timestamp of when this checkpoint was written, e.g. `"2026-06-10T14:03:00Z"`. Enables chronological ordering of checkpoints across runs in the training dashboard and run-history view. **Must be the actual write time, not the start of the training run.** |
 | `code_version` | `str` | scalar | Short identifier tying the checkpoint to the codebase state that produced it. Convention: the first 8 characters of the git commit SHA at training time (e.g. `"5cc25b5a"`), or `"unknown"` if not determinable. Enables the dashboard eval-vs-baseline panel to display the exact policy provenance and lets the user reproduce a result. |
-| `run_config_json` | `str` | scalar | JSON-serialised `RunConfig` (all fields). **Must include** `seed` (for reproducibility) and `site_config_id` (e.g. `"site_gansu"` — the site YAML used for training). See `contracts/training/training_pipeline.md` §3 for the full RunConfig schema, which contains both fields. |
+| `run_config_json` | `str` | scalar | JSON-serialised `RunConfig` (all fields). **Must include** `seed` (for reproducibility) and `site_config_id` (e.g. `"site_gansu"` — the site YAML used for training). See `contracts/training/training_pipeline.md` §3 for the full RunConfig schema. **Note:** JSON has no tuple type — Python tuple fields (e.g. `hidden_sizes: tuple = (256, 256)`) serialise as JSON arrays `[256, 256]`. Consumers must not expect Python tuples when deserialising. |
 
 ### 4.2 Architecture identity
 
@@ -158,7 +158,11 @@ def save_checkpoint(data: CheckpointData, path: str | Path) -> None:
 
     - Converts all JAX arrays to numpy before saving.
     - Compresses with np.savez_compressed.
-    - Atomically writes via a temp file + rename to avoid corrupt checkpoints on crash.
+    - Atomically writes via a temp file in the **same directory** as `path`, then
+      os.replace(tmp, path). The temp file MUST be same-directory so the rename is
+      same-filesystem — cross-filesystem moves are not atomic on POSIX.
+    - obs_count is cast to np.int64 before saving regardless of its Python / JAX type
+      (JAX defaults to int32 on CPU-only builds; this ensures the loaded dtype is int64).
     - Raises ValueError if any required key is missing from data.
     - Raises ValueError if any required array has wrong dtype or shape.
     """
@@ -198,7 +202,7 @@ class CheckpointData:
     # VecNormalize obs stats (numpy, shape (obs_dim,) and scalar)
     obs_mean:   np.ndarray = field(default_factory=lambda: np.zeros(107, dtype=np.float32))
     obs_var:    np.ndarray = field(default_factory=lambda: np.ones(107,  dtype=np.float32))
-    obs_count:  int = 0
+    obs_count:  int = 0     # saved as np.int64 in .npz (save_checkpoint casts explicitly)
     obs_clip:   float = 10.0
 
     # Actor MLP weights (numpy float32); shapes correspond to Dense(12) output layer:
