@@ -48,3 +48,46 @@ Cleared for implementation; mark ready for the stage-2 audit (registry-only reso
 wiring, animation freeze/recovery on real telemetry, the Vite serving change).
 
 **Verdict: APPROVE** (stage-1 gate).
+
+---
+
+## Stage-2 implementation audit — PR #52 @ `233be2e` (marked ready) — **APPROVE**
+
+- **Reviewer:** frontend-reviewer · **Date:** 2026-06-11
+
+### vi.hoisted() test-infra fix — acknowledged (infrastructural, not a logic change)
+Diffed the test file vs my approved version (`b3ed8b2`): the ONLY change is relocating the four
+mock declarations (`mockR3fRender`/`mockR3fUnmount`/`mockCreateRoot`/`mockUseGLTF`) into a
+`vi.hoisted()` block to fix Vitest's TDZ hoisting gotcha (vi.mock factory hoisted above `const`).
+Mock return shapes are byte-identical; **no `it()`/`expect()` assertion changed** (incl. my
+recovery-after-gap reviewer test). Legitimate test-runner infrastructure fix — blessed.
+
+### Code audit (no findings)
+- **Registry-only resolution.** `glbUrl = resolveAsset → /assets/3d/${entry.path}` (no hardcoded
+  paths). SceneContent's render computes `glbUrl()` and `if (!url||!entry) return null` BEFORE
+  rendering each sub-component → sub-components always receive a valid url, so `useGLTF` is never
+  called conditionally (hooks-rules safe; unknown assetId renders nothing, no crash).
+- **The bug fix is real.** SiteScene Effect 1 (`[containerEl]`): async `createRoot(canvas)` →
+  `r3fRootRef.current.render(React.createElement(SceneContent, {config, registry}))`. Effect 2
+  (`[config, registry]`): re-render. Cleanup unmounts. `render()` is actually called now.
+- **Animation drivers bound with correct constants.** `calcRotorOmega(wind, 3, 12, 25, 0.2)`
+  (DEFAULT_V_CUTIN/RATED/CUTOUT/OMEGA_MAX = 3/12/25/0.2 — the 3/25 cut-in/out); `calcSocFill(soc,
+  0.2, 0.9)` (D4); `calcEmissive(irradiance)`. `displayStepRef` updated every render → `useFrame`
+  closures never stale.
+- **Freeze-at-last-valid + transient recovery.** SceneContent: `displayRef.current` updated ONLY
+  when `isPayloadFinite(rawEnvStep)` → NaN/Inf freezes on last valid; next valid frame resumes
+  (matches my recovery test). `isPayloadFinite` extracted to `src/scene/isPayloadFinite.ts`
+  (covers all scalar + flow fields); SiteScene now imports it (inline def removed, no behaviour
+  change).
+- **Lights:** ambient 0.5, directional 1.0 @ [100,200,100], castShadow false. **useGLTF once per
+  unique assetId** (TurbineGroup). **STACK.md** updated (`@react-three/drei@^9`, pinned to v9 with
+  rationale; D16); `public/assets → ../assets` symlink for GLB serving.
+- 47/47 pass (incl. my recovery-after-gap reviewer test).
+
+### Non-blocking note (carried forward)
+§4 Vite serving uses the `public/assets → ../assets` symlink (conformant per §4). Verify the
+**production** build (`vite build`) follows the symlink when copying `publicDir` to `dist/`; if not,
+the `vite-plugin-static-copy` alternative is the robust fallback. Dev demo is unaffected.
+
+**Verdict: APPROVE** (stage-2). Mergeable on this APPROVE + QA_PASS. This is the 4th piece of the
+demo-render set (#45 + #49 + #50 + #52).
