@@ -135,3 +135,17 @@ describe("CP.12 — VITE_PROXY_CONFIG module const defaults to :8000 when env un
     expect((VITE_PROXY_CONFIG["/api"] as ProxyEntry).target).toBe("http://localhost:8000");
   });
 });
+
+// ─── reviewer (frontend-reviewer): CP.13 — explicit arg precedence over a SET env var ──
+// CP.3/CP.4 pass an explicit port but with the env var UNSET, so they don't prove §2.1's
+// rule that an explicit `backendPort` arg WINS over `ENERGY_GO_BACKEND_PORT`. An env-first
+// impl (`env ? parseInt(env) : (arg ?? 8000)`) would pass all 12 CP tests yet violate it.
+// This pins precedence: env=9001 AND buildViteProxy(8801) → 8801 (arg wins, env ignored).
+describe("CP.13 (reviewer) — explicit arg takes precedence over a set ENERGY_GO_BACKEND_PORT (§2.1)", () => {
+  it("env='9001' + buildViteProxy(8801) → /api target is :8801 (explicit wins, env ignored)", () => {
+    process.env.ENERGY_GO_BACKEND_PORT = "9001";
+    const config = buildViteProxy(8801);
+    expect((config["/api"] as ProxyEntry).target).toBe("http://localhost:8801");
+    expect((config["/ws"] as ProxyEntry).target).toBe("ws://localhost:8801");
+  });
+});
