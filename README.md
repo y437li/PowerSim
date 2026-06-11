@@ -14,7 +14,7 @@ minimize  Σ_t [ Energy_Cost + Demand_Charge + Battery_Degradation + Penalties ]
 
 This repository is a **ground-up rebuild** specified in [`REBUILD_SPEC.md`](REBUILD_SPEC.md). Units are explicit at every interface (MW, MWh, ¥/MWh) and the physics/cost formulas are fixed in [`docs/spec/section_03_physics_costs.md`](docs/spec/section_03_physics_costs.md).
 
-> **Project status (accurate to `main`).** The reference simulator, SAC training pipeline, FastAPI serving layer, telemetry contract, and React/3D frontend are merged. The **pure-JAX environment core** (`energy_go.env`), the **synthetic-year generators** (`energy_go.generators`), and the **training/eval harness** (`energy_go.harness`) are still in review (open PRs) and are **not yet on `main`** — see [Component status](#component-status) before relying on them.
+> **Project status (accurate to `main`).** The reference simulator, SAC training pipeline, FastAPI serving layer, telemetry contract, React/3D frontend, **pure-JAX environment core** (`energy_go.env`), and **synthetic-year generators** (`energy_go.generators`) are all merged. The **training/eval harness** (`energy_go.harness`) is still in review (PR #43) and is **not yet on `main`** — see [Component status](#component-status) before relying on it.
 
 ---
 
@@ -25,7 +25,7 @@ Energy GO is built around one canonical specification (`REBUILD_SPEC.md`, sectio
 | Layer | What it is | Stack | Where |
 |---|---|---|---|
 | **Parity reference** | From-scratch plain-Python/NumPy implementation of the §3 physics + §4 cost/tariff model. The correctness oracle for the JAX core (two independent implementations of the same spec). | Python + NumPy | `src/reference/` |
-| **JAX env core** *(in review)* | Pure-JAX, jittable/vmappable env `step` and synthetic weather/load generators (§3, §4, §7). Validated against the reference for parity. | JAX (`jax`/`jnp`) | `src/energy_go/env/`, `src/energy_go/generators/` |
+| **JAX env core** | Pure-JAX, jittable/vmappable env `step` and synthetic weather/load generators (§3, §4, §7). Validated against the reference for parity. | JAX (`jax`/`jnp`) | `src/energy_go/env/`, `src/energy_go/generators/` |
 | **Training** | SAC pipeline (§5) — device-resident training loop ([D27](LINEAGE.md)), running-stat normalization, eval, and baseline agents. | `sbx-rl`, `flax`, `optax`, `flashbax` | `src/energy_go/training/` |
 | **Serving** | FastAPI backend: REST config/run-history endpoints + websocket streams for live inference and training metrics. | FastAPI + uvicorn + websockets | `src/energy_go/serving/` |
 | **Telemetry** | The LOCKED JSON wire format (`env_step` / `train_metrics` / `eval_compare`) plus a Python validator and a TypeScript (Zod) validator. | JSON Schema 2020-12 / `jsonschema` / Zod | `contracts/shared/telemetry_schema.md`, `src/energy_go/telemetry/`, `src/validators/` |
@@ -46,11 +46,11 @@ The full per-area stack registry (with the PR/decision that bound each choice) i
 | Frontend app shell + dashboard + 3D scene | ✅ on `main` | PR #5, #36, #45, #52 |
 | 3D asset registry + Gansu GLB models | ✅ on `main` | PR #24 (lock), #38, #49 |
 | Launch / install scripts (§9) | ✅ on `main` | PR #10, #61 |
-| **Pure-JAX env core + generators** | 🚧 in review | PR #33 |
+| **Pure-JAX env core + generators** | ✅ on `main` | PR #33 |
 | **Training/eval harness** (`energy_go.harness`) | 🚧 in review | PR #43 |
 | `config/site_gansu.yaml` at repo root | ⛔ not present yet | — |
 
-> Because the JAX env core, generators, and harness are not yet merged, an **end-to-end training run is not yet runnable from `main`**. The training *library* (`energy_go.training`) is merged and unit-tested, but it depends on the env core for full integration ([task #25](LINEAGE.md): integration tests are gated on PR #33). Likewise the launch scripts' training launch path targets `energy_go.harness.train`, which lands with the harness PR.
+> The JAX env core and generators are now on `main` (PR #33). The training library integrates with the env core and its 17 integration tests are green. An **end-to-end training run is runnable from `main`** once the training/eval harness (PR #43) merges — the launch scripts' training launch path targets `energy_go.harness.train`.
 
 ---
 
