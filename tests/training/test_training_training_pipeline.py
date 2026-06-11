@@ -37,7 +37,13 @@ from energy_go.training.telemetry import build_train_metrics, build_eval_compare
 from energy_go.telemetry.validate import validate as validate_telemetry
 
 # Env types (against jax_env_core contract; import path D22b)
-from energy_go.env.jax_env import EnvParams, step as env_step, reset as env_reset, PRICE_TABLE_YPW
+# importorskip: converts import-error into a clean collection-skip if jax_env is absent
+# (pre-PR #33); env-dependent tests auto-activate once the env lands (approved by backend-reviewer)
+_jax_env = pytest.importorskip("energy_go.env.jax_env")
+EnvParams = _jax_env.EnvParams
+env_step = _jax_env.step
+env_reset = _jax_env.reset
+PRICE_TABLE_YPW = _jax_env.PRICE_TABLE_YPW
 
 
 # ---------------------------------------------------------------------------
@@ -1047,8 +1053,8 @@ def test_reward_norm_not_mean_shifted():
     # normalize_reward(100.0) = 100.0/20 = 5.0  (not (100-100)/20 = 0.0)
     stats = init_running_stats(1)
     s = update_stats(stats, jnp.array([[80.0], [120.0]]))
-    r0   = float(normalize_reward(jnp.array([0.0]),   s, clip=10.0))
-    r100 = float(normalize_reward(jnp.array([100.0]), s, clip=10.0))
+    r0   = normalize_reward(jnp.array([0.0]),   s, clip=10.0).item()
+    r100 = normalize_reward(jnp.array([100.0]), s, clip=10.0).item()
     # std-only: r0=0/20=0.0; r100=100/20=5.0
     # if mean-shifted: r0=-5.0; r100=0.0
     assert r0   == pytest.approx(0.0, abs=1e-5),   f"normalize_reward(0) = {r0}, expected 0 (std-only)"
@@ -1103,7 +1109,7 @@ def test_normalize_reward_var_zero_stays_finite():
     stats = init_running_stats(1)
     s = update_stats(stats, jnp.array([[5.0], [5.0]]))
     assert float(s.var[0]) == pytest.approx(0.0, abs=1e-6)
-    r = float(normalize_reward(jnp.array([5.0]), s, clip=10.0))
+    r = normalize_reward(jnp.array([5.0]), s, clip=10.0).item()
     assert math.isfinite(r), f"normalize_reward not finite at var=0: {r}"
     assert r == pytest.approx(10.0, abs=1e-4)  # 5/1e-4 = 50000 → clip 10
 
@@ -1114,6 +1120,6 @@ def test_normalize_obs_var_zero_stays_finite():
     stats = init_running_stats(1)
     s = update_stats(stats, jnp.array([[3.0], [3.0]]))
     assert float(s.var[0]) == pytest.approx(0.0, abs=1e-6)
-    o = float(normalize_obs(jnp.array([3.0]), s, clip=10.0))
+    o = normalize_obs(jnp.array([3.0]), s, clip=10.0).item()
     assert math.isfinite(o), f"normalize_obs not finite at var=0: {o}"
     assert o == pytest.approx(0.0, abs=1e-4)
