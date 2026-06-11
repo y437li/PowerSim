@@ -263,17 +263,19 @@ np.testing.assert_allclose(served, reference_forward(weights, obs), atol=1e-5)
 
 ## Replay speed
 
-By default, the server streams as fast as the env step completes (no artificial throttle).
-The optional `"speed"` field on the `start` command controls a sleep between frames:
+**D24 (binding):** default speed = 1.0 (1 Hz).  The previous wording ("no artificial
+throttle") referred to no throttle *beyond* the speed control — not to a default of 0.
+The `"speed"` field on the `start` command controls the inter-frame sleep:
 
 ```json
 {"cmd": "start", "run_id": "...", "site_id": "...", "speed": 1.0}
 ```
 
 - `speed = 1.0` (default) — one simulated hour per real second (1 Hz stream).
-- `speed = 0.0` — no sleep; stream as fast as possible.
+- `speed = 0.0` — no sleep; stream as fast as the env step completes.
 - `speed = 2.0` — 2 simulated hours per real second (2 Hz).
 - Range: [0, 100].  Out-of-range values are clamped; negative → 0.
+- Implementation: `sleep_s = 0.0 if speed == 0 else 1.0 / speed`.
 
 ## Step rate and buffering
 

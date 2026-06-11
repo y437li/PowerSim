@@ -345,7 +345,7 @@ class _SyntheticEnv:
 class _Session:
     __slots__ = (
         "session_id", "run_id", "site_id", "state",
-        "seq", "env", "policy_entry",
+        "seq", "env", "policy_entry", "speed",
     )
 
     def __init__(self) -> None:
@@ -356,6 +356,7 @@ class _Session:
         self.seq: int = 0
         self.env: _SyntheticEnv | None = None
         self.policy_entry: dict | None = None
+        self.speed: float = 1.0  # Hz; 0.0 = no sleep (D24)
 
 
 def _ts_now() -> str:
@@ -438,14 +439,12 @@ async def ws_inference(websocket: WebSocket) -> None:
             s.seq += 1
 
             await _send_validated(frame)
-            # 1 ms real sleep: suspends the event-loop thread so the OS can schedule
-            # the test-client / browser thread to push control commands.
-            # asyncio.sleep(0) only yields within asyncio and does not give the OS
-            # time to run a different thread — on CI (shared VMs, ~1–5 ms scheduling
-            # latency) the step loop could emit 50+ frames before "pause/stop" arrives,
-            # exceeding _recv_until's max_frames budget.  A real sleep also wakes early
-            # via the self-pipe mechanism when call_soon_threadsafe fires.
-            await asyncio.sleep(0.001)
+            # Honour the speed control (D24): speed=0 → yield only to asyncio (no OS
+            # sleep); speed>0 → real sleep of 1/speed seconds.  A real sleep suspends
+            # the event-loop thread so the OS can schedule the test-client / browser
+            # thread to push control commands before the next frame is emitted.
+            sleep_s = 0.0 if s.speed == 0.0 else 1.0 / s.speed
+            await asyncio.sleep(sleep_s)
 
     # Send initial ready status
     await _send(_status_frame(s))
@@ -478,6 +477,8 @@ async def ws_inference(websocket: WebSocket) -> None:
                 run_id  = cmd_msg.get("run_id")
                 site_id = cmd_msg.get("site_id")
                 seed    = int(cmd_msg.get("seed", 0))
+                # D24: default=1.0 Hz; clamp to [0, 100]; negative → 0
+                speed   = max(0.0, min(100.0, float(cmd_msg.get("speed", 1.0))))
 
                 # Validate run
                 run_dir = _work_dir() / "checkpoints" / str(run_id)
@@ -507,6 +508,7 @@ async def ws_inference(websocket: WebSocket) -> None:
                 s.site_id      = str(site_id)
                 s.session_id   = str(uuid.uuid4())
                 s.policy_entry = policy_entry
+                s.speed        = speed
                 s.env          = _SyntheticEnv(site_yaml, seed=seed)
                 s.env.reset()
                 s.state        = "running"

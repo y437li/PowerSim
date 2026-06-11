@@ -230,18 +230,20 @@ class TestWSSessionLifecycle:
                 )
 
     def test_pause_stops_frames(self, ws_client):
+        # speed=100 → 10 ms/frame so the OS has time to schedule the pause command
         with ws_client.websocket_connect("/ws/inference") as ws:
             ws.receive_text(timeout=5)
-            ws.send_text(_start_cmd())
+            ws.send_text(_start_cmd(speed=100.0))
             _recv_until(ws, "env_step", max_frames=20)
             ws.send_text(json.dumps({"cmd": "pause"}))
             msg = _recv_until(ws, "status", max_frames=20)
             assert msg.get("state") == "paused"
 
     def test_resume_after_pause(self, ws_client):
+        # speed=100 → 10 ms/frame; control commands land before budget is exhausted
         with ws_client.websocket_connect("/ws/inference") as ws:
             ws.receive_text(timeout=5)
-            ws.send_text(_start_cmd())
+            ws.send_text(_start_cmd(speed=100.0))
             _recv_until(ws, "env_step", max_frames=20)
             ws.send_text(json.dumps({"cmd": "pause"}))
             _recv_until(ws, "status", max_frames=20)
@@ -250,9 +252,10 @@ class TestWSSessionLifecycle:
             assert msg.get("state") == "running"
 
     def test_stop_closes_connection(self, ws_client):
+        # speed=100 → 10 ms/frame; stopped status arrives within the 20-frame budget
         with ws_client.websocket_connect("/ws/inference") as ws:
             ws.receive_text(timeout=5)
-            ws.send_text(_start_cmd())
+            ws.send_text(_start_cmd(speed=100.0))
             _recv_until(ws, "env_step", max_frames=20)
             ws.send_text(json.dumps({"cmd": "stop"}))
             msg = _recv_until(ws, "status", max_frames=20)
@@ -313,10 +316,11 @@ class TestTelemetrySchemaConformance:
 
         This exercises the interactive single-step path (_send_validated helper),
         separate from the continuous _step_loop path tested above.
+        speed=100 → 10 ms/frame so pause lands before the 20-frame budget is exhausted.
         """
         with ws_client.websocket_connect("/ws/inference") as ws:
             ws.receive_text(timeout=5)  # initial ready status
-            ws.send_text(_start_cmd())
+            ws.send_text(_start_cmd(speed=100.0))
             _recv_until(ws, "env_step", max_frames=20)  # session is live
             ws.send_text(json.dumps({"cmd": "pause"}))
             _recv_until(ws, "status", max_frames=20)    # wait for paused status
@@ -394,12 +398,16 @@ class TestErrorHandling:
             assert msg.get("code") == "site_not_found"
 
     def test_start_while_running_returns_error_frame(self, ws_client):
-        """Sending start while already running → error, session continues."""
+        """Sending start while already running → error, session continues.
+
+        speed=100 → 10 ms/frame so the error frame arrives within the 20-frame budget
+        despite the step loop emitting frames concurrently.
+        """
         with ws_client.websocket_connect("/ws/inference") as ws:
             ws.receive_text(timeout=5)
-            ws.send_text(_start_cmd())
+            ws.send_text(_start_cmd(speed=100.0))
             _recv_until(ws, "env_step", max_frames=20)
-            ws.send_text(_start_cmd())
+            ws.send_text(_start_cmd(speed=100.0))
             msg = _recv_until(ws, "error", max_frames=20)
             assert msg.get("code") == "already_running"
 
@@ -578,6 +586,35 @@ class TestReplaySpeed:
             frame = _recv_until(ws, "env_step", max_frames=30)
             assert frame["kind"] == "env_step"
 
+    def test_speed_throttles_frame_rate(self, ws_client):
+        """speed=2 → sleep=0.5s per frame; collecting 2 env_step frames must take ≥0.3s.
+
+        At speed=2 the server sleeps 1/2 = 0.5s after each frame is sent.
+        With N=2 frames there is exactly 1 sleep → ~0.5s wall-clock.
+        Lower bound: 0.3s (allows 40% scheduling jitter on slow CI).
+        """
+        N = 2
+        t0 = time.monotonic()
+        with ws_client.websocket_connect("/ws/inference") as ws:
+            ws.receive_text(timeout=5)  # ready
+            ws.send_text(json.dumps({
+                "cmd": "start", "run_id": "run_001", "site_id": "gansu",
+                "seed": 0, "speed": 2.0
+            }))
+            frames = []
+            while len(frames) < N:
+                raw = ws.receive_text(timeout=10)
+                msg = json.loads(raw)
+                if msg.get("kind") == "env_step":
+                    frames.append(msg)
+        elapsed = time.monotonic() - t0
+        # speed=2 → sleep=0.5s/frame; 2 frames → 1 sleep ≈ 0.5s total
+        # lower bound 0.3s = 60% of expected (generous for CI jitter)
+        assert elapsed > 0.3, (
+            f"speed=2 must throttle: {N} frames took {elapsed:.3f}s — "
+            f"expected > 0.3s (1 sleep × 0.5s, with CI jitter allowance)"
+        )
+
 
 # ===========================================================================
 # TestPolicyCaching
@@ -589,11 +626,12 @@ class TestPolicyCaching:
 
         This tests that policy caching does not corrupt state between sessions.
         Both runs must produce valid telemetry.
+        speed=100 → stopped status lands within the 20-frame budget.
         """
         for _session in range(2):
             with ws_client.websocket_connect("/ws/inference") as ws:
                 ws.receive_text(timeout=5)
-                ws.send_text(_start_cmd())
+                ws.send_text(_start_cmd(speed=100.0))
                 frame = _recv_until(ws, "env_step", max_frames=20)
                 errs = validate(frame)
                 assert errs == [], f"session {_session}: frame fails validate: {errs}"
