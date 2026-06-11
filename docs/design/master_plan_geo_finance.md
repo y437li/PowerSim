@@ -65,13 +65,12 @@ This is why **B is the foundation** and the others depend on it:
 
 **Goal:** the web/training UI lets the user pick **latitude/longitude** (map or input), pull historical weather for that location, and generate a runnable **site config**.
 
-**Design (plan-lead seed — frontend-reviewer to refine the UI):**
-- **UI:** a location picker (map click or lat/lon entry) + a device-composition panel (choose device-model IDs + counts from the B schema) → "create site config." Surfaces the §12 data-availability/year selection.
-- **Fetch pipeline:** exactly §12's `fetch → cache → transform → device array`, Open-Meteo lat/lon-keyed (PR #77 confirms multi-year availability for the block-bootstrap path). The UI triggers an **offline** fetch (serving endpoint or harness job) — never inside training/`step`.
-- **Site-config generation:** the chosen `(lat,lon)` + selected B device-models → a site YAML (`location` block per §12.2 + device-model instances per B). This YAML is the single artifact that A produces and B/C/D consume.
-- **Boundary:** A is UI + orchestration over §12 + B; it introduces **no** new env physics. Licensing/redistribution of cached weather (PR #77 §4.1) is the gate item carried forward.
-
-**Open decisions:** map provider for the picker; does fetch run in serving (FastAPI endpoint) or the harness; how the UI presents §12's synthetic-vs-real and (post-PR#77) the unlimited-generation modes.
+**Design (frontend-reviewer consult, integrated):**
+- **Map provider — MapLibre GL JS** (BSD) via `react-map-gl`, **configurable** tile source (open/free default; opt-in API-key provider via config — avoids mandatory proprietary-key install friction on arbitrary §9 boxes, and we already carry one data-redistribution gate). **Numeric lat/lon fields are co-equal and authoritative**; the map is a convenience. **No-map fallback** (offline/tiles fail) must still allow lat/lon entry — graceful degradation, same discipline as the 3D scene's telemetry-gap freeze. Validate `lat∈[-90,90]`, `lon∈[-180,180]`, and **gate on data-availability** — don't let the user generate a config for a point/year with no Open-Meteo coverage (surface §12/PR#77 availability as a precondition).
+- **Fetch path — serving exposes, harness executes, dashboard observes (reuse the existing pattern, don't fork it):** UI → `POST /api/geo/fetch {lat,lon,years,mode}` → **202 + job_id** (async — the fetch is slow, cache-writing, rate-limited; **never** synchronous in the request thread, never inside training/`step`) → progress over the existing WS status frame / REST poll → returns the site-config (or `config_id`). **Content-address the cache** by `(lat, lon, year-range, provider, version)` so re-requests hit cache and the UI can show cached-vs-fetching.
+- **Weather-source selector — 3 badged modes with provenance stamped into the artifact (a data-correctness guard, not cosmetics):** (1) **synthetic** (§4 gens; no location; seeded), (2) **historical/real** (lat/lon + specific year(s) from cache), (3) **bootstrap/unlimited** (PR#77 block-bootstrap of real history; lat/lon + seed + block length). The mode is written into the generated site YAML as a **`weather.provenance`** block **and surfaced on all downstream eval/econ results** — so synthetic can never be misread as real and E never silently mixes provenance. Modes 2/3 gated on data-availability.
+- **Device-composition panel (operationalizes the join-key invariant):** the panel's ID list comes from the **B `device_model_schema`, keyed by the exact `assets/3d/registry.json` IDs verbatim** (no aliasing/re-typing). Each row: ID · type · nameplate from the physics facet **with units** (MW/MWh) · (when D lands) a CAPEX hint from the econ facet. Counts × nameplate → a **live composed-site total** — but that preview total **must come from the same server-side §8.4 resolver the env build step uses** (a serving resolve-endpoint returning composed totals + obs/action dims); **do NOT reimplement composition in TS** or the preview drifts from what's simulated (same class of guard as the registry-drift test). A configured ID with no schema entry = **hard error surfaced in the UI**, not a silent blank.
+- **Site-config artifact:** chosen `(lat,lon)` + selected B device-models → a site YAML (`location` per §12.2 + `weather.provenance` + device-model instances). This YAML is the single artifact A produces and B/C/D consume. A introduces **no** new env physics; the weather-redistribution licensing (PR#77 §4.1) is the carried-forward gate item.
 
 ---
 
@@ -100,12 +99,14 @@ This is why **B is the foundation** and the others depend on it:
 
 ---
 
-## 6. Workstream E — Policy-selector economics UI  ·  *frontend-reviewer consult*  ·  **STUB**
+## 6. Workstream E — Policy-selector economics UI  ·  *frontend-reviewer consult, integrated*
 
-**Plan-lead framing (requirements; frontend + finance-expert to design):**
-- **Goal:** choose one or more policies (RL checkpoint(s) + §11 baselines) and view their **economic** test results **side-by-side** (the D outputs: IRR/NPV/LCOE, cash-flow curves, sensitivity).
-- **Depends on:** D (the economic model + comparison schema) and the serving/eval path (which already emits `eval_compare` per policy, LOCKED telemetry Kind 3) — E extends the existing eval-vs-baseline dashboard panel with the economic layer.
-- **Open:** how policies are selected (the checkpoint-id picker already planned for serving), and whether the economic rollup streams over the existing telemetry or a new finance endpoint (coordinate with D's accounting-basis decision).
+**Goal:** choose one or more policies (RL checkpoint(s) + §11 baselines) and view their **economic** results **side-by-side** (the D outputs: IRR/NPV/LCOE, cash-flow curves, sensitivity).
+
+**Design (frontend-reviewer consult, integrated):**
+- **Finance is a NEW REST resource — kept OFF the LOCKED per-step wire.** `eval_compare` (Kind 3) is LOCKED, per-step/per-episode *operating* results under D13; project finance is a **batch artifact** (one trajectory per (policy, scenario), different shape and cadence). Shoehorning it into Kind 3 would break the lock or abuse the schema (any finance term on the wire = additive minor bump + both-reviewer re-review per the schema's versioning rule — a deliberate decision, not an assumption). **Recommendation: `GET /api/finance/compare?policies=…&scenario=…`** returns a structured economic-comparison doc (per policy: IRR/NPV/LCOE scalars, cash-flow series by year, sensitivity grid, + provenance: checkpoint-id, weather-mode, discount/escalation assumptions). The eval-vs-baseline panel keeps streaming operating results over `eval_compare`; **E layers the economic doc on top, joined by `(policy-id, checkpoint-id, scenario-id)`** so the economics shown provably match the operating run shown. No telemetry change needed.
+- **N-policy side-by-side (N≈2–6):** (1) **comparison table = the spine** — policies as columns, metrics as rows (IRR % · NPV ¥@base-discount · LCOE ¥/MWh · payback yr · CAPEX ¥ · 20-yr OPEX ¥), units in every row label, best-in-row highlighted, columns badged RL-vs-baseline + checkpoint-id; (2) **overlaid cumulative *discounted* cash-flow curves** (x=year 0–20, zero line + break-even markers, shared axes — reuse the dashboard's multi-series chart); (3) **sensitivity = overlaid NPV-vs-discount-rate lines** — the **crossover** ("at what discount rate does RL stop beating TOU") is the decision-relevant insight (beats separate heatmaps for ≤6 policies); (4) **assumptions banner shown once** (discount, escalation, horizon, weather-mode, scenario) — and **refuse to compare (or hard-badge) policies evaluated under different assumptions** (correctness guard); (5) selector = the planned checkpoint-id multi-select picker over RL checkpoints (run/step/eval-score provenance) + §11 baselines, type-badged, **no silent truncation** past the cap.
+- **Boundary:** D owns the D13→cash-flow accounting basis; E must display the linkage honestly ("D13 operating cost → annual OPEX line"; no double-count). E depends on D's model + the serving checkpoint-id picker.
 
 ---
 
@@ -130,17 +131,18 @@ Design work (this plan, and each section's detailed design) can proceed in paral
 - **New spec section:** §13 project-finance (D) — a **REBUILD_SPEC change → human-gated** per CLAUDE.md; finance-expert drafts, USER approves (this plan's gate already routes to the USER).
 - **§7 purity:** B (build-time resolve), C (year-boundary host work), A (offline fetch) all keep the jitted `step` pure — verify in each section's feasibility.
 - **Scope risk:** this is five workstreams; the plan recommends shipping **B + the Gansu-parity proof first** as a thin vertical slice, then layering A/C/D/E — rather than a big-bang. Flag for the gate.
+- **Frontend correctness guardrails (frontend-reviewer, both A & E):** (1) **units on every displayed number** via the shared formatting utilities (¥, ¥/MWh, MW, MWh, %, yr) — a bare/wrong unit on a finance/energy figure is a critical-bug class; (2) **device-model ID is the literal end-to-end join key** — sourced verbatim from schema/registry, never re-typed/aliased; a missing entry surfaces a hard error (registry-drift-guard analogue); (3) **provenance integrity** — weather-mode + finance assumptions stamped into artifacts and shown on results; synthetic never misread as real; mismatched-assumption comparisons refused; (4) **reuse existing serving REST/WS + single-source telemetry store** — no rogue sockets, no duplicated parsing; (5) **never reimplement composition/finance math in TS** — UI previews (site totals, derived econ) come from the *same* server-side §8.4 resolver / D finance model the simulation uses, or are explicitly tested to match.
 
 ---
 
 ## 9. Decisions requested at the Fable gate (→ USER summary)
 
 1. **Endorse the device-model-schema-as-keystone architecture** (one ID, three facets; B foundational) and the **foundation-first sequencing** (B → A/C → D → E)?
-2. **Schema location:** sibling `config/device_models.yaml` keyed by the existing device IDs (plan-lead lean — keeps the 3D lock closed), vs extending the LOCKED `registry.json` (one file, but reopens the lock)?
+2. **Schema location:** sibling `config/device_models.yaml` keyed by the existing device IDs (plan-lead lean, **concurred by frontend-reviewer** — keeps the 3D lock closed; UI resolves all three facets by the shared ID regardless of file), vs extending the LOCKED `registry.json` (one file, but reopens the lock)? *Two votes for the sibling file; awaiting jax-env-engineer.*
 3. **Scope/phasing:** thin vertical slice first (B + Gansu-parity), then A/C/D/E — or broader parallel build?
 4. **§13 project-finance spec section** — confirm finance-expert authors it and it goes to the USER as a REBUILD_SPEC change.
 5. **Multi-year scope (C):** 10 *and* 20 yr; escalation model (flat % vs scenario); replacement at EOL — any USER constraints to fix now?
-6. **Accounting basis (D):** confirm finance composes on top of the LOCKED D13 real-money identity (operating cost → project cash flow), with finance as a separate rollup (not per-step telemetry) unless a wire change is explicitly wanted.
+6. **Accounting basis (D):** confirm finance composes on top of the LOCKED D13 real-money identity (operating cost → project cash flow), with finance as a **separate REST resource** (`/api/finance/compare`, joined to operating runs by `(policy-id, checkpoint-id, scenario-id)`) — **OFF** the LOCKED per-step `eval_compare` wire (frontend-reviewer recommendation; no telemetry change). finance-expert to confirm the field set + basis.
 
 ---
 
