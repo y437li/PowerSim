@@ -1,12 +1,27 @@
+import { useEffect } from "react";
 import { Routes, Route, NavLink } from "react-router-dom";
 import SiteView from "./routes/SiteView";
 import TrainingPanel from "./routes/TrainingPanel";
 import { EvalComparison } from "./routes/EvalComparison";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { telemetryWsClient, trainingWsClient } from "./clients/wsClientSingleton";
 
 // App has NO BrowserRouter — the router is in main.tsx (or MemoryRouter in tests).
 // Direct imports (not React.lazy) so tests can render synchronously.
 export default function App() {
+  // Connect both WS clients on mount; disconnect on unmount.
+  // Contract: contracts/frontend/app_integration.md §3
+  // wsClient.connect() is idempotent (no-op if already connecting/connected),
+  // so React 18 StrictMode's double-invocation is safe.
+  useEffect(() => {
+    telemetryWsClient.connect();
+    trainingWsClient.connect();
+    return () => {
+      telemetryWsClient.disconnect();
+      trainingWsClient.disconnect();
+    };
+  }, []);
+
   return (
     <div className="app">
       <nav className="app__nav">

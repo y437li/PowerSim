@@ -25,6 +25,22 @@ export interface WsClient {
 
 const SUPPORTED_MAJOR = 1;
 
+/**
+ * Convert a relative WebSocket path to an absolute ws:// / wss:// URL.
+ *
+ * `new WebSocket(url)` requires an absolute URL in jsdom and older browsers.
+ * Vite's dev proxy rewrites `/ws/*` to `ws://localhost:8000/*`, so the
+ * browser connects to the dev server which proxies to the backend — correct.
+ *
+ * Already-absolute URLs (ws:// or wss://) are returned unchanged so existing
+ * test fixtures that pass absolute URLs continue to work.
+ */
+function resolveWsUrl(url: string): string {
+  if (/^wss?:\/\//.test(url)) return url;
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${location.host}${url}`;
+}
+
 /** Parse the major version from a semver string, e.g. "1.5.0" → 1. */
 function parseMajor(version: string): number {
   const parts = version.split(".");
@@ -142,7 +158,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
 
     intentionalClose = false;
     versionRejected = false;
-    ws = new WebSocket(url);
+    ws = new WebSocket(resolveWsUrl(url));
 
     ws.onopen = () => {
       reconnectAttempt = 0;
