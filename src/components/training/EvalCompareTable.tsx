@@ -1,7 +1,11 @@
 import React from "react";
 import { Card } from "../Card";
 import { formatYuan } from "../../utils/units";
-import type { EvalComparePayload } from "../../types/telemetry";
+import type { EvalComparePayload, PolicyMetrics } from "../../types/telemetry";
+
+// Type alias: policies map is keyed by policy name; the concrete type has fixed keys
+// but we need string indexing for runtime iteration over Object.keys().
+type PoliciesRecord = Record<string, PolicyMetrics>;
 
 interface EvalCompareTableProps {
   latest: EvalComparePayload | null;
@@ -52,15 +56,15 @@ export function EvalCompareTable({ latest }: EvalCompareTableProps): JSX.Element
     .filter((k) => k !== "rl")
     .sort(
       (a, b) =>
-        latest.policies[a].total_cost_yuan - latest.policies[b].total_cost_yuan
+        (latest.policies as PoliciesRecord)[a].total_cost_yuan - (latest.policies as PoliciesRecord)[b].total_cost_yuan
     );
   const orderedKeys = keys.includes("rl") ? ["rl", ...otherKeys] : otherKeys;
 
   // Determine which key has the best (lowest) total_cost_yuan.
   // Tie-break: rl wins ties.
-  const minCost = Math.min(...keys.map((k) => latest.policies[k].total_cost_yuan));
+  const minCost = Math.min(...keys.map((k) => (latest.policies as PoliciesRecord)[k].total_cost_yuan));
   const tiedKeys = keys.filter(
-    (k) => latest.policies[k].total_cost_yuan === minCost
+    (k) => (latest.policies as PoliciesRecord)[k].total_cost_yuan === minCost
   );
   const bestKey =
     tiedKeys.includes("rl") ? "rl" : tiedKeys[0];
@@ -84,7 +88,7 @@ export function EvalCompareTable({ latest }: EvalCompareTableProps): JSX.Element
           </thead>
           <tbody>
             {orderedKeys.map((key) => {
-              const p = latest.policies[key];
+              const p = (latest.policies as PoliciesRecord)[key];
               const isBest = key === bestKey;
               return (
                 <tr

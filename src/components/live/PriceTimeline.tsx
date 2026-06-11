@@ -113,7 +113,8 @@ export function PriceTimeline({ history }: PriceTimelineProps): JSX.Element {
                 fillOpacity={0.35}
               />
             ))}
-            <Tooltip formatter={(v: number) => [`¥${v}/MWh`, "Buy price"]} />
+            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+            <Tooltip formatter={(v: any) => v == null ? ['', ''] : [`¥${v}/MWh`, "Buy price"]} />
             {/*
               Tier-coloured price line — one Line per contiguous tier segment (§2.4 [should]).
               Each segment's line uses its tier's colour token from touColors.ts.

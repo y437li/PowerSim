@@ -331,14 +331,25 @@ esac
 # Defined here so it can be called both before install and at launch time.
 check_port_free() {
     local port="$1" label="$2"
+    local _in_use=0
     if command -v lsof &>/dev/null; then
         # Use lsof without -sTCP:LISTEN so we detect any TCP socket on this port
         # (bound but not yet in LISTEN state, ESTABLISHED, etc.).  The LISTEN-only
         # filter caused false-negatives when the occupying socket had been bound
         # but not yet put into LISTEN state (e.g. during test fixture setup).
         if lsof -iTCP:"${port}" &>/dev/null 2>&1; then
-            die 5 "$label port $port is already in use. Remediation: Use --$(echo "$label" | tr '[:upper:]' '[:lower:]')-port <other-port> or stop the existing process."
+            _in_use=1
         fi
+    fi
+    # On Linux, lsof may not report sockets in TCP_CLOSE state (bound but not yet
+    # listening).  Fall back to ss -a (all states) which includes bound sockets.
+    if [[ $_in_use -eq 0 ]] && command -v ss &>/dev/null; then
+        if ss -Htna "sport = :${port}" 2>/dev/null | grep -q .; then
+            _in_use=1
+        fi
+    fi
+    if [[ $_in_use -eq 1 ]]; then
+        die 5 "$label port $port is already in use. Remediation: Use --$(echo "$label" | tr '[:upper:]' '[:lower:]')-port <other-port> or stop the existing process."
     fi
 }
 
