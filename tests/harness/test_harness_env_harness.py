@@ -189,7 +189,7 @@ class TestStepBaseCostIdentity:
       P_pv = 0 (irr=0)
       P_wind = 0 (wind=0 < v_cutin=3)
       P_ch_target = 0.5 × 98.16 = 49.08 MW
-      max_P_ch = (0.9−0.5) × 294.5 / 0.97 = 0.4×294.5/0.97 = 121.340 MW  → no SOC clip
+      max_P_ch = (0.9−0.5) × 294.5 / 0.97 = 0.4×294.5/0.97 = 117.8/0.97 = 121.443 MW → no SOC clip
       P_ch_actual = 49.08 MW
       P_grid_to_bat = 49.08 MW (no renewables)
       load_deficit = max(0, 50−0) = 50 MW
@@ -250,8 +250,8 @@ class TestStepBaseCostIdentity:
         assert abs(insp.reward - (-0.619204)) < 1e-4
 
     def test_soc_out(self, insp):
-        # new_soc = 0.5 + 0.97 × 49.08 / 294.5 = 0.5 + 0.161878 = 0.661878
-        # = 0.5 + (0.97 × 49.08 / 294.5)
+        # new_soc = 0.5 + 0.97 × 49.08 / 294.5
+        # = 0.5 + 47.6076 / 294.5 = 0.5 + 0.161656 = 0.661656
         expected = 0.5 + (0.97 * 49.08 / 294.5)
         assert abs(insp.soc_out - expected) < 1e-4
 
@@ -584,6 +584,10 @@ class TestPowerConservation:
     def test_wind_conservation_flag(self, insp):
         assert insp.wind_conservation_ok is True
 
+    def test_bat_conservation_flag(self, insp):
+        # No discharge in this test (a_bat=0) → bat_dis=0, all bat flows=0: trivially conserved
+        assert insp.bat_conservation_ok is True
+
     def test_load_cap_fired(self, insp):
         assert insp.constraint_load_capped is True
 
@@ -612,21 +616,23 @@ class TestExportCurtailmentConservation:
 
     Using max_export_mw=200 (custom params) so curtailment fires:
       P_pv = 313.698 MW (as above), P_wind = 615 MW
-      action=[0, 0, 0, 0, 0, 0] → all to grid
+      action=[0, 0, 0, 0, 0, 0] → all to grid (a_bat=0 → charge mode, P_ch_target=0 → no bat)
       P_export_raw = 313.698 + 615 = 928.698 MW > 200
       scale_export = 200/928.698 = 0.21534
       P_sol_to_grid = 313.698 × 0.21534 = 67.565 MW
       P_wind_to_grid = 615 × 0.21534 = 132.435 MW
+      P_bat_to_grid = 0 (no discharge)
       P_export = 200 MW
       P_curtailed = 928.698 − 200 = 728.698 MW
-      P_sol_curtailed = 313.698 × (1−0.21534) = 313.698 × 0.78466 = 246.133 MW
-      P_wind_curtailed = 615 × (1−0.21534) = 615 × 0.78466 = 482.565 MW
+      P_sol_curtailed = 313.698 × (1−0.21534) = 246.133 MW
+      P_wind_curtailed = 615 × (1−0.21534) = 482.565 MW
+      P_bat_curtailed = 0 (no discharge contributing to export)
     Solar conservation: 0 + 0 + 67.565 + 246.133 = 313.698 ✓
     Wind conservation:  0 + 0 + 132.435 + 482.565 = 615 ✓
     """
 
     @pytest.fixture
-    def ienv_small_load_small_export(self, det_params):
+    def ienv_small_load_small_export(self):
         params = make_deterministic_params(grid_max_export_mw=200.0)
         data = make_synthetic_data_with_step(8, 12.0, 1000.0, 25.0, 5.0)
         return InteractiveEnv(params=params, data=data)
@@ -659,12 +665,124 @@ class TestExportCurtailmentConservation:
     def test_c_curtail(self, insp):
         # C_curtail = 800 × P_curtailed × 1
         # P_curtailed ≈ 928.698 − 200 = 728.698 MW → 800 × 728.698 = 582 958 ¥
-        expected = 800.0 * (insp.solar_curtailed_mw + insp.wind_curtailed_mw)
+        total_curtailed = (
+            insp.solar_curtailed_mw + insp.wind_curtailed_mw + insp.bat_curtailed_mw
+        )
+        expected = 800.0 * total_curtailed
         assert abs(insp.c_curtail_yuan - expected) < 1.0
 
     def test_conservation_flags(self, insp):
         assert insp.solar_conservation_ok is True
         assert insp.wind_conservation_ok is True
+        assert insp.bat_conservation_ok is True  # no discharge: all zero, trivially satisfied
+
+    def test_bat_curtailed_zero_when_no_discharge(self, insp):
+        # No discharge (a_bat=0) → bat contributes nothing to export → bat_curtailed = 0
+        assert insp.bat_curtailed_mw == 0.0
+
+
+class TestBatteryCurtailmentConservation:
+    """
+    T5c (F1): Discharging battery pushes export over the cap → bat_curtailed > 0.
+
+    Setup: t=8 (price=620), soc=0.7, wind=0, irr=0, load=5 MW (tiny)
+           max_export_mw=20 (custom, << discharge capacity)
+           action=[-1.0, 0, 0, 0, 0, 0]  (full discharge, f_bat_load=0 → all to grid)
+
+    Discharge:
+      P_dis_target = 1.0 × 98.16 = 98.16 MW
+      max_P_dis = (0.7−0.2) × 294.5 × 0.97 = 0.5 × 294.5 × 0.97 = 142.843 MW
+      P_dis_actual = min(98.16, 142.843) = 98.16 MW   (no SOC clip)
+      soc_out = 0.7 − 98.16/(0.97×294.5) = 0.7 − 98.16/285.665 = 0.7 − 0.34366 = 0.35634
+
+    Power flows:
+      P_bat_to_load = f_bat_load × P_dis_actual = 0 × 98.16 = 0 MW
+      P_bat_to_grid_pre = P_dis_actual − P_bat_to_load = 98.16 MW
+      P_sol_to_grid = P_wind_to_grid = 0 (no renewables)
+
+    Load serving:
+      P_to_load_total = 0 + 0 + 0 = 0 < load=5 → no load cap
+      load_deficit = max(0, 5−0) = 5 MW (served by grid import)
+      Wait: in discharge mode, bat_to_load = 0 (f_bat_load=0).
+      P_load_served_before_grid = 0. Grid import = load_deficit + P_grid_to_bat
+      P_grid_to_bat = 0 (discharge mode)
+      P_import_raw = 5 + 0 = 5 MW (load only)
+      P_import = min(5, 400) = 5 MW (no import cap)
+      P_grid_to_load = 5 MW
+      load_unserved = 0
+
+    PCC export cap:
+      P_export_raw = P_bat_to_grid_pre = 98.16 MW > max_export=20
+      scale_export = 20/98.16 = 0.20375
+      P_bat_to_grid_post = 98.16 × 0.20375 = 19.994 ≈ 20 MW
+      P_bat_curtailed = P_bat_to_grid_pre × (1−0.20375)
+                      = 98.16 × 0.79625 = 78.166 MW
+      P_export = 20 MW
+
+    Battery conservation:
+      bat_to_load + bat_to_grid + bat_curtailed = 0 + 20 + 78.166 = 98.166 ≈ 98.16 ✓
+      (float32 rounding)
+
+    C_curtail = 800 × 78.166 × 1 = 62 532.8 ¥
+    """
+
+    @pytest.fixture
+    def ienv_bat_curtail(self):
+        params = make_deterministic_params(grid_max_export_mw=20.0)
+        data = make_synthetic_data_with_step(8, 0.0, 0.0, 25.0, 5.0)
+        return InteractiveEnv(params=params, data=data)
+
+    @pytest.fixture
+    def insp(self, ienv_bat_curtail):
+        state = ienv_bat_curtail.make_state(soc=0.7, t=8, month_peak_mw=200.0)
+        return ienv_bat_curtail.step(state, [-1.0, 0, 0, 0, 0, 0])
+
+    def test_bat_curtailed_positive(self, insp):
+        # bat_curtailed = 98.16 × (1 − 20/98.16) = 98.16 × 0.79625 ≈ 78.166 MW
+        expected_bat_curtailed = 98.16 * (1.0 - 20.0 / 98.16)
+        assert insp.bat_curtailed_mw > 0.0, "Battery curtailment should be > 0"
+        assert abs(insp.bat_curtailed_mw - expected_bat_curtailed) < 0.1
+
+    def test_p_export_at_max(self, insp):
+        assert abs(insp.p_export_mw - 20.0) < TOL_MW
+
+    def test_constraint_export_capped(self, insp):
+        assert insp.constraint_export_capped is True
+
+    def test_bat_conservation(self, insp):
+        # bat_to_load + bat_to_grid + bat_curtailed = P_dis_actual = 98.16 MW
+        lhs = insp.bat_to_load_mw + insp.bat_to_grid_mw + insp.bat_curtailed_mw
+        assert abs(lhs - insp.p_bat_dis_mw) < TOL_MW, (
+            f"Battery conservation: {lhs:.4f} != P_dis={insp.p_bat_dis_mw:.4f}"
+        )
+
+    def test_bat_conservation_flag(self, insp):
+        assert insp.bat_conservation_ok is True
+
+    def test_c_curtail_includes_bat(self, insp):
+        # C_curtail = 800 × (solar_curtailed + wind_curtailed + bat_curtailed)
+        # ≈ 800 × 78.166 = 62 532.8 ¥
+        total_curtailed = (
+            insp.solar_curtailed_mw + insp.wind_curtailed_mw + insp.bat_curtailed_mw
+        )
+        expected = 800.0 * total_curtailed
+        assert abs(insp.c_curtail_yuan - expected) < 1.0
+
+    def test_no_soc_violation(self, insp):
+        # P_dis_actual fits within SOC range (soc=0.7 >> soc_min=0.2)
+        assert insp.soc_violation_mwh == 0.0
+
+    def test_d13_identities(self, insp):
+        real = (
+            insp.c_energy_yuan + insp.c_demand_charge_yuan
+            + insp.c_degradation_yuan + insp.c_curtail_yuan + insp.c_voll_yuan
+        )
+        rb = (
+            insp.c_energy_yuan + 2.0 * insp.c_demand_shape_yuan
+            + insp.c_degradation_yuan + insp.c_curtail_yuan + insp.c_voll_yuan
+        )
+        assert abs(insp.cost_total_real_yuan - real) < TOL_YEN
+        assert abs(insp.cost_total_reward_basis_yuan - rb) < TOL_YEN
 
 
 # =========================================================================== #
@@ -994,6 +1112,7 @@ class TestScenarioReplayConservationAllSteps:
             si = ts.step_inspection
             assert si.solar_conservation_ok, f"Solar conservation failed at seq={ts.seq}"
             assert si.wind_conservation_ok, f"Wind conservation failed at seq={ts.seq}"
+            assert si.bat_conservation_ok, f"Battery conservation failed at seq={ts.seq}"
 
 
 # =========================================================================== #
@@ -1262,6 +1381,163 @@ class TestMetricsTelemetryConformance:
                         f"eval_compare additive identity violated for {policy_name}: "
                         f"{total:.2f} != {p['total_cost_yuan']:.2f}"
                     )
+
+
+class TestValidateMessageNegative:
+    """
+    F2: validate_message must REJECT broken envelopes (errors != []).
+    Without this, a no-op validator or a subtly-wrong producer message
+    would slip through the conformance tests above.
+    """
+
+    def test_missing_required_field_envelope(self):
+        # Drop 'kind' — required by schema envelope
+        broken = {
+            "schema_version": "1.0.0",
+            # "kind" deliberately missing
+            "ts_utc": "2026-06-10T08:00:00Z",
+            "run_id": "test-run",
+            "seq": 1,
+            "payload": {}
+        }
+        errors = validate_message(broken)
+        assert errors != [], (
+            "validate_message should reject an envelope missing required 'kind' field"
+        )
+
+    def test_nan_in_numeric_field_rejected(self):
+        # A payload with NaN violates the global finiteness invariant (LOCKED schema §5)
+        broken = {
+            "schema_version": "1.0.0",
+            "kind": "train_metrics",
+            "ts_utc": "2026-06-10T08:00:00Z",
+            "run_id": "test-run",
+            "seq": 1,
+            "payload": {
+                "global_step": 1000,
+                "wall_seconds": float("nan"),  # NaN — must be rejected
+                "env_steps_per_sec": 1e6,
+                "actor_loss": 0.5,
+                "critic_loss": 1.0,
+                "ent_coef": 0.2,
+                "reward_scaled_mean": 0.5,
+                "reward_norm_mean": None,
+                "cost_total_real_mean_yuan": -1000.0,
+                "is_eval_checkpoint": False,
+                "checkpoint_id": None,
+            }
+        }
+        errors = validate_message(broken)
+        assert errors != [], (
+            "validate_message should reject a message with NaN in a numeric field"
+        )
+
+    def test_inf_in_numeric_field_rejected(self):
+        broken = {
+            "schema_version": "1.0.0",
+            "kind": "train_metrics",
+            "ts_utc": "2026-06-10T08:00:00Z",
+            "run_id": "test-run",
+            "seq": 2,
+            "payload": {
+                "global_step": 2000,
+                "wall_seconds": float("inf"),  # +Inf — must be rejected
+                "env_steps_per_sec": 1e6,
+                "actor_loss": 0.5,
+                "critic_loss": 1.0,
+                "ent_coef": 0.2,
+                "reward_scaled_mean": 0.5,
+                "reward_norm_mean": None,
+                "cost_total_real_mean_yuan": -1000.0,
+                "is_eval_checkpoint": False,
+                "checkpoint_id": None,
+            }
+        }
+        errors = validate_message(broken)
+        assert errors != [], (
+            "validate_message should reject a message with +Inf in a numeric field"
+        )
+
+    def test_wrong_kind_rejected(self):
+        # 'kind' must be one of "env_step" | "train_metrics" | "eval_compare"
+        broken = {
+            "schema_version": "1.0.0",
+            "kind": "not_a_real_kind",
+            "ts_utc": "2026-06-10T08:00:00Z",
+            "run_id": "test-run",
+            "seq": 1,
+            "payload": {}
+        }
+        errors = validate_message(broken)
+        assert errors != [], (
+            "validate_message should reject an envelope with an invalid 'kind' value"
+        )
+
+    def test_missing_payload_field_rejected(self):
+        # train_metrics payload is missing required 'global_step'
+        broken = {
+            "schema_version": "1.0.0",
+            "kind": "train_metrics",
+            "ts_utc": "2026-06-10T08:00:00Z",
+            "run_id": "test-run",
+            "seq": 1,
+            "payload": {
+                # global_step deliberately missing
+                "wall_seconds": 1.0,
+                "env_steps_per_sec": 1e6,
+                "actor_loss": 0.5,
+                "critic_loss": 1.0,
+                "ent_coef": 0.2,
+                "reward_scaled_mean": 0.5,
+                "reward_norm_mean": None,
+                "cost_total_real_mean_yuan": -1000.0,
+                "is_eval_checkpoint": False,
+                "checkpoint_id": None,
+            }
+        }
+        errors = validate_message(broken)
+        assert errors != [], (
+            "validate_message should reject a train_metrics payload missing 'global_step'"
+        )
+
+    def test_eval_compare_cost_identity_violation_rejected(self):
+        """
+        eval_compare with total_cost_yuan != sum of components must be rejected.
+        D13: total = energy + demand + degradation + curtailment + voll.
+        """
+        broken_policy = {
+            "energy_cost_yuan": 100.0,
+            "demand_charge_yuan": 200.0,
+            "degradation_yuan": 50.0,
+            "curtailment_yuan": 0.0,
+            "voll_yuan": 0.0,
+            "total_cost_yuan": 999.0,   # wrong: should be 350.0
+            "soc_violations_count": 0,
+            "soc_violation_mwh": 0.0,
+            "penalty_yuan": 0.0,
+        }
+        broken = {
+            "schema_version": "1.0.0",
+            "kind": "eval_compare",
+            "ts_utc": "2026-06-10T08:00:00Z",
+            "run_id": "test-run",
+            "seq": 1,
+            "payload": {
+                "eval_horizon_steps": 8760,
+                "checkpoint_id": "ckpt-1",
+                "cost_basis": "real_money",
+                "policies": {
+                    "rl": broken_policy,
+                    "no_battery": broken_policy,
+                    "rule_based_tou": broken_policy,
+                }
+            }
+        }
+        errors = validate_message(broken)
+        assert errors != [], (
+            "validate_message should reject eval_compare where total_cost_yuan "
+            "violates the D13 additive identity"
+        )
 
 
 class TestStreamMetricsUnknownRunIdRaises:

@@ -39,19 +39,20 @@ The LOCKED telemetry `env_step` payload (§2 / `contracts/shared/telemetry_schem
 | `p_sol_to_load_mw` | P_sol_to_load after load cap and load-scale (MW, ≥ 0) |
 | `p_sol_to_bat_mw` | P_sol_to_bat after load cap (MW, ≥ 0) |
 | `p_sol_to_grid_mw` | P_pv − P_sol_to_load − P_sol_to_bat (MW, ≥ 0) |
-| `p_sol_curtailed_mw` | P_pv share of P_curtailed (MW, ≥ 0) |
+| `p_sol_curtailed_mw` | P_pv share of P_curtailed at PCC export cap (MW, ≥ 0) |
 | `p_wind_to_load_mw` | P_wind_to_load after load cap and load-scale (MW, ≥ 0) |
 | `p_wind_to_bat_mw` | P_wind_to_bat after load cap (MW, ≥ 0) |
 | `p_wind_to_grid_mw` | P_wind − P_wind_to_load − P_wind_to_bat (MW, ≥ 0) |
-| `p_wind_curtailed_mw` | P_wind share of P_curtailed (MW, ≥ 0) |
+| `p_wind_curtailed_mw` | P_wind share of P_curtailed at PCC export cap (MW, ≥ 0) |
 | `p_bat_to_load_mw` | Battery discharge routed to load (MW, ≥ 0) |
-| `p_bat_to_grid_mw` | Battery discharge routed to grid (MW, ≥ 0) |
+| `p_bat_to_grid_mw` | Battery discharge routed to grid **after** PCC export cap (MW, ≥ 0) |
+| `p_bat_curtailed_mw` | Battery share of P_curtailed at PCC export cap (MW, ≥ 0); **non-zero** when a discharging battery contributes to grid export that exceeds max_export_mw (§5.3.5: scale_export applied to P_bat_to_grid) |
 | `p_grid_to_bat_mw` | Grid power for battery charging (MW, ≥ 0) |
 | `p_grid_to_load_mw` | Grid power for load (= P_import − P_grid_to_bat_mw, ≥ 0) |
 
-These fields are all computed internally in §5.3.5 of the jax_env_core contract but not yet exposed in `EnvInfo`. Adding them is additive (existing tests unchanged). The harness implementation is **blocked** on this amendment being merged.
+These 13 fields are all computed internally in §5.3.5 of the jax_env_core contract but not yet exposed in `EnvInfo`. Adding them is a minor additive amendment (no existing field changes, no step() signature change). The harness implementation is **blocked** on this amendment being merged.
 
-`bat_curtailed_mw` is always 0 (§3.6 fidelity boundary — no battery curtailment in v1) but is included in `StepInspection` for telemetry-schema completeness (zeroed by harness, not required from env).
+**Battery curtailment clarification (F1 from backend-reviewer):** `P_bat_curtailed_mw` can be positive whenever a discharging battery pushes total grid export above the PCC cap. The jax_env_core §5.3.5 export-cap formula scales all three grid channels (`P_sol_to_grid`, `P_wind_to_grid`, `P_bat_to_grid`) by the same `scale_export` factor — so the battery share of curtailment = `P_bat_to_grid_pre × (1 − scale_export)`. This is NOT a §3.6 fidelity-boundary item; it is a consequence of the existing physics. The earlier note "always 0" was incorrect and has been removed.
 
 ---
 
@@ -178,8 +179,10 @@ class StepInspection:
     wind_to_grid_mw: float
     wind_curtailed_mw: float             # PCC export cap share; ≥ 0
     bat_to_load_mw: float
-    bat_to_grid_mw: float
-    bat_curtailed_mw: float              # always 0 (§3.6 fidelity boundary)
+    bat_to_grid_mw: float                # after PCC export cap
+    bat_curtailed_mw: float              # battery share of PCC export curtailment (≥ 0);
+                                         # non-zero when discharging battery contributes to
+                                         # export that exceeds max_export_mw (§5.3.5)
     grid_to_load_mw: float
     grid_to_bat_mw: float
     load_unserved_mw: float              # VOLL trigger; ≥ 0
@@ -237,6 +240,9 @@ class StepInspection:
                                          #   + solar_curtailed − p_pv_mw| < 1e-3
     wind_conservation_ok: bool           # |wind_to_load + wind_to_bat + wind_to_grid
                                          #   + wind_curtailed − p_wind_mw| < 1e-3
+    bat_conservation_ok: bool            # |bat_to_load + bat_to_grid + bat_curtailed
+                                         #   − p_bat_dis_mw| < 1e-3 (discharge mode);
+                                         # in charge mode: p_bat_dis_mw=0 and all bat_ flows=0
 ```
 
 ### 4.5 `TrajectoryStep` (dataclass)
