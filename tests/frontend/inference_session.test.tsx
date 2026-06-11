@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import { render, screen, fireEvent, act, cleanup } from "@testing-library/react";
 
 // ─── Mocks (module-level, hoisted by Vitest) ─────────────────────────────────
 
@@ -521,6 +521,12 @@ describe("§IS19–§IS24 — SessionControlStrip", () => {
   afterEach(() => vi.restoreAllMocks());
 
   async function renderStrip(overrides: Partial<typeof mockStoreState> = {}) {
+    // reviewer (frontend-reviewer): unmount any prior render first. RTL auto-cleanup runs
+    // between it() blocks, but NOT between multiple renderStrip() calls inside one test
+    // (e.g. §IS22's state loop). Without this, a second render leaves two
+    // data-testid="session-status-label" nodes in document.body and the singular
+    // getByTestId throws "multiple elements found". cleanup() is a no-op on the first call.
+    cleanup();
     // Apply overrides
     Object.assign(mockStoreState, overrides);
     // Mock the store at module level for this test
@@ -561,8 +567,8 @@ describe("§IS19–§IS24 — SessionControlStrip", () => {
       if (state === "error") overrides.errorMsg = "some error";
       await renderStrip(overrides);
       expect(screen.getByTestId("session-status-label")).toBeInTheDocument();
-      // Clean up between iterations
-      screen.unmount?.();
+      // (renderStrip() now cleanup()s the prior render at the top of each call;
+      //  the old `screen.unmount?.()` here was a silent no-op — screen has no unmount.)
     }
   });
 
