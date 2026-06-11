@@ -13,7 +13,9 @@ SERVER_TYPE=""
 ACCEL="cpu"
 SITE="config/site_gansu.yaml"
 CHECKPOINT=""
-BACKEND_PORT=8000
+# Resolution order: CLI flag (--backend-port) > env var (ENERGY_GO_BACKEND_PORT) > 8000.
+# ${ENERGY_GO_BACKEND_PORT:-8000} handles both absent and empty-string by returning 8000.
+BACKEND_PORT="${ENERGY_GO_BACKEND_PORT:-8000}"
 FRONTEND_PORT=5173
 
 # ── helpers ───────────────────────────────────────────────────────────────────

@@ -27,6 +27,13 @@ param(
     [switch]$Help
 )
 
+# Resolution order: CLI flag (-BackendPort) > env var (ENERGY_GO_BACKEND_PORT) > "8000".
+# $PSBoundParameters only contains parameters the caller passed explicitly, so this
+# check correctly lets a CLI flag win over the env var even when they differ.
+if (-not $PSBoundParameters.ContainsKey('BackendPort') -and $env:ENERGY_GO_BACKEND_PORT) {
+    $BackendPort = $env:ENERGY_GO_BACKEND_PORT
+}
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
