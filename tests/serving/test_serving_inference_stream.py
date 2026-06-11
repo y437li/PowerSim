@@ -1154,3 +1154,136 @@ class TestPolicyCutover:
                 f"Canonical checkpoint frame {i} fails D18 validate:\n"
                 + "\n".join(f"  - {e}" for e in errs)
             )
+
+
+# ===========================================================================
+# Reviewer-added (backend-reviewer, PR #59 policy-cutover gate)
+# ===========================================================================
+class TestReviewerPolicyCutover:
+    """Edge cases for the §6 / D28 policy cutover: negative D28 clip, obs_clip
+    clamp, policy_not_found on an empty run dir, discovery robustness to stray
+    non-canonical files. Hand-derived where applicable."""
+
+    def _zero_weight_ckpt(self, tmp_path, actor_out_b):
+        # reviewer: zero weight matrices so mean == actor_out_b (isolates the D28 clip).
+        from energy_go.training.checkpoint_format import (  # type: ignore
+            CheckpointData, save_checkpoint, load_checkpoint,
+        )
+        ckpt_data = CheckpointData(
+            schema_version="1.0.0",
+            checkpoint_id="reviewer-clip-0000-0000-000000000001",
+            run_config_json="{}",
+            global_step=1,
+            code_version="test0000",
+            obs_dim=107, action_dim=6, obs_count=1,
+            obs_mean=np.zeros(107, dtype=np.float32),
+            obs_var=np.ones(107, dtype=np.float32),
+            obs_clip=np.float32(10.0),
+            actor_fc1_w=np.zeros((107, 256), dtype=np.float32),
+            actor_fc1_b=np.zeros(256, dtype=np.float32),
+            actor_fc2_w=np.zeros((256, 256), dtype=np.float32),
+            actor_fc2_b=np.zeros(256, dtype=np.float32),
+            actor_out_w=np.zeros((256, 12), dtype=np.float32),
+            actor_out_b=actor_out_b,
+        )
+        path = tmp_path / "checkpoint_rev_step1.npz"
+        save_checkpoint(ckpt_data, path)
+        return load_checkpoint(path)
+
+    def test_d28_mean_clip_negative_side(self, tmp_path):
+        # reviewer: case 2 covers +100→tanh(8); this pins the NEGATIVE saturation.
+        # reviewer: actor_out_b[0]=-100 → mean[0]=-100 → clip(-100,-8,8)=-8 →
+        # reviewer: tanh(-8) ≈ -0.99999977 (NOT tanh(-100)=-1.0). Strictly open (> -1).
+        pytest.importorskip("energy_go.serving.inference_stream")
+        from energy_go.serving.inference_stream import policy_forward  # type: ignore
+        out_b = np.zeros(12, dtype=np.float32)
+        out_b[0] = -100.0
+        ckpt = self._zero_weight_ckpt(tmp_path, out_b)
+        action = policy_forward(ckpt, np.zeros(107, dtype=np.float32))
+        expected = float(np.tanh(np.float32(-8.0)))   # ≈ -0.99999977
+        assert abs(float(action[0]) - expected) < 1e-5, (
+            f"negative D28 clip: a_bat must be tanh(-8)≈{expected:.8f}, got {float(action[0]):.8f}")
+        assert float(action[0]) > -1.0, "a_bat must stay strictly inside the open range (-1,1)"
+
+    def test_d28_sigmoid_fraction_negative_clip(self, tmp_path):
+        # reviewer: a fraction component with a very negative mean → sigmoid(clip(-100,-8,8))
+        # reviewer: = sigmoid(-8) ≈ 0.000335 (NOT sigmoid(-100)=0.0). Strictly > 0 (open).
+        pytest.importorskip("energy_go.serving.inference_stream")
+        from energy_go.serving.inference_stream import policy_forward  # type: ignore
+        out_b = np.zeros(12, dtype=np.float32)
+        out_b[1] = -100.0   # mean for fraction f_sol_load
+        ckpt = self._zero_weight_ckpt(tmp_path, out_b)
+        action = policy_forward(ckpt, np.zeros(107, dtype=np.float32))
+        expected = float(1.0 / (1.0 + np.exp(np.float32(8.0))))  # sigmoid(-8) ≈ 0.000335
+        assert abs(float(action[1]) - expected) < 1e-5, (
+            f"sigmoid(-8)≈{expected:.6f}, got {float(action[1]):.6f}")
+        assert float(action[1]) > 0.0, "fraction must stay strictly inside the open range (0,1)"
+
+    def test_obs_clip_clamps_extreme_obs(self, tmp_path):
+        # reviewer: obs far beyond ±obs_clip·std must clamp, so two distinct extreme obs
+        # reviewer: produce IDENTICAL actions. obs_mean=0, obs_var=1, obs_clip=10 →
+        # reviewer: norm = clip(obs, -10, 10); obs=+1000 and +5000 both → +10 → same action.
+        pytest.importorskip("energy_go.serving.inference_stream")
+        from energy_go.training.checkpoint_format import load_checkpoint  # type: ignore
+        from energy_go.serving.inference_stream import policy_forward  # type: ignore
+        run = tmp_path / "checkpoints" / "run_clip"
+        run.mkdir(parents=True)
+        path = _make_canonical_checkpoint(run, run_id="run_clip")  # random weights → action depends on obs
+        ckpt = load_checkpoint(path)
+        a_hi  = policy_forward(ckpt, np.full(107, 1000.0, dtype=np.float32))
+        a_hi2 = policy_forward(ckpt, np.full(107, 5000.0, dtype=np.float32))
+        np.testing.assert_allclose(a_hi, a_hi2, atol=1e-6,
+            err_msg="extreme obs must clamp to +obs_clip → identical actions")
+        a_lo  = policy_forward(ckpt, np.full(107, -1000.0, dtype=np.float32))
+        a_lo2 = policy_forward(ckpt, np.full(107, -5000.0, dtype=np.float32))
+        np.testing.assert_allclose(a_lo, a_lo2, atol=1e-6,
+            err_msg="extreme negative obs must clamp to -obs_clip → identical actions")
+
+    def test_policy_not_found_on_empty_run_dir(self, tmp_path):
+        # reviewer: a run dir with no canonical checkpoint_*.npz → error code policy_not_found
+        # reviewer: (legacy policy.npz dropped, so an empty dir has nothing to load).
+        pytest.importorskip("energy_go.serving.app")
+        (tmp_path / "config").mkdir()
+        (tmp_path / "config" / "site_gansu.yaml").write_text(SITE_GANSU_YAML)
+        run = tmp_path / "checkpoints" / "run_empty"
+        run.mkdir(parents=True)
+        (run / "metadata.json").write_text('{"episodes_trained": 0, "site_id": "gansu"}')
+        old = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            from energy_go.serving.app import app  # type: ignore
+            with TestClient(app) as c:
+                with c.websocket_connect("/ws/inference") as ws:
+                    ws.receive_text(timeout=5)  # ready
+                    ws.send_text(_start_cmd(run_id="run_empty", site_id="gansu"))
+                    err = _recv_until(ws, "error", max_frames=10)
+                    assert err.get("code") == "policy_not_found", (
+                        f"empty run dir must yield code='policy_not_found', got {err.get('code')!r}")
+                    assert "message" in err
+        finally:
+            os.chdir(old)
+
+    def test_discovery_ignores_stray_non_canonical_files(self, tmp_path):
+        # reviewer: discovery must pick the canonical checkpoint_*.npz and not crash on
+        # reviewer: stray files (a leftover policy.npz, a malformed .npz, an unrelated file).
+        pytest.importorskip("energy_go.serving.app")
+        (tmp_path / "config").mkdir()
+        (tmp_path / "config" / "site_gansu.yaml").write_text(SITE_GANSU_YAML)
+        run = tmp_path / "checkpoints" / "run_stray"
+        run.mkdir(parents=True)
+        (run / "metadata.json").write_text('{"episodes_trained": 1, "site_id": "gansu"}')
+        _make_canonical_checkpoint(run, run_id="run_stray")
+        (run / "notes.txt").write_text("not a checkpoint")
+        (run / "checkpoint_garbled.npz").write_bytes(b"not really an npz")  # malformed, non-matching name
+        old = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            from energy_go.serving.app import app  # type: ignore
+            with TestClient(app) as c:
+                with c.websocket_connect("/ws/inference") as ws:
+                    ws.receive_text(timeout=5)  # ready
+                    ws.send_text(_start_cmd(run_id="run_stray", site_id="gansu"))
+                    frame = _recv_until(ws, "env_step", max_frames=20)
+                    assert validate(frame) == [], "canonical discovery must ignore stray files and stream valid frames"
+        finally:
+            os.chdir(old)
