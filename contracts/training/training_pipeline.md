@@ -8,7 +8,7 @@
 - **Review record:** `contracts/reviews/training_pipeline.md`
 - **Depends on:**
   - `contracts/env/jax_env_core.md` — env step API signature and import path (authored against contract; impl in PR #33)
-  - `contracts/training/checkpoint_format.md` — on-disk checkpoint structure (task #20; may be in parallel; referenced by type alias `CheckpointData` below)
+  - `contracts/shared/checkpoint_format.md` — on-disk checkpoint structure (task #20, D25 relocated to shared/; may be in parallel; referenced by type alias `CheckpointData` below)
   - `contracts/shared/telemetry_schema.md` v1.0.0 — LOCKED wire format for `train_metrics` + `eval_compare`
 - **Owner:** training-engineer · **Reviewer:** backend-reviewer
 
@@ -26,7 +26,7 @@ This contract specifies the §5 JAX SAC training pipeline — all Python modules
 5. `energy_go.training.eval` — `run_eval(checkpoint, data, params) -> PolicyEvalResult` — deterministic full-year eval
 6. `energy_go.training.telemetry` — `build_train_metrics(...)`, `build_eval_compare(...)` — produce LOCKED-schema-compliant telemetry dicts
 
-It does **not** specify the on-disk checkpoint serialisation — see `contracts/training/checkpoint_format.md` (task #20) for that.
+It does **not** specify the on-disk checkpoint serialisation — see `contracts/shared/checkpoint_format.md` (task #20, D25) for that.
 
 ---
 
