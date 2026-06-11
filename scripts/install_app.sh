@@ -333,27 +333,38 @@ check_port_free() {
     local port="$1" label="$2"
     local _in_use=0
 
-    # Method 1: lsof — -sTCP:LISTEN limits to listening sockets; -nP skips slow
-    # DNS/service-name lookups.  Redirect both stdout and stderr so missing
-    # privileges don't produce noise.
+    # Method 1: python3 try-bind — the definitive test.  A TCP socket in BOUND
+    # (not-yet-LISTEN) state reserves the port in the kernel's bind hash but
+    # does NOT appear in /proc/net/tcp, so lsof/ss/nc all miss it.  The only
+    # reliable test is to attempt bind() ourselves: EADDRINUSE → port is taken.
+    # python3 is always available (we are a Python app; CI installs Python first).
+    if [[ $_in_use -eq 0 ]] && command -v python3 &>/dev/null; then
+        if ! python3 -c "
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+try:
+    s.bind(('0.0.0.0', ${port}))
+    s.close()
+    sys.exit(0)   # bind succeeded → port is free
+except OSError:
+    s.close()
+    sys.exit(1)   # EADDRINUSE → port is in use
+" 2>/dev/null; then
+            _in_use=1
+        fi
+    fi
+    # Method 2: lsof — catches LISTEN/ESTABLISHED sockets when python3 is absent.
+    # No state filter so we see LISTEN, TIME_WAIT, ESTABLISHED, etc.
     if [[ $_in_use -eq 0 ]] && command -v lsof &>/dev/null; then
-        if lsof -iTCP:"${port}" -sTCP:LISTEN -nP 2>/dev/null | grep -q .; then
+        if lsof -iTCP:"${port}" -nP 2>/dev/null | grep -q .; then
             _in_use=1
         fi
     fi
-    # Method 2: ss (Linux iproute2) — list only LISTEN sockets, match on source
-    # port using the `src :PORT` filter (supported on iproute2 ≥ 3.x).
-    # grep -q guarantees we get a non-zero exit when output is empty.
+    # Method 3: ss — all TCP states; grep for :PORT followed by a non-digit or
+    # end-of-string to avoid false-positive matches on ports like 12345 vs 1234.
     if [[ $_in_use -eq 0 ]] && command -v ss &>/dev/null; then
-        if ss -tlnH src :"${port}" 2>/dev/null | grep -q .; then
-            _in_use=1
-        fi
-    fi
-    # Method 3: bash /dev/tcp connect — no external tools required.  A successful
-    # TCP handshake to 127.0.0.1:PORT proves something is listening on that port.
-    # Works even when lsof/ss filter syntax varies across distro versions.
-    if [[ $_in_use -eq 0 ]]; then
-        if ( exec 3<>/dev/tcp/127.0.0.1/"${port}" ) 2>/dev/null; then
+        if ss -tna 2>/dev/null | grep -qE ":${port}([^0-9]|$)"; then
             _in_use=1
         fi
     fi
