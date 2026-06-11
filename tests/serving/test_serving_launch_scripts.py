@@ -1215,6 +1215,10 @@ def test_acceptance_serving_builds_frontend_bundle_sh(tmp_path):
         ],
         capture_output=True, text=True, cwd=tmp_path,
     )
+    if result.returncode == 2:
+        pytest.skip(
+            f"Unsupportable toolchain/ARM (exit 2 preflight): {result.stderr[:200]}"
+        )
     assert result.returncode == 0, (
         f"Serving install (with frontend build) failed.\n"
         f"stdout: {result.stdout}\nstderr: {result.stderr}"
