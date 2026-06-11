@@ -911,11 +911,17 @@ class TestPolicyCutover:
             obs_mean=np.zeros(107, dtype=np.float32),
             obs_var=obs_var,
             obs_clip=np.float32(10.0),
-            actor_fc1_w=rng.standard_normal((107, 256)).astype(np.float32),
-            actor_fc1_b=rng.standard_normal(256).astype(np.float32),
-            actor_fc2_w=rng.standard_normal((256, 256)).astype(np.float32),
-            actor_fc2_b=rng.standard_normal(256).astype(np.float32),
-            actor_out_w=rng.standard_normal((256, 12)).astype(np.float32),
+            # Scale weights by 1/sqrt(256) to prevent D28 saturation:
+            # unscaled rng.standard_normal weights produce mean O(±1000) which D28
+            # clips identically for obs_var=1 and obs_var=4, obliterating the
+            # difference the test must detect.  He-style init keeps mean in [-0.3, +0.2]
+            # so obs_var=1 vs obs_var=4 produces a visible action difference (~0.10).
+            # Approved by backend-reviewer (reviewer fix to test fixture; impl is correct).
+            actor_fc1_w=rng.standard_normal((107, 256)).astype(np.float32) / np.sqrt(256),
+            actor_fc1_b=rng.standard_normal(256).astype(np.float32) / np.sqrt(256),
+            actor_fc2_w=rng.standard_normal((256, 256)).astype(np.float32) / np.sqrt(256),
+            actor_fc2_b=rng.standard_normal(256).astype(np.float32) / np.sqrt(256),
+            actor_out_w=rng.standard_normal((256, 12)).astype(np.float32) / np.sqrt(256),
             actor_out_b=actor_out_b,
         )
         path = tmp_path / f"checkpoint_{run_id}_step{global_step}.npz"
