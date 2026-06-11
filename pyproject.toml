@@ -94,6 +94,8 @@ python_functions = ["test_*"]
 addopts = "-q"
 asyncio_mode = "auto"
 markers = [
-    "slow: marks tests as slow (full install + venv creation); deselect with -m 'not slow'",
+    "slow: heavy-compute tests excluded from the required `fast` CI job — env battery, JAX compile/vmap, full-year JAX↔reference parity, and real-install/venv acceptance. Deselect with -m 'not slow'.",
+    "acceptance: real-install / venv / subprocess §9.5 launch-script tests. These are ALSO `slow` (so -m 'not slow' excludes them); run on the path-filtered ci-slow-acceptance job + nightly.",
+    "fullyear: the OOM-prone 8760-step full-year JAX↔reference parity test(s). A subset of `slow`; run only in ci-nightly (serial), excluded from the per-PR ci-slow-env gate.",
     "network: marks tests that require live network access; deselect with -m 'not network'",
 ]

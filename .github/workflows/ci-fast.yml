@@ -1,4 +1,13 @@
-name: ci
+# ci-fast — the always-required fast lane (D30).
+#
+# Runs on EVERY pull_request and push:[main] with NO paths filter, so it is
+# safe to mark as a globally-required status check.  Target: <10 min.
+#
+# Selection: the full suite MINUS slow tests (`-m "not slow"`).  Because
+# `acceptance` and `fullyear` tests are also tagged `slow`, `not slow`
+# excludes them too.  Heavy env battery / JAX compile+vmap / full-year parity
+# (all `slow`) run in ci-slow-env / ci-nightly, not here.
+name: ci-fast
 
 on:
   pull_request:
@@ -6,9 +15,9 @@ on:
     branches: [main]
 
 jobs:
-  checks:
+  fast:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -23,28 +32,6 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-
-      - name: Install Python 3.11 via uv (acceptance-test toolchain)
-        # install_app.sh uses `uv venv --python 3.11`; without this step uv cannot
-        # locate CPython 3.11 and exits 3 (dependency install failed) before any
-        # port-binding logic can run, causing test_acceptance_launch_exit5 to see
-        # exit 3 instead of exit 5.
-        run: uv python install 3.11
-
-      - name: Regenerate package-lock.json for Linux
-        # package-lock.json is committed from macOS and omits @rollup/rollup-linux-x64-gnu.
-        # npm ci inside install_app.sh (acceptance test) fails with exit 3 on Linux unless
-        # the lock is regenerated here.  The Frontend-tests step already does this; this
-        # pre-step makes the lock Linux-compatible before the Python acceptance tests copy
-        # it from REPO_ROOT into their tmp dirs.
-        run: |
-          if [ -f package.json ]; then
-            rm -f package-lock.json
-            npm install --package-lock-only --ignore-scripts
-          fi
-
       - name: Telemetry schema validation (golden examples)
         shell: bash
         run: |
@@ -53,14 +40,14 @@ jobs:
           # PYTHONPATH makes it importable without a heavy jax install.
           PYTHONPATH=src python scripts/validate_telemetry.py --examples
 
-      - name: Python tests
+      - name: Python tests (fast lane — not slow)
         shell: bash
         run: |
           if [ -d tests ] && find tests -name 'test_*.py' | grep -q .; then
             if [ -f pyproject.toml ]; then
               # --no-deps on the package itself skips sbx-rl (heavy optional training lib);
               # jax[cpu]+jaxlib, serving, and training framework deps are installed explicitly
-              # so the training suite (78 tests) and serving suite execute in CI.
+              # so the training suite and serving suite execute in CI.
               pip install --no-deps -e .
               pip install \
                 "pytest>=8.0" "pytest-asyncio>=0.23" "anyio>=4.0" "pytest-xdist>=3.5" \
@@ -71,11 +58,11 @@ jobs:
             else
               pip install pytest jax numpy
             fi
-            # D30: JAX tests that jit/vmap full-year trajectories are marked @pytest.mark.slow
-            # and excluded from CI (-m "not slow") to avoid OOM on ubuntu-latest (2 GB RAM
-            # runners hit SIGTERM at ~40-60 min when xdist workers each JIT-compile the
-            # full 8760-step synthetic year).  The full suite (including slow) runs locally.
-            pytest tests/ -q -m "not slow"
+            # D30: slow tests (env battery, JAX compile/vmap, full-year parity, and
+            # real-install acceptance) are excluded here to keep the required lane fast
+            # and to avoid OOM on the 7 GB ubuntu-latest runner.  They run in
+            # ci-slow-env (-n 2, not fullyear), ci-slow-acceptance, and ci-nightly (serial).
+            pytest tests/ -m "not slow" -q
           else
             echo "No Python tests yet — skipping"
           fi
@@ -91,10 +78,9 @@ jobs:
             rm -f package-lock.json
             npm install
             npm test
-            # Task #40: production TypeScript typecheck + bundle (tsc + vite build).
-            # Catches type errors that Vitest/RTL unit tests don't exercise and confirms
-            # the production bundle compiles cleanly on each PR.  Uses the node_modules
-            # already installed above — no second install needed.
+            # Production TypeScript typecheck + bundle (tsc + vite build).  Catches type
+            # errors that Vitest/RTL unit tests don't exercise and confirms the production
+            # bundle compiles cleanly on each PR.  Reuses node_modules from above.
             npm run build
           else
             echo "No frontend tests yet — skipping"

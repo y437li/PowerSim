@@ -1,0 +1,96 @@
+# ci-slow-env — the conditionally-required env gate (D30).
+#
+# This workflow ALWAYS runs (no top-level paths filter) so a SINGLE job
+# `slow-env` always reports a status — that is what makes it safe to mark as a
+# globally-required check that never hangs a non-env PR.  It only does real
+# work when the PR touches env-relevant paths; otherwise it reports a green
+# no-op.  push:[main] and the nightly schedule always run the real work.
+#
+# OOM note (runner-empirical — must be validated on a real env-path CI run):
+#   The heavy env/parity suite OOM-killed the 7 GB ubuntu-latest runner when
+#   ~4 xdist workers each JIT-compiled full-year (8760-step) trajectories.  We
+#   therefore (a) bound parallelism to `-n 2` (halves peak memory vs `-n auto`)
+#   and (b) exclude `fullyear` (the 8760-step parity rollout) from this per-PR
+#   gate — `fullyear` runs serially in ci-nightly instead.  The exact `-n` value
+#   is empirical and may need tuning on the real runner.
+name: ci-slow-env
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 7 * * *"
+
+jobs:
+  slow-env:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # Detect env-relevant path changes.  On push/schedule this is informational
+      # only — RUN_ENV is forced true below for non-PR events.
+      - name: Detect env-path changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            env:
+              - 'src/energy_go/env/**'
+              - 'src/energy_go/generators/**'
+              - 'src/reference/**'
+              - 'src/energy_go/training/**'
+              - 'tests/env/**'
+              - 'tests/shared/**'
+              - 'pyproject.toml'
+              - '.github/workflows/ci-slow-env.yml'
+
+      # RUN_ENV gates the heavy steps.  Always run on push/schedule (non-PR);
+      # on a PR, run only when an env path changed.  Exposed as an env var so
+      # subsequent `if:` conditions can read it.
+      - name: Compute RUN_ENV
+        id: gate
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ] || [ "${{ steps.changes.outputs.env }}" = "true" ]; then
+            echo "RUN_ENV=true" >> "$GITHUB_ENV"
+          else
+            echo "RUN_ENV=false" >> "$GITHUB_ENV"
+          fi
+
+      # No-op path: the job still ends green so the required check passes on
+      # non-env PRs without ever running the heavy suite.
+      - name: Skip notice (no env-path changes)
+        if: env.RUN_ENV != 'true'
+        run: echo "No env-path changes; slow-env not required for this PR."
+
+      - name: Set up Python
+        if: env.RUN_ENV == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install env/parity deps
+        if: env.RUN_ENV == 'true'
+        shell: bash
+        run: |
+          pip install --no-deps -e .
+          pip install \
+            "pytest>=8.0" "pytest-xdist>=3.5" \
+            "numpy>=1.26" \
+            "jax[cpu]>=0.4.25" "flax>=0.8.0" "optax>=0.2.0" "flashbax>=0.1.0"
+
+      - name: Run slow env / parity suite (bounded parallelism, no fullyear)
+        if: env.RUN_ENV == 'true'
+        shell: bash
+        run: |
+          # `slow and not acceptance and not fullyear`:
+          #   - slow            → the heavy env battery + JAX compile/vmap + parity
+          #   - not acceptance  → real-install/venv tests run in ci-slow-acceptance
+          #   - not fullyear    → the 8760-step full-year parity is the OOM worst
+          #                       offender; it runs serially in ci-nightly only.
+          # `-n 2`: bound xdist to 2 workers.  The OOM was ~4 workers each
+          #   JIT-compiling full-year trajectories on the 7 GB runner; -n 2 halves
+          #   peak memory.  The exact value is runner-empirical and may need tuning.
+          pytest tests/ -m "slow and not acceptance and not fullyear" -q -n 2

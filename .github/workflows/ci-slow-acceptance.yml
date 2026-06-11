@@ -1,0 +1,68 @@
+# ci-slow-acceptance — real-install / venv §9.5 acceptance suite (D30).
+#
+# Path-filtered (NOT the always-run pattern of ci-slow-env): it only runs when
+# the launch scripts / packaging metadata change, plus push:[main] and nightly.
+# Advisory + nightly — this is NOT a required check.
+#
+# Toolchain: uv + CPython 3.11 (install_app.sh uses `uv venv --python 3.11`) and
+# a Linux package-lock regen (the committed lock is from macOS and omits
+# @rollup/rollup-linux-x64-gnu, which breaks `npm ci` inside the acceptance run).
+name: ci-slow-acceptance
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/**'
+      - 'pyproject.toml'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/ci-slow-acceptance.yml'
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 7 * * *"
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install Python 3.11 via uv (acceptance-test toolchain)
+        # install_app.sh uses `uv venv --python 3.11`; without this step uv cannot
+        # locate CPython 3.11 and exits 3 (dependency install failed) before any
+        # port-binding logic can run, masking the real exit codes the tests assert.
+        run: uv python install 3.11
+
+      - name: Regenerate package-lock.json for Linux
+        # package-lock.json is committed from macOS and omits @rollup/rollup-linux-x64-gnu.
+        # npm ci inside install_app.sh (acceptance test) fails with exit 3 on Linux unless
+        # the lock is regenerated here, before the Python acceptance tests copy it from
+        # REPO_ROOT into their tmp dirs.
+        run: |
+          if [ -f package.json ]; then
+            rm -f package-lock.json
+            npm install --package-lock-only --ignore-scripts
+          fi
+
+      - name: Run acceptance suite
+        shell: bash
+        run: |
+          pip install --no-deps -e .
+          pip install \
+            "pytest>=8.0" "pytest-asyncio>=0.23" "anyio>=4.0" \
+            "pyyaml>=6.0" "numpy>=1.26"
+          # §9.5 real-install / venv / subprocess tests.  `acceptance` ⊆ `slow`.
+          pytest tests/ -m "acceptance" -q

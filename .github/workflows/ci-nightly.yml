@@ -1,0 +1,81 @@
+# ci-nightly — the release-blocking full backstop (D30).
+#
+# Runs the ENTIRE suite (no marker deselect) SERIALLY to bound memory: with no
+# `-n` there is at most one full-year (8760-step) trajectory JIT-compiled in
+# memory at a time, so the `fullyear` parity tests run here without OOM-killing
+# the runner.  This is the release-blocking gate — the authoritative full-suite
+# pass that the per-PR fast/slow lanes (which deselect `fullyear` / `slow`)
+# cannot provide.
+#
+# Scheduled nightly + manual dispatch, on the canonical repo only.
+name: ci-nightly
+
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+jobs:
+  nightly:
+    # Only the canonical repo runs the nightly backstop (skips forks).
+    if: github.repository == 'y437li/PowerSim'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Union of all toolchains: jax + frontend + uv/acceptance.
+      - name: Install uv (acceptance toolchain)
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install Python 3.11 via uv (acceptance-test toolchain)
+        run: uv python install 3.11
+
+      - name: Regenerate package-lock.json for Linux
+        # Acceptance tests copy package-lock.json into tmp dirs and run npm ci;
+        # the committed macOS lock omits @rollup/rollup-linux-x64-gnu.
+        run: |
+          if [ -f package.json ]; then
+            rm -f package-lock.json
+            npm install --package-lock-only --ignore-scripts
+          fi
+
+      - name: Install full Python stack
+        shell: bash
+        run: |
+          pip install --no-deps -e .
+          pip install \
+            "pytest>=8.0" "pytest-asyncio>=0.23" "anyio>=4.0" "pytest-xdist>=3.5" \
+            "fastapi>=0.110" "httpx>=0.27" "starlette>=0.36" \
+            "pyyaml>=6.0" "numpy>=1.26" "websockets>=12" "uvicorn[standard]>=0.29" \
+            "jsonschema>=4.21" \
+            "jax[cpu]>=0.4.25" "flax>=0.8.0" "optax>=0.2.0" "flashbax>=0.1.0"
+
+      - name: Full suite — SERIAL (release-blocking; runs fullyear in-memory one at a time)
+        shell: bash
+        run: |
+          # NO `-n` (serial): at most one full-year (8760-step) trajectory in memory
+          # at a time, so the OOM-prone `fullyear` parity tests run safely here.
+          # No marker deselect: this is the complete, release-blocking backstop.
+          # -p no:cacheprovider keeps the nightly run reproducible / cache-free.
+          pytest tests/ -q -p no:cacheprovider
+
+      - name: Frontend tests
+        shell: bash
+        run: |
+          if [ -f package.json ] && find tests -name '*.test.ts*' 2>/dev/null | grep -q .; then
+            rm -f package-lock.json
+            npm install
+            npm test
+            npm run build
+          else
+            echo "No frontend tests yet — skipping"
+          fi

@@ -611,7 +611,9 @@ class TestJaxReferenceParity:
     # Full-year cumulative parity (decisive D11 test)
     # ------------------------------------------------------------------
 
-    @pytest.mark.slow  # 8760-step JAX trajectory — decisive D11 cross-check
+    @pytest.mark.slow      # 8760-step JAX trajectory — decisive D11 cross-check
+    @pytest.mark.fullyear  # D30: OOM-prone full-year rollout — nightly-serial only,
+                           # excluded from the per-PR ci-slow-env gate (-m "... not fullyear")
     def test_full_eval_episode_parity(
         self, jax_data, noiseless_jax_params, noiseless_ref_params, year_data
     ):
