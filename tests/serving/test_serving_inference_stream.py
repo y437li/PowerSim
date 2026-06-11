@@ -633,16 +633,45 @@ class TestNormalization:
 
 class TestReplaySpeed:
     def test_speed_zero_delivers_frame_immediately(self, ws_client):
-        """speed=0.0 → no sleep between frames; first frame arrives quickly."""
-        t0 = time.monotonic()
+        """speed=0.0 → no OS sleep between frames; inter-frame cadence must be fast.
+
+        D24: speed=0 means sleep_s=0.0 (yield to asyncio only, no OS sleep).
+        Contract (inference_stream.md L320): "no sleep; stream as fast as the
+        env step completes."  This test asserts CADENCE — once streaming begins,
+        consecutive env_step frames must arrive < 2s apart (no artificial
+        throttle), which is what D24 actually guarantees.
+
+        The first env_step frame may be delayed by JAX JIT compilation on the
+        initial _JaxEnvSession.step() call — a one-time per-session cost not
+        governed by D24 (D24 governs inter-frame sleep, not first-frame
+        compile latency).  Frames[1]→[2] gaps are immune to that cost.
+        """
+        timestamps: list[float] = []
         with ws_client.websocket_connect("/ws/inference") as ws:
-            ws.receive_text(timeout=5)
+            ws.receive_text(timeout=5)    # ready status
             ws.send_text(_start_cmd(speed=0.0))
-            _recv_until(ws, "env_step", max_frames=20)
-        elapsed = time.monotonic() - t0
-        assert elapsed < 2.0, (
-            f"speed=0 frame took {elapsed:.2f}s — expected < 2s"
+            # Collect ≥3 env_step arrival times.
+            # timeout=15 per receive_text: generous for JIT compile on first
+            # frame, but bounded so a broken server doesn't hang the suite.
+            for _ in range(100):
+                raw = ws.receive_text(timeout=15)
+                msg = json.loads(raw)
+                if msg.get("kind") == "env_step":
+                    timestamps.append(time.monotonic())
+                if len(timestamps) >= 3:
+                    break
+
+        assert len(timestamps) >= 3, (
+            f"Expected ≥3 env_step frames at speed=0, got {len(timestamps)}"
         )
+        # Inter-frame gaps for frames 2→3: must be < 2s each.
+        # (D24: sleep_s=0.0 → yield to asyncio only, no OS sleep.)
+        for i in range(1, len(timestamps)):
+            gap = timestamps[i] - timestamps[i - 1]
+            assert gap < 2.0, (
+                f"env_step frame {i + 1} arrived {gap:.2f}s after frame {i} at "
+                f"speed=0 — expected < 2s (D24: no OS sleep at speed=0)"
+            )
 
     def test_speed_field_out_of_range_clamped(self, ws_client):
         """speed=-5 is clamped to 0; server must not error."""
