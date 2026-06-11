@@ -17,6 +17,10 @@ import numpy as np
 import pytest
 from pathlib import Path
 
+# Skip entire module if energy_go.training is not yet installed (PR #40 not merged).
+# Tests activate automatically once PR #40 lands. Pattern blessed by D22b.
+pytest.importorskip("energy_go.training")
+
 # --- RED imports until implementation ---
 from energy_go.training.checkpoint_format import (
     CheckpointData,
