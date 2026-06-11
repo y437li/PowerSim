@@ -127,9 +127,13 @@ a_bat = P_ch_actual / params.bat_power_mw     # ∈ [0, 1]  (charge)
 
 - **Surplus-with-curtailment case** (`curtail_surplus > 0`):
   - `a_bat = P_ch_actual / bat_power_mw`
-  - Charge renewable fraction: `f_wb = P_ch_actual / max(P_wind, 1e-9)` (preferably charge from wind; fall back to solar)
-  - `f_wl = min(1.0, 1.0 - f_wb)` (remaining wind to load)
-  - `f_sl = 1.0, f_sb = 0.0` (all solar to load)
+  - Charge from wind first, fall back to solar for remainder:
+    - `bat_from_wind  = min(P_ch_actual, P_wind)`
+    - `bat_from_solar = max(0, P_ch_actual − bat_from_wind)`
+    - `f_wb = min(1.0, bat_from_wind  / max(P_wind, 1e-9))`  (wind fraction to battery)
+    - `f_wl = max(0.0, 1.0 − f_wb)`                          (remaining wind to load)
+    - `f_sb = min(1.0, bat_from_solar / max(P_pv,  1e-9))`   (solar fraction to battery; 0 when wind covers all of P_ch_actual)
+    - `f_sl = max(0.0, 1.0 − f_sb)`                          (remaining solar to load)
   - `f_bl = 0.0`
 
 **Properties (invariants):**
