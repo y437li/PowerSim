@@ -152,6 +152,79 @@ def test_run_eval_obs_stats_frozen_during_rollout():
     )
 
 
+# reviewer: The developer's test_run_eval_additive_identity is internally
+# tautological — eval.py constructs total_cost_yuan AS the sum of its own 5
+# returned fields, so that assert can never fail regardless of correctness. It
+# does NOT catch the realistic §6 bug class: eval summing the WRONG EnvInfo
+# field. The env exposes two D13 totals (jax_env.py L487-488):
+#     cost_total_real         = C_E + C_demand_charge + C_deg + C_curtail + C_VOLL
+#     cost_total_reward_basis = C_E + 2.0*C_DC_shape + C_deg + C_curtail + C_VOLL
+# If eval ever pulled cost_total_reward_basis_yuan (the doubled-demand-shape,
+# reward-basis total) instead of summing the 5 real-money components, the
+# developer's test would still pass while real-money reporting was wrong.
+# This test cross-validates eval's total_cost_yuan against an INDEPENDENT scan
+# that sums the env's own cost_total_real_yuan field — the true real-money basis
+# (D13). It mirrors eval.py exactly: zero-weight actor (action = [tanh(0)=0,
+# sigmoid(0)=0.5 ×5]), PRNGKey(0), EnvParams(episode_len=8760), frozen identity
+# obs_stats (mean=0, var=1). Expected: the two totals are equal to float32
+# accumulation tolerance over 8760 steps (atol 0.1 ¥ on a ¥100k+ scale).
+@pytest.mark.slow
+def test_run_eval_total_matches_env_cost_total_real():
+    """eval.total_cost_yuan == Σ infos.cost_total_real_yuan (independent scan).
+
+    Guards the §6 wrong-field bug: total_cost must be the env's real-money basis
+    (cost_total_real), NOT cost_total_reward_basis (which doubles demand-shape).
+    """
+    _syn = pytest.importorskip(
+        "energy_go.generators.synthetic",
+        reason="requires jax_env_core (PR #33)",
+    )
+    generate_year = _syn.generate_year
+
+    from energy_go.env.jax_env import EnvParams, reset, step, get_obs
+    from energy_go.training.normalizer import RunningStats, normalize_obs
+
+    key  = jax.random.PRNGKey(7)
+    data = generate_year(key)
+    ckpt = _make_zero_checkpoint()
+
+    result = run_eval(ckpt, data)
+
+    # --- Independent rollout mirroring eval.run_eval() exactly ---
+    env_params = EnvParams(episode_len=8760)
+    obs_stats  = RunningStats(
+        mean  = jnp.array(ckpt.obs_mean),   # zeros → identity shift
+        var   = jnp.array(ckpt.obs_var),    # ones  → unit scale
+        count = jnp.int32(ckpt.obs_count),
+    )
+    obs_clip = float(ckpt.obs_clip)
+
+    # Zero-weight actor: out = 0 for all 12 → mean[:6]=0 →
+    #   action[0]   = tanh(0)    = 0.0
+    #   action[1:6] = sigmoid(0) = 0.5  (×5)
+    zero_action = jnp.array([0.0, 0.5, 0.5, 0.5, 0.5, 0.5], dtype=jnp.float32)
+
+    @jax.jit
+    def _step(carry, _):
+        # obs/normalisation recomputed for parity, but action is fixed by the
+        # zero-weight actor identity above (independent of obs), so we assert on
+        # the env's cost field, not on the policy.
+        raw_obs  = get_obs(carry, env_params, data)
+        _        = normalize_obs(raw_obs, obs_stats, clip=obs_clip)
+        new_state, _o, _r, _d, info = step(carry, zero_action, env_params, data)
+        return new_state, info
+
+    init_state, _ = reset(jax.random.PRNGKey(0), env_params, data)  # eval uses key 0
+    _, infos = jax.lax.scan(_step, init_state, None, length=8760)
+    env_total_real = float(jnp.sum(infos.cost_total_real_yuan))
+
+    assert result.total_cost_yuan == pytest.approx(env_total_real, abs=0.1), (
+        f"eval total_cost_yuan ({result.total_cost_yuan:.4f} ¥) != env "
+        f"Σ cost_total_real_yuan ({env_total_real:.4f} ¥). eval is summing the "
+        f"wrong EnvInfo field (likely cost_total_reward_basis_yuan — §6 / D13)."
+    )
+
+
 @pytest.mark.slow
 def test_run_eval_full_year_length():
     """run_eval() must scan exactly 8760 steps (the full evaluation year).
