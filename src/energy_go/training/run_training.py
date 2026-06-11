@@ -72,22 +72,50 @@ _EPS:         float = 1e-6   # log(1-x^2+eps) stability guard
 # ---------------------------------------------------------------------------
 
 def actor_forward(
-    params: dict,
+    params,
     norm_obs: jax.Array,
-) -> tuple[jax.Array, jax.Array]:
+):
     """Pure-JAX actor MLP forward pass — §5.2.
 
+    Two calling conventions:
+
+    (a) **Training path** — ``params`` is a dict with keys
+        fc1_w(107,256), fc1_b(256,), fc2_w(256,256), fc2_b(256,), out_w(256,12), out_b(12,);
+        ``norm_obs`` is already-normalised (107,) obs.
+        Returns: ``(mean (6,), log_std_raw (6,))`` — pre-squash, no clipping applied.
+
+    (b) **Parity / serving path** — ``params`` is a ``CheckpointData``;
+        ``norm_obs`` is a RAW (107,) observation (normalisation happens inside).
+        Returns: squashed (6,) action — ``tanh(mean[0])`` for a_bat, ``sigmoid(mean[1:6])``
+        for fractions, with ``mean`` clipped to ±20 to match ``actor_forward_numpy``.
+
     Architecture: Input(107) → Dense(256, ReLU) → Dense(256, ReLU) → Dense(12)
-
-    Args:
-        params:   dict with keys fc1_w(107,256), fc1_b(256,), fc2_w(256,256),
-                  fc2_b(256,), out_w(256,12), out_b(12,).
-        norm_obs: (107,) float32 — normalised observation.
-
-    Returns:
-        mean:        (6,) float32 — pre-squash means for all 6 action dims.
-        log_std_raw: (6,) float32 — raw log-std (NOT yet clipped).
     """
+    # --- CheckpointData overload (parity test / serving) ---
+    if not isinstance(params, dict):
+        # Lazy import avoids module-level circular dependency.
+        from energy_go.training.checkpoint_format import CheckpointData as _CKD  # noqa
+        from energy_go.training.normalizer import normalize_obs, RunningStats
+        obs_stats = RunningStats(
+            mean  = jnp.array(params.obs_mean),
+            var   = jnp.array(params.obs_var),
+            count = jnp.int32(params.obs_count),
+        )
+        n_obs = normalize_obs(norm_obs, obs_stats, clip=float(params.obs_clip))
+        p = {
+            "fc1_w": jnp.array(params.actor_fc1_w),
+            "fc1_b": jnp.array(params.actor_fc1_b),
+            "fc2_w": jnp.array(params.actor_fc2_w),
+            "fc2_b": jnp.array(params.actor_fc2_b),
+            "out_w": jnp.array(params.actor_out_w),
+            "out_b": jnp.array(params.actor_out_b),
+        }
+        mean, _ = actor_forward(p, n_obs)
+        # Clip before squash — same threshold as actor_forward_numpy (parity guarantee)
+        mc = jnp.clip(mean, -20.0, 20.0)
+        return jnp.concatenate([jnp.tanh(mc[:1]), jax.nn.sigmoid(mc[1:])])  # (6,)
+
+    # --- Normal dict path ---
     h = jnp.maximum(0.0, norm_obs @ params["fc1_w"] + params["fc1_b"])  # ReLU
     h = jnp.maximum(0.0, h        @ params["fc2_w"] + params["fc2_b"])  # ReLU
     out = h @ params["out_w"] + params["out_b"]                          # (12,)

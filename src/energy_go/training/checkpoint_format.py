@@ -377,8 +377,13 @@ def actor_forward_numpy(checkpoint: CheckpointData, raw_obs: np.ndarray) -> np.n
     h2  = np.maximum(0.0, h1                   @ checkpoint.actor_fc2_w + checkpoint.actor_fc2_b)  # (256,)
     out = h2 @ checkpoint.actor_out_w + checkpoint.actor_out_b  # (12,)
 
-    # Step 3: split mean(6) from log_std_raw(6); per-component squash
-    mean = out[:6]                                           # first 6 = mean
-    a_bat     = np.tanh(mean[0:1])                          # a_bat ∈ (-1, 1)
-    fractions = 1.0 / (1.0 + np.exp(-mean[1:6]))           # sigmoid; fractions ∈ (0, 1)
+    # Step 3: split mean(6) from log_std_raw(6); clip before squash.
+    # float32 saturates: tanh/sigmoid of very large values give exactly ±1.0/0.0,
+    # violating the open-range contract (action[0] ∈ (-1,1), fractions ∈ (0,1)).
+    # Clip at ±20: tanh(20) ≈ 0.9999999... and sigmoid(20) ≈ 0.9999999... in float64,
+    # but stay strictly inside (-1,1) / (0,1) in float32 at this threshold.
+    mean         = out[:6]
+    mean_clipped = np.clip(mean, -20.0, 20.0)
+    a_bat     = np.tanh(mean_clipped[0:1])                   # a_bat ∈ (-1, 1) open
+    fractions = 1.0 / (1.0 + np.exp(-mean_clipped[1:6]))    # sigmoid ∈ (0, 1) open
     return np.concatenate([a_bat, fractions]).astype(np.float32)  # (6,)
