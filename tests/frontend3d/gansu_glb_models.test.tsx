@@ -365,3 +365,65 @@ describe("reviewer: PCC substation has at least 1 mesh (no hook required but mus
     expect(meshes.length).toBeGreaterThanOrEqual(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// reviewer (frontend-reviewer): animation-hook targets must be RENDERABLE/animatable,
+// not merely present by name. A named node with no mesh (empty group) spins/scales
+// nothing; a material no primitive references shows no emissive. These pin §3's
+// box-mesh design so the rotor-spin / SOC-fill / irradiance animations actually display.
+// ---------------------------------------------------------------------------
+describe("reviewer: animation-hook targets reference renderable geometry", () => {
+  function findNodeByName(
+    gltf: Record<string, unknown>,
+    name: string,
+  ): Record<string, unknown> | undefined {
+    const nodes = (gltf["nodes"] as Array<Record<string, unknown>>) ?? [];
+    return nodes.find((n) => n["name"] === name);
+  }
+  // The hook target must drive a visible mesh: either node.mesh is set, or it has
+  // (mesh-bearing) children. An empty node would animate nothing visible.
+  function nodeRendersGeometry(node: Record<string, unknown>): boolean {
+    if (typeof node["mesh"] === "number") return true;
+    const children = node["children"];
+    return Array.isArray(children) && children.length > 0;
+  }
+
+  it("reviewer: vestas-v150-4.2 'Rotor' node references a mesh (rotor spin must be visible)", () => {
+    const gltf = parseGLBJson(join(ASSETS_3D, GANSU_GLB_PATHS["vestas-v150-4.2"]));
+    expect(gltf).not.toBeNull();
+    const rotor = findNodeByName(gltf!, "Rotor");
+    expect(rotor, "'Rotor' node must exist (§3.1)").toBeDefined();
+    expect(
+      nodeRendersGeometry(rotor!),
+      "'Rotor' must reference a mesh or have mesh children — an empty node spins nothing",
+    ).toBe(true);
+  });
+
+  it("reviewer: catl-lmp-300mwh 'SOCFillMesh' node references a mesh (SOC fill must be visible)", () => {
+    const gltf = parseGLBJson(join(ASSETS_3D, GANSU_GLB_PATHS["catl-lmp-300mwh"]));
+    expect(gltf).not.toBeNull();
+    const fill = findNodeByName(gltf!, "SOCFillMesh");
+    expect(fill, "'SOCFillMesh' node must exist (§3.3)").toBeDefined();
+    expect(
+      nodeRendersGeometry(fill!),
+      "'SOCFillMesh' must reference a mesh — scale.y on an empty node shows no SOC fill",
+    ).toBe(true);
+  });
+
+  it("reviewer: trina-vertex-n-670w 'PVSurface' material is used by ≥1 primitive (emissive must show)", () => {
+    const gltf = parseGLBJson(join(ASSETS_3D, GANSU_GLB_PATHS["trina-vertex-n-670w"]));
+    expect(gltf).not.toBeNull();
+    const materials = (gltf!["materials"] as Array<Record<string, unknown>>) ?? [];
+    const pvIdx = materials.findIndex((m) => m["name"] === "PVSurface");
+    expect(pvIdx, "'PVSurface' material must exist (§3.2)").toBeGreaterThanOrEqual(0);
+    const meshes = (gltf!["meshes"] as Array<Record<string, unknown>>) ?? [];
+    const used = meshes.some((mesh) => {
+      const prims = (mesh["primitives"] as Array<Record<string, unknown>>) ?? [];
+      return prims.some((p) => p["material"] === pvIdx);
+    });
+    expect(
+      used,
+      "a mesh primitive must reference 'PVSurface' — an unused material renders no emissive",
+    ).toBe(true);
+  });
+});
