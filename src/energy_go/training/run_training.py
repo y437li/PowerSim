@@ -455,9 +455,8 @@ def _build_training_step(
         # ------------------------------------------------------------------ #
         # 5. Normalise reward and next obs (with UPDATED stats)               #
         # ------------------------------------------------------------------ #
-        norm_rewards = jax.vmap(
-            lambda r: normalize_reward(jnp.array([r]), reward_stats, clip_rew).squeeze()
-        )(rewards)                   # (n_envs,)
+        # normalize_reward broadcasts: rewards (n_envs,) / sqrt(var (1,)) → (n_envs,)
+        norm_rewards = normalize_reward(rewards, reward_stats, clip_rew)  # (n_envs,)
 
         norm_next_obs = jax.vmap(
             lambda o: normalize_obs(o, obs_stats, clip_obs)
