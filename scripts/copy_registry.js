@@ -5,9 +5,12 @@
 //
 // Run directly: node scripts/copy_registry.js
 // Also wired as prebuild / predev / pretest npm hooks so the copy is always fresh.
+//
+// ESM syntax required — package.json has "type": "module" so .js files are treated
+// as ESM by Node; require() is not available.
 
-const { copyFileSync, mkdirSync } = require("fs");
-const { dirname } = require("path");
+import { copyFileSync, mkdirSync } from "fs";
+import { dirname } from "path";
 
 const SRC = "assets/3d/registry.json";
 const DEST = "src/config/registryData.json";

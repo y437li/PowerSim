@@ -82,9 +82,14 @@ exclusively; the duplicate `test:` key in `vite.config.ts` only causes confusion
 
 ## 2. Standalone copy script (`scripts/copy_registry.js`)
 
+**ESM syntax required** — `package.json` has `"type": "module"` so Node treats `.js`
+files as ESM. `require()` is not available; use `import`.
+
 ```js
 // scripts/copy_registry.js — copy assets/3d/registry.json → src/config/registryData.json
-const { copyFileSync } = require("fs");
+import { copyFileSync, mkdirSync } from "fs";
+import { dirname } from "path";
+mkdirSync(dirname("src/config/registryData.json"), { recursive: true });
 copyFileSync("assets/3d/registry.json", "src/config/registryData.json");
 console.log("registry copied: assets/3d/registry.json → src/config/registryData.json");
 ```
@@ -137,3 +142,4 @@ All tests live in `tests/frontend/registry_build_copy.test.ts`.
 | RB.3 | `scripts/copy_registry.js` mentions the source path | contains `"assets/3d/registry.json"` |
 | RB.4 | `scripts/copy_registry.js` mentions the dest path | contains `"src/config/registryData.json"` |
 | RB.5 (reviewer) | calling `configResolved()` produces a `src/config/registryData.json` that deep-equals `assets/3d/registry.json` | `expect(copied).toEqual(canonical)` |
+| RB.6 | `node scripts/copy_registry.js` exits 0 and the produced `registryData.json` deep-equals canonical | `execSync("node scripts/copy_registry.js")` + `expect(copied).toEqual(canonical)` |

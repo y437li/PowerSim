@@ -16,6 +16,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { resolve } from "path";
+import { execSync } from "child_process";
 
 // ─── RB.1 / RB.2: Vite plugin shape ─────────────────────────────────────────
 // RED until src/config/registryBuildPlugin.ts is created.
@@ -48,6 +49,20 @@ describe("RB.4 — scripts/copy_registry.js mentions dest path", () => {
     const scriptPath = resolve(__dirname, "../../scripts/copy_registry.js");
     const content = readFileSync(scriptPath, "utf8");
     expect(content).toContain("src/config/registryData.json");
+  });
+});
+
+// ─── RB.6: scripts/copy_registry.js actually RUNS (exit 0 + content correct) ──
+// RB.5 covers the plugin's configResolved() path — but the script (npm pre-hooks) had
+// no functional test. The script uses ESM `import` syntax (required by "type":"module");
+// this test confirms it exits 0 and that the output deep-equals the canonical registry.
+describe("RB.6 — node scripts/copy_registry.js exits 0 and output matches canonical", () => {
+  it("executes without error and src/config/registryData.json deep-equals assets/3d/registry.json", () => {
+    // Run the script — execSync throws on non-zero exit, so no throw = exit 0
+    execSync("node scripts/copy_registry.js", { stdio: "pipe" });
+    const copied = JSON.parse(readFileSync("src/config/registryData.json", "utf8"));
+    const canonical = JSON.parse(readFileSync("assets/3d/registry.json", "utf8"));
+    expect(copied).toEqual(canonical);
   });
 });
 
