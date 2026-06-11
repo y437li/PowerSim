@@ -1,5 +1,5 @@
 // src/utils/touSchedule.ts — consumed by PriceTimeline background bands and getTouTier()
-import type { TariffTier } from "../types/telemetry";
+import type { TariffTier, EnvStepPayload } from "../types/telemetry";
 
 export interface TouBand {
   fromMinutes: number;  // minutes-from-midnight (inclusive start)
@@ -37,4 +37,67 @@ export function getTouPrice(tier: TariffTier): number {
     if (band.tier === tier) return band.priceYuanPerMwh;
   }
   return 0;
+}
+
+// ── computeBandSegments ───────────────────────────────────────────────────────
+
+/**
+ * One contiguous run of steps sharing the same TOU tier on the PriceTimeline x-axis.
+ * x1/x2 are step indices (inclusive) — feed directly into Recharts ReferenceArea x1/x2.
+ */
+export interface BandSegment {
+  tier: TariffTier;
+  x1: number;          // step index at start of this contiguous tier run (inclusive)
+  x2: number;          // step index at end of this contiguous tier run (inclusive)
+  priceYuanPerMwh: number;
+}
+
+/**
+ * Map history entries onto x-axis band segments for PriceTimeline ReferenceArea.
+ *
+ * For each contiguous run of adjacent steps that share the same TOU tier
+ * (determined by `hour_of_day * 60 + minute_of_hour` → getTouTier, minute-aware per D8),
+ * emit one BandSegment{tier, x1, x2}. Handles repeating 24h cycles correctly:
+ * valley(23:00) → valley(00:00) merges into one segment; different-tier transitions always split.
+ *
+ * C1 correctness: uses getTouTier (minute-aware) so 11:00 (660 min) → critical_peak, not mid.
+ * A naïve hour-only lookup would misplace this band by 30 minutes.
+ */
+export function computeBandSegments(history: EnvStepPayload[]): BandSegment[] {
+  if (history.length === 0) return [];
+
+  const getBand = (s: EnvStepPayload): TouBand => {
+    const minOfDay = s.hour_of_day * 60 + s.minute_of_hour;
+    return (
+      TOU_SCHEDULE.find((b) => minOfDay >= b.fromMinutes && minOfDay < b.toMinutes) ??
+      TOU_SCHEDULE[TOU_SCHEDULE.length - 1]
+    );
+  };
+
+  const segments: BandSegment[] = [];
+  let segStart = 0;
+  let curBand = getBand(history[0]);
+
+  for (let i = 1; i < history.length; i++) {
+    const band = getBand(history[i]);
+    if (band.tier !== curBand.tier) {
+      segments.push({
+        tier: curBand.tier,
+        x1: history[segStart].step,
+        x2: history[i - 1].step,
+        priceYuanPerMwh: curBand.priceYuanPerMwh,
+      });
+      segStart = i;
+      curBand = band;
+    }
+  }
+  // Emit the final segment
+  segments.push({
+    tier: curBand.tier,
+    x1: history[segStart].step,
+    x2: history[history.length - 1].step,
+    priceYuanPerMwh: curBand.priceYuanPerMwh,
+  });
+
+  return segments;
 }

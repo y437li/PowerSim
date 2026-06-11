@@ -25,7 +25,7 @@ import { AlertList }          from "../../src/components/live/AlertList";
 import { SocTimeline }        from "../../src/components/live/SocTimeline";
 import { PriceTimeline }      from "../../src/components/live/PriceTimeline";
 import { PowerFlowsTable }    from "../../src/components/live/PowerFlowsTable";
-import { getTouTier, getTouPrice, TOU_SCHEDULE } from "../../src/utils/touSchedule";
+import { getTouTier, getTouPrice, TOU_SCHEDULE, computeBandSegments } from "../../src/utils/touSchedule";
 import { deriveAlerts }       from "../../src/utils/deriveAlerts";
 import { socToPercent, formatYuan, formatPower } from "../../src/utils/units";
 import type {
@@ -802,6 +802,94 @@ describe("PriceTimeline", () => {
     const valleyBand = bandList.querySelector('li[data-tier="valley"][data-from-min="0"]');
     expect(valleyBand).toBeTruthy();
     expect(valleyBand?.getAttribute("data-to-min")).toBe("420");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 8b — computeBandSegments() — x-axis band geometry (stage-2 blocker fix)
+// Asserts explicit x1/x2 step-index values — the <li> proxy alone cannot catch these.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("computeBandSegments() — x-axis step-index spans (C1 geometry)", () => {
+  it("empty history → empty segments array", () => {
+    expect(computeBandSegments([])).toHaveLength(0);
+  });
+
+  it("single step at 08:00 (peak) → one peak segment spanning that step", () => {
+    // GOLDEN_A: hour_of_day=8, minute_of_hour=0 → 480 min → peak (480–630 min)
+    const segments = computeBandSegments([GOLDEN_A]);
+    expect(segments).toHaveLength(1);
+    expect(segments[0].tier).toBe("peak");
+    expect(segments[0].x1).toBe(GOLDEN_A.step); // step=168
+    expect(segments[0].x2).toBe(GOLDEN_A.step);
+  });
+
+  it("11:00 step (660 min) → critical_peak segment, NOT mid (D8 C1 geometry assertion)", () => {
+    // D8 / C1 key test: at Δt=1h the 11:00 step (660 min) is inside 630–690 → critical_peak.
+    // A minute-unaware implementation (treating 11:00 as boundary start) would return "mid"
+    // because it would use the WRONG 11:00–12:00 critical-peak window (660–720 instead of 630–690).
+    // This is the rendered-geometry equivalent of the <li> data-from-min=630 test.
+    const step11 = { ...GOLDEN_A, step: 50, hour_of_day: 11, minute_of_hour: 0 } as EnvStepPayload;
+    const segments = computeBandSegments([step11]);
+    expect(segments).toHaveLength(1);
+    expect(segments[0].tier).toBe("critical_peak"); // 660 ∈ [630, 690) — not mid
+    expect(segments[0].x1).toBe(50);
+    expect(segments[0].x2).toBe(50);
+  });
+
+  it("10:00→11:00 transition: peak x2=100, critical_peak x1=101 (exact boundary split)", () => {
+    // 10:00 (600 min) → peak (480–630); 11:00 (660 min) → critical_peak (630–690)
+    const peakStep = { ...GOLDEN_A, step: 100, hour_of_day: 10, minute_of_hour: 0 } as EnvStepPayload;
+    const critStep = { ...GOLDEN_A, step: 101, hour_of_day: 11, minute_of_hour: 0 } as EnvStepPayload;
+    const segments = computeBandSegments([peakStep, critStep]);
+    expect(segments).toHaveLength(2);
+    expect(segments[0].tier).toBe("peak");
+    expect(segments[0].x1).toBe(100);
+    expect(segments[0].x2).toBe(100); // ends at the last peak step
+    expect(segments[1].tier).toBe("critical_peak");
+    expect(segments[1].x1).toBe(101); // starts at the first critical_peak step
+    expect(segments[1].x2).toBe(101);
+  });
+
+  it("multi-step same tier → one segment spanning all steps (x1=0, x2=2)", () => {
+    // Steps at 08:00, 09:00, 10:00 — all peak (480–630 min)
+    const steps = [
+      { ...GOLDEN_A, step: 0, hour_of_day: 8,  minute_of_hour: 0 },
+      { ...GOLDEN_A, step: 1, hour_of_day: 9,  minute_of_hour: 0 },
+      { ...GOLDEN_A, step: 2, hour_of_day: 10, minute_of_hour: 0 },
+    ] as EnvStepPayload[];
+    const segments = computeBandSegments(steps);
+    expect(segments).toHaveLength(1);
+    expect(segments[0].tier).toBe("peak");
+    expect(segments[0].x1).toBe(0);
+    expect(segments[0].x2).toBe(2);
+  });
+
+  it("full 24h cycle (one representative step per band) → 9 segments in TOU order", () => {
+    // One step per each of the 9 TOU_SCHEDULE windows — verifies every transition
+    const daySteps = [
+      { ...GOLDEN_A, step:  0, hour_of_day:  0, minute_of_hour: 0 }, // valley  (0 min)
+      { ...GOLDEN_A, step:  7, hour_of_day:  7, minute_of_hour: 0 }, // mid     (420 min)
+      { ...GOLDEN_A, step:  8, hour_of_day:  8, minute_of_hour: 0 }, // peak    (480 min)
+      { ...GOLDEN_A, step: 11, hour_of_day: 11, minute_of_hour: 0 }, // critical_peak (660 min)
+      { ...GOLDEN_A, step: 12, hour_of_day: 12, minute_of_hour: 0 }, // mid     (720 min, second window)
+      { ...GOLDEN_A, step: 18, hour_of_day: 18, minute_of_hour: 0 }, // peak    (1080 min)
+      { ...GOLDEN_A, step: 19, hour_of_day: 19, minute_of_hour: 0 }, // critical_peak (1140 min)
+      { ...GOLDEN_A, step: 21, hour_of_day: 21, minute_of_hour: 0 }, // peak    (1260 min)
+      { ...GOLDEN_A, step: 23, hour_of_day: 23, minute_of_hour: 0 }, // valley  (1380 min)
+    ] as EnvStepPayload[];
+    const segments = computeBandSegments(daySteps);
+    expect(segments).toHaveLength(9);
+    // Check tier sequence
+    const tiers = segments.map((s) => s.tier);
+    expect(tiers).toEqual([
+      "valley", "mid", "peak", "critical_peak",
+      "mid", "peak", "critical_peak", "peak", "valley",
+    ]);
+    // Check x-bounds for the critical-peak morning segment
+    const critMorning = segments[3];
+    expect(critMorning.tier).toBe("critical_peak");
+    expect(critMorning.x1).toBe(11);
+    expect(critMorning.x2).toBe(11);
   });
 });
 

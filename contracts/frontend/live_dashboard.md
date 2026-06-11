@@ -87,6 +87,24 @@ function getTouTier(minuteOfDay: number): TariffTier;
  * Used ONLY for background band reference labels — the actual live price comes from the wire.
  */
 function getTouPrice(tier: TariffTier): number;
+
+/**
+ * Map history entries onto x-axis band segments for PriceTimeline ReferenceArea.
+ *
+ * Groups adjacent steps sharing the same TOU tier (determined by getTouTier on
+ * `hour_of_day * 60 + minute_of_hour`, minute-aware per D8) into one BandSegment.
+ * x1/x2 are step indices — feed directly into Recharts ReferenceArea x1/x2.
+ *
+ * C1 correctness: 11:00 (660 min) → critical_peak (not mid), because 630 ≤ 660 < 690.
+ */
+interface BandSegment {
+  tier: TariffTier;
+  x1: number;          // step index at start of contiguous tier run (inclusive)
+  x2: number;          // step index at end of contiguous tier run (inclusive)
+  priceYuanPerMwh: number;
+}
+
+function computeBandSegments(history: EnvStepPayload[]): BandSegment[];
 ```
 
 ### TOU boundary verification (D8 — must be tested exactly)
@@ -211,14 +229,15 @@ export function PriceTimeline(props: PriceTimelineProps): JSX.Element;
 - X-axis: `step` index.
 - Y-axis: `price_buy_yuan_per_mwh` (¥/MWh). Wire values, no conversion.
 - **TOU background bands (C1):** drawn from `TOU_SCHEDULE` (static), NOT from `tariff_tier`.
-  Each `TouBand` entry is rendered as a coloured `ReferenceArea` spanning the
-  x-range that corresponds to that band's hour window.
-  - Band geometry is computed in minutes-from-midnight using `sim_time_utc` from the first
-    visible history entry; bands repeat every 24 h.
-  - The critical-peak window (10:30–11:30) must span exactly 630–690 min-of-day, not 660–720.
-- Live price line: `price_buy_yuan_per_mwh`, colour from `touColors.ts` keyed by the step's
-  `tariff_tier` (wire value, fine for per-point colouring — only the background band edges need
-  the static schedule).
+  Background bands are rendered as `ReferenceArea` elements spanning **x1/x2 step-index ranges**
+  computed by `computeBandSegments(history)` — groups of adjacent steps sharing the same TOU tier
+  via the minute-aware `getTouTier(hour_of_day*60 + minute_of_hour)` lookup (D8).
+  - **Never use y-axis stripes** (y1/y2 at price levels) — those are magnitude bands, not time bands.
+  - The 11:00 step (660 min) → `critical_peak` (630–690), so `computeBandSegments` produces a
+    `critical_peak` segment for that step. A minute-unaware implementation misplaces it.
+- Live price line: tier-coloured per contiguous segment using `getTouColor(tier).text` from
+  `touColors.ts`. Render one `Line` per `BandSegment` with its tier's colour — NOT a single
+  flat `#1d4ed8` line.
 - Accessible band list: hidden `<ul aria-label="TOU bands">` with one `<li>` per `TouBand`
   entry from `TOU_SCHEDULE` (9 items). Each `<li>` carries three attributes:
   - `data-tier` — tier name (e.g. `"critical_peak"`)
