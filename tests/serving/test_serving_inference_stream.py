@@ -371,6 +371,55 @@ class TestTelemetrySchemaConformance:
             f"payload.step must be 0, 1, 2, …; got {steps}"
         )
 
+    def test_d18_runtime_resilience_logs_warning_does_not_crash(
+        self, ws_client, monkeypatch
+    ):
+        """D18 runtime policy: validation error → warning logged, session does NOT crash.
+
+        Monkeypatches energy_go.telemetry.validate.validate to return a fake error
+        for all calls.  The session must still stream frames (no crash, no disconnect);
+        the frame is sent regardless (resilience-first).
+
+        Contract: contracts/serving/inference_stream.md §D18 Runtime policy tier.
+        """
+        import logging
+
+        import energy_go.telemetry.validate as _val_mod  # type: ignore
+
+        warnings_logged: list[str] = []
+
+        original_validate = _val_mod.validate
+
+        def _always_error(msg):  # noqa: ANN001
+            return ["fake-D18-validation-error"]
+
+        monkeypatch.setattr(_val_mod, "validate", _always_error)
+
+        # Capture D18 warnings from the inference_stream logger.
+        class _Catcher(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                if "D18" in record.getMessage():
+                    warnings_logged.append(record.getMessage())
+
+        catcher = _Catcher()
+        logger = logging.getLogger("energy_go.serving.inference_stream")
+        logger.addHandler(catcher)
+        try:
+            # The session must survive and deliver frames even when validate() errors.
+            frames = self._collect_frames(ws_client, n=2)
+        finally:
+            logger.removeHandler(catcher)
+            monkeypatch.setattr(_val_mod, "validate", original_validate)
+
+        assert len(frames) == 2, (
+            "Session must keep streaming after D18 validation errors "
+            f"(resilience-first); got {len(frames)} frames"
+        )
+        assert warnings_logged, (
+            "D18 validation errors must be logged as warnings — "
+            "no warning records captured on energy_go.serving.inference_stream logger"
+        )
+
 
 # ===========================================================================
 # TestErrorHandling
