@@ -707,6 +707,31 @@ describe("Animation driver golden values (via SiteScene data bridge)", () => {
     expect(omega).toBeCloseTo(0.2, 6);
   });
 
+  // reviewer (frontend-reviewer): the NaN/Inf freeze must be TRANSIENT, not sticky — after a
+  // bad-telemetry gap, a subsequent valid step must RESUME animation at the new value (the
+  // last-valid ref updates on recovery). Mirrors the non-sticky-gap semantics on other consumers;
+  // a "latched freeze" would leave the scene stuck on the pre-gap value forever.
+  it("telemetry recovers after a NaN gap → animation resumes at the new valid value (freeze is transient)", () => {
+    // Step 1: valid (wind=12 → omega 0.2)
+    _mockEnvStep = makeEnvStep({ wind_speed_mps: 12 });
+    const div = document.createElement("div");
+    const { container: sc, rerender } = render(
+      <SiteScene config={GANSU_CONFIG} registry={GANSU_REGISTRY} containerEl={div} />
+    );
+    // Step 2: NaN gap → frozen at 0.2
+    _mockEnvStep = makeEnvStep({ wind_speed_mps: NaN });
+    rerender(<SiteScene config={GANSU_CONFIG} registry={GANSU_REGISTRY} containerEl={div} />);
+    // Step 3: telemetry recovers with a DIFFERENT valid value (wind=7.5 → omega 0.1)
+    _mockEnvStep = makeEnvStep({ wind_speed_mps: 7.5 });
+    rerender(<SiteScene config={GANSU_CONFIG} registry={GANSU_REGISTRY} containerEl={div} />);
+
+    const el = sc.querySelector('[data-testid="turbine-instanced-mesh-vestas-v150-4.2"]');
+    const omega = Number(el!.getAttribute("data-omega"));
+    expect(Number.isFinite(omega)).toBe(true);
+    // Resumed at the post-gap value (0.1), NOT stuck on the pre-gap 0.2.
+    expect(omega).toBeCloseTo(0.1, 6);
+  });
+
   // reviewer: Inf irradiance must also be guarded (isPayloadFinite)
   it("Inf in irradiance → emissive freezes at last valid value", () => {
     _mockEnvStep = makeEnvStep({ irradiance_wm2: 500 }); // initial: 0.5
