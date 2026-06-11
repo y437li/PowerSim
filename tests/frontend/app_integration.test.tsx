@@ -45,45 +45,47 @@ const { default: App } = await import("../../src/App");
 const { default: SiteView } = await import("../../src/routes/SiteView");
 
 // ─── §T1 — Vite proxy config ─────────────────────────────────────────────────
+//
+// The proxy config is defined in src/config/viteProxy.ts (a plain TS module)
+// and imported by vite.config.ts. Testing the module directly avoids triggering
+// esbuild's environment checks when vite.config.ts is imported in jsdom.
 
-describe("§T1 — vite.config.ts proxy", () => {
-  it("has /api proxy targeting http://localhost:8000", async () => {
-    const mod = await import("../../vite.config");
-    // defineConfig returns its argument — exported default is the config object
-    const config = (mod as any).default ?? mod;
-    const apiProxy = (config?.server?.proxy ?? config?.default?.server?.proxy)?.["/api"];
-    expect(apiProxy, "server.proxy['/api'] must be defined").toBeTruthy();
-    const target =
-      typeof apiProxy === "string" ? apiProxy : (apiProxy as any)?.target;
-    expect(target).toBe("http://localhost:8000");
+import { VITE_PROXY_CONFIG } from "../../src/config/viteProxy";
+
+describe("§T1 — Vite proxy config (src/config/viteProxy.ts)", () => {
+  it("has /api proxy entry defined", () => {
+    expect(VITE_PROXY_CONFIG["/api"], "VITE_PROXY_CONFIG['/api'] must be defined").toBeTruthy();
   });
 
-  it("has /api proxy with changeOrigin: true", async () => {
-    const mod = await import("../../vite.config");
-    const config = (mod as any).default ?? mod;
-    const apiProxy = (config?.server?.proxy ?? config?.default?.server?.proxy)?.["/api"];
-    expect(typeof apiProxy).toBe("object");
-    expect((apiProxy as any).changeOrigin).toBe(true);
+  it("has /api proxy targeting http://localhost:8000", () => {
+    const apiProxy = VITE_PROXY_CONFIG["/api"];
+    expect(apiProxy?.target).toBe("http://localhost:8000");
   });
 
-  it("has /ws proxy with ws: true", async () => {
-    const mod = await import("../../vite.config");
-    const config = (mod as any).default ?? mod;
-    const wsProxy = (config?.server?.proxy ?? config?.default?.server?.proxy)?.["/ws"];
-    expect(wsProxy, "server.proxy['/ws'] must be defined").toBeTruthy();
-    expect((wsProxy as any).ws).toBe(true);
+  it("has /api proxy with changeOrigin: true", () => {
+    const apiProxy = VITE_PROXY_CONFIG["/api"];
+    expect(apiProxy?.changeOrigin).toBe(true);
+  });
+
+  it("has /ws proxy with ws: true", () => {
+    const wsProxy = VITE_PROXY_CONFIG["/ws"];
+    expect(wsProxy, "VITE_PROXY_CONFIG['/ws'] must be defined").toBeTruthy();
+    expect(wsProxy?.ws).toBe(true);
   });
 });
 
 // ─── §T2 — wsClientSingleton shape ───────────────────────────────────────────
 
 describe("§T2 — wsClientSingleton exports WsClient", () => {
-  it("exports wsClientSingleton with connect and disconnect functions", async () => {
-    const { wsClientSingleton } = await import(
-      "../../src/clients/wsClientSingleton"
-    );
-    expect(typeof wsClientSingleton.connect).toBe("function");
-    expect(typeof wsClientSingleton.disconnect).toBe("function");
+  it("exports wsClientSingleton with connect and disconnect functions (real module)", async () => {
+    // vi.importActual bypasses the module-level mock to test the real module shape.
+    // createWsClient creates closures only — no WebSocket is opened at import time,
+    // so this is safe in jsdom.
+    const actual = await vi.importActual<
+      typeof import("../../src/clients/wsClientSingleton")
+    >("../../src/clients/wsClientSingleton");
+    expect(typeof actual.wsClientSingleton.connect).toBe("function");
+    expect(typeof actual.wsClientSingleton.disconnect).toBe("function");
   });
 });
 

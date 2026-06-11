@@ -27,9 +27,14 @@ No new stores, no new routes, no new nav links. This contract wires existing pie
 
 ---
 
-## 1. Vite dev proxy (`vite.config.ts`)
+## 1. Vite dev proxy (`src/config/viteProxy.ts` + `vite.config.ts`)
 
-Add a `server.proxy` block — active only during `vite dev`, inert in production builds.
+The proxy config lives in a new plain-TS module `src/config/viteProxy.ts` that exports
+`VITE_PROXY_CONFIG`. This module is imported by `vite.config.ts` and directly by tests,
+avoiding esbuild environment issues when vite.config.ts is imported in jsdom.
+
+`vite.config.ts` adds `server: { proxy: VITE_PROXY_CONFIG }` — active only during `vite dev`,
+inert in production builds.
 
 | Proxy key | Target | Options |
 |-----------|--------|---------|
@@ -40,8 +45,8 @@ Add a `server.proxy` block — active only during `vite dev`, inert in productio
 
 This matches the backend's FastAPI routes which have no `/api` prefix.
 
-**Acceptance criterion (§T1):** The exported config object has `server.proxy['/api'].target === 'http://localhost:8000'`
-and `server.proxy['/ws'].ws === true`.
+**Acceptance criterion (§T1):** `VITE_PROXY_CONFIG['/api'].target === 'http://localhost:8000'` and
+`VITE_PROXY_CONFIG['/api'].changeOrigin === true` and `VITE_PROXY_CONFIG['/ws'].ws === true`.
 
 ---
 
@@ -188,7 +193,8 @@ export const ASSET_REGISTRY = rawRegistry as unknown as AssetRegistry;
 
 | File | Change |
 |------|--------|
-| `vite.config.ts` | Add `server.proxy` block |
+| `src/config/viteProxy.ts` | **New** — plain-TS proxy config constant (no esbuild dep) |
+| `vite.config.ts` | Add `server: { proxy: VITE_PROXY_CONFIG }` |
 | `src/clients/wsClientSingleton.ts` | **New** — singleton WsClient wired to stores |
 | `src/App.tsx` | Add `useEffect` for ws connect/disconnect lifecycle |
 | `src/routes/SiteView.tsx` | Add `SceneMountPoint.onReady` + `SiteScene` + `LiveDashboard` |
