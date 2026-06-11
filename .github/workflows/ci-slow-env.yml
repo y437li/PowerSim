@@ -82,10 +82,17 @@ jobs:
         if: env.RUN_ENV == 'true'
         shell: bash
         run: |
+          # FULL collection-dep set (mirrors ci-fast): `pytest tests/` collects the
+          # ENTIRE tree before `-m` selection, importing serving/training/telemetry
+          # modules (pytest_asyncio, jsonschema, fastapi, …). Installing only jax+numpy
+          # makes collection ModuleNotFoundError before any env test runs, even though
+          # we only RUN the env-marked tests. So install the same set ci-fast does.
           pip install --no-deps -e .
           pip install \
-            "pytest>=8.0" "pytest-xdist>=3.5" \
-            "numpy>=1.26" \
+            "pytest>=8.0" "pytest-asyncio>=0.23" "anyio>=4.0" "pytest-xdist>=3.5" \
+            "fastapi>=0.110" "httpx>=0.27" "starlette>=0.36" \
+            "pyyaml>=6.0" "numpy>=1.26" "websockets>=12" "uvicorn[standard]>=0.29" \
+            "jsonschema>=4.21" \
             "jax[cpu]>=0.4.25" "flax>=0.8.0" "optax>=0.2.0" "flashbax>=0.1.0"
 
       - name: Run slow env / parity suite (bounded parallelism, no fullyear)
