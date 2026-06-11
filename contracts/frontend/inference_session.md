@@ -73,8 +73,14 @@ case "error":   onServerError?.(frame as ServerErrorFrame);    break;
 ```
 
 `status` and `error` frames do NOT carry a `payload` wrapper — they are top-level objects.
-The existing `payload === undefined` guard MUST be relaxed for these two kinds (skip the
-guard before the kind switch, or check specifically).
+The payload-guard relaxation MUST be kind-specific: only `"status"` and `"error"` bypass
+the `payload === undefined` check.  `"env_step"`, `"train_metrics"`, and `"eval_compare"`
+frames MUST still require `payload` — that guard is load-bearing per D18 (a malformed
+`env_step` with no payload reaching `telemetryStore` would crash the dashboard).
+
+Implementation note: do NOT remove the guard globally before the switch.  Instead, after
+parsing the JSON and extracting `kind`, branch on whether `kind` is a control frame
+(`"status"` | `"error"`) or a data frame, and apply the payload guard only to data frames.
 
 ### §1.4 `ServerStatusFrame` and `ServerErrorFrame` types
 
@@ -178,9 +184,18 @@ Updates state from a server status frame.
 | `frame.state` | store update |
 |---|---|
 | `"ready"` | `serverState="ready"`, then trigger `_autoStart()` |
-| `"running"` | `serverState="running"`, update `runId`, `siteId`, `sessionId`, `step`, `episode` |
+| `"running"` | if `frame.session_id !== current sessionId`: call `telemetryStore.clearHistory()` first; then `serverState="running"`, update `runId`, `siteId`, `sessionId`, `step`, `episode` |
 | `"paused"` | `serverState="paused"`, update `step`, `episode` |
 | `"stopped"` | `serverState="stopped"` |
+
+**Session-ID change → history clear:** The serving layer assigns a fresh `session_id`
+UUID per `cmd:start` specifically to prevent history mixing
+(`inference_stream.md:180–182`).  `_autoStart()` fires on every `"ready"` frame —
+including reconnects — and always picks the latest run, so the same `run_id` can be
+restarted with a new `session_id`.  Without clearing, new-session step-0 frames append
+to the old session's ring buffer and the timeline jumps back, mixing two sessions.
+Fix: when `frame.session_id` differs from the currently stored `sessionId`, call
+`useTelemetryStore.getState().clearHistory()` before updating the store.
 
 `_autoStart()` is called ONLY when transitioning to `"ready"` (i.e. a reconnect sends a
 new `"ready"` frame → auto-start fires again with the then-current latest run).
@@ -377,6 +392,8 @@ Add `<SessionControlStrip />` inside `<div data-testid="site-view">`:
 | §IS11 | `_autoStart()` with `no_runs_found` → `serverState="error"`, `errorMsg` set |
 | §IS12 | `_autoStart()` with other REST error → `serverState="error"`, `errorMsg` set |
 | §IS13 | `handleServerStatus({state:"running"})` → `serverState="running"`, step/episode updated |
+| §IS13b | `handleServerStatus(running, new session_id)` → `telemetryStore.clearHistory()` called before state update |
+| §IS13c | `handleServerStatus(running, same session_id)` → `clearHistory()` NOT called |
 | §IS14 | `handleServerStatus({state:"paused"})` → `serverState="paused"` |
 | §IS15 | `inferenceSessionStore.pause()` → sends `{cmd:"pause"}` via `telemetryWsClient` |
 | §IS16 | `inferenceSessionStore.resume()` → sends `{cmd:"resume"}` via `telemetryWsClient` |
@@ -398,3 +415,6 @@ Add `<SessionControlStrip />` inside `<div data-testid="site-view">`:
 - `cmd:stop` UI: user closes the browser tab; server closes on WS disconnect.
 - `cmd:step` (single-step debug): harness concern, not live-view.
 - Multi-site switching in live view.
+- `seed` field on `cmd:start`: `inference_stream.md` documents an optional `seed`
+  (default 0) for reproducible trajectories.  v1 omits it — the server uses seed=0,
+  which is correct for the live-view use case.

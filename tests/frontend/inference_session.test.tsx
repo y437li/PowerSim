@@ -452,6 +452,41 @@ describe("§IS8–§IS18 — inferenceSessionStore", () => {
     expect(store.getState().serverState).toBe("error");
     expect(store.getState().errorMsg).toContain("policy_not_found");
   });
+
+  it("§IS13b — handleServerStatus(running, new session_id) calls telemetryStore.clearHistory()", async () => {
+    // Arrange: store has an existing session_id from a prior running frame
+    store.getState().handleServerStatus(STATUS_RUNNING); // session_id = "550e8400-..."
+    // Get the real telemetryStore to spy on clearHistory
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+    const clearHistorySpy = vi.spyOn(useTelemetryStore.getState(), "clearHistory");
+
+    // Act: arrive with a DIFFERENT session_id (new session, same run_id on reconnect)
+    const STATUS_RUNNING_NEW_SESSION = {
+      ...STATUS_RUNNING,
+      session_id: "aaaabbbb-cccc-dddd-eeee-ffff00001111", // different UUID → new session
+    };
+    store.getState().handleServerStatus(STATUS_RUNNING_NEW_SESSION);
+
+    // Assert: clearHistory called because session_id changed
+    expect(clearHistorySpy).toHaveBeenCalledOnce();
+    // Store updates to the new session_id
+    expect(store.getState().sessionId).toBe("aaaabbbb-cccc-dddd-eeee-ffff00001111");
+  });
+
+  it("§IS13c — handleServerStatus(running, SAME session_id) does NOT call clearHistory()", async () => {
+    // Arrange: first running frame establishes session_id
+    store.getState().handleServerStatus(STATUS_RUNNING);
+    const { useTelemetryStore } = await import("../../src/stores/telemetryStore");
+    const clearHistorySpy = vi.spyOn(useTelemetryStore.getState(), "clearHistory");
+
+    // Act: second running frame with the SAME session_id (normal progress update)
+    const STATUS_RUNNING_STEP_10 = { ...STATUS_RUNNING, step: 10 };
+    store.getState().handleServerStatus(STATUS_RUNNING_STEP_10);
+
+    // Assert: same session — no clear
+    expect(clearHistorySpy).not.toHaveBeenCalled();
+    expect(store.getState().step).toBe(10);
+  });
 });
 
 // ─── §IS19–§IS24: SessionControlStrip component ──────────────────────────────
