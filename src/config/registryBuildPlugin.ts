@@ -2,14 +2,23 @@
  * registryBuildPlugin — Vite plugin that auto-copies assets/3d/registry.json
  * → src/config/registryData.json before any transform runs.
  *
- * Contract: contracts/frontend/registry_build_copy.md §1
+ * Fires at configResolved time (before any import resolution), so the copy is
+ * always fresh for `vite dev`, `vite build`, and `vitest run` (both configs
+ * register this plugin — see vite.config.ts and vitest.config.ts).
  *
- * STUB (gate stage): name is intentionally wrong so RB.1/RB.2 are RED.
- * Implementation sets name="copy-registry" and wires the configResolved hook.
+ * Contract: contracts/frontend/registry_build_copy.md §1
  */
 
-// Stub — replaced by implementation
+import { copyFileSync, mkdirSync } from "fs";
+import { dirname } from "path";
+
+const SRC = "assets/3d/registry.json";
+const DEST = "src/config/registryData.json";
+
 export const registryBuildPlugin = {
-  name: "copy-registry-stub",
-  // configResolved intentionally missing — RB.2 is RED until implementation
+  name: "copy-registry",
+  configResolved() {
+    mkdirSync(dirname(DEST), { recursive: true });
+    copyFileSync(SRC, DEST);
+  },
 };
