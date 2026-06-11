@@ -12,6 +12,8 @@ Run:  pytest tests/training/test_training_training_pipeline.py
 Expected at gate stage: ImportError / collection errors for every test.
 """
 
+import math
+
 import jax
 import jax.numpy as jnp
 import numpy as np
