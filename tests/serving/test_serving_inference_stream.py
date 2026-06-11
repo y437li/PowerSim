@@ -1899,13 +1899,17 @@ class TestRealEnvEpisodeBoundary:
                     frames.append(msg)
 
         # k in {165, 166, 167, 168, 169} — straddles the episode-0 / episode-1 boundary
+        # NOTE: per LOCKED telemetry schema (telemetry_schema.json + env_step_a.json),
+        # cost_cum is a payload-level sibling of costs, NOT nested under costs.
+        # Correct path: payload["cost_cum"]["c_degradation_yuan_cum"]
+        # Wrong path:   payload["costs"]["cost_cum"]["…"]  ← KeyError at runtime
         for k in range(165, 170):
-            costs_k  = frames[k]["payload"]["costs"]
-            costs_k1 = frames[k + 1]["payload"]["costs"]
+            payload_k  = frames[k]["payload"]
+            payload_k1 = frames[k + 1]["payload"]
 
-            cum_k  = costs_k["cost_cum"]["c_degradation_yuan_cum"]
-            cum_k1 = costs_k1["cost_cum"]["c_degradation_yuan_cum"]
-            step_k1 = costs_k1["c_degradation_yuan"]
+            cum_k   = payload_k["cost_cum"]["c_degradation_yuan_cum"]
+            cum_k1  = payload_k1["cost_cum"]["c_degradation_yuan_cum"]
+            step_k1 = payload_k1["costs"]["c_degradation_yuan"]
 
             # Invariant: cum[k+1] == cum[k] + step[k+1]
             expected = cum_k + step_k1
