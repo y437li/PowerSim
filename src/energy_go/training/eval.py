@@ -86,7 +86,7 @@ def run_eval(
     Returns:
         PolicyEvalResult with real-money cost breakdown.
     """
-    from energy_go.env.jax_env import EnvParams, reset, step  # D22b import path
+    from energy_go.env.jax_env import EnvParams, reset, step, get_obs  # D22b import path
 
     env_params = params if params is not None else EnvParams(episode_len=8760)
 
@@ -114,7 +114,7 @@ def run_eval(
     @jax.jit
     def _step(carry, _):
         env_state = carry
-        raw_obs = carry.obs  # depends on jax_env_core EnvState API
+        raw_obs = get_obs(env_state, env_params, data)  # §5.4: obs from input state
         norm_obs = normalize_obs(raw_obs, obs_stats, clip=obs_clip)
         action = _deterministic_action(actor_params, norm_obs)
         new_state, new_obs, reward, done, info = step(env_state, action, env_params, data)
