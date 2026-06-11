@@ -43,3 +43,40 @@
 
 Re-request when both blockers land; reviewer edge tests (exact nameplates, real handler wiring) to be
 added/verified on re-review.
+
+---
+
+## Round 2 @ commit `5349b2e` — **APPROVE**
+
+Both blockers + all coverage gaps resolved (verified against the diff):
+
+1. **WS endpoint mismatch — resolved.** §2 now defines TWO clients: `telemetryWsClient` →
+   `TELEMETRY_WS_URL = '/ws/inference'` (env_step + status) and `trainingWsClient` →
+   `TRAINING_WS_URL = '/ws/training/stream'` (train_metrics) — matching the serving contracts
+   (inference_stream.md:24, training_proxy.md:98). App connects/disconnects both (§3). §T_url
+   pins both URLs via `vi.importActual` on the real module — would have caught the original bug.
+2. **Gansu nameplates — resolved.** §5 corrected to §1 authoritative values (wind 615, solar 330,
+   battery 294.5 MWh / 98.16 MW) with proper §1 citation + explicit "400 = import limit D12" note.
+   §T8 pins exact values (`=== 615 / 330 / 294.5 / 98.16`), not `> 0`.
+3. **Handler-wiring coverage — resolved.** §T_wire uses `vi.importActual` to get the REAL
+   `handleEnvStep`/`handleTrainMetrics`/`handleStatusChange`, feeds golden fixtures
+   (`env_step_a.json`, `train_metrics.json` — both present), and asserts the REAL Zustand stores
+   update (`telemetryStore.envStep.step`, `trainingStore.latest.global_step`, `setWsStatus`). This
+   directly tests the "stores get no data" fix that was previously untested.
+4. **StrictMode** documented in §3/§T4 (idempotent connect + cleanup self-heals).
+5. Confirmed (no change): single `handleStatusChange → telemetryStore.setWsStatus` is correct since
+   `TrainingPanel` reads `wsStatus` from `telemetryStore`; eval_compare no-ops documented.
+
+### Reviewer test added (this commit)
+- **`reviewer: §T1 /api proxy rewrite`** — §T1 pinned target/changeOrigin/ws but not the rewrite;
+  a wrong rewrite silently 404s every REST call. Pins the §1 rule: `/api/sites`→`/sites`,
+  `/api`→`/`, `/api/`→`/`, and `/ws` has no rewrite.
+
+### Approved suite
+Developer cases (§T1–§T9, §T_url, §T_wire) + my reviewer `/api`-rewrite group. Locked stage-1 spec;
+tests are RED (stubs/no real impl yet) and go green under QA after the implementation replaces the
+stubs at stage 2.
+
+**Verdict: APPROVE** (contract+tests gate). Cleared for implementation. Mark ready when the real
+`viteProxy.ts` / `wsClientSingleton.ts` / `gansuSiteConfig.ts` / `App.tsx` / `SiteView.tsx` land,
+and I run the stage-2 audit.

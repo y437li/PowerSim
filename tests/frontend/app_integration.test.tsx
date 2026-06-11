@@ -361,3 +361,36 @@ describe("§T9 — ASSET_REGISTRY equals assets/3d/registry.json", () => {
     expect(ASSET_REGISTRY).toEqual(raw);
   });
 });
+
+// ─── reviewer (frontend-reviewer): §T1 /api rewrite — REST routing correctness ──
+// §T1 pins target/changeOrigin/ws:true but NOT the /api rewrite. A wrong rewrite
+// silently 404s every REST call (the FastAPI routes have no /api prefix). Pin the
+// §1 rewrite rule: /^\/api(\/.*)?$/ → $1 || '/'.
+describe("reviewer: §T1 /api proxy rewrite (strip prefix — REST routing)", () => {
+  type ProxyEntry = { rewrite?: (p: string) => string };
+
+  it("defines a rewrite function on the /api proxy (§1)", () => {
+    const api = VITE_PROXY_CONFIG["/api"] as ProxyEntry;
+    expect(typeof api.rewrite, "/api proxy must define a rewrite fn (§1)").toBe("function");
+  });
+
+  it("strips the /api prefix: /api/sites -> /sites", () => {
+    const api = VITE_PROXY_CONFIG["/api"] as ProxyEntry;
+    expect(api.rewrite!("/api/sites")).toBe("/sites");
+  });
+
+  it("maps bare /api -> / (root)", () => {
+    const api = VITE_PROXY_CONFIG["/api"] as ProxyEntry;
+    expect(api.rewrite!("/api")).toBe("/");
+  });
+
+  it("maps /api/ (trailing slash) -> /", () => {
+    const api = VITE_PROXY_CONFIG["/api"] as ProxyEntry;
+    expect(api.rewrite!("/api/")).toBe("/");
+  });
+
+  it("/ws proxy has no rewrite — paths pass through to serving endpoints verbatim", () => {
+    const ws = VITE_PROXY_CONFIG["/ws"] as ProxyEntry;
+    expect(ws.rewrite).toBeUndefined();
+  });
+});
