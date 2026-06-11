@@ -442,9 +442,12 @@ values in these units.
 **`payload.step`** — global step counter (monotonically increasing per session,
 never reset at episode boundaries, starts at 0 for `cmd:start`).
 
-**`payload.episode`** — increments at the episode boundary.  The boundary step's
-payload carries the **incremented** episode number (so step 167 = last of episode 0
-reports episode=1 after the episode counter is updated).
+**`payload.episode`** — the terminal step of an episode belongs to that episode.
+The episode counter increments **after** the terminal step's payload is built:
+- step 167 (`done=True`, last step of episode 0): `payload.episode = 0`
+- step 168 (first step of episode 1, after reset): `payload.episode = 1`
+
+This is the standard convention: the terminal step stays in its own episode.
 
 ### `has_policy` in REST API (task #38 fix)
 
@@ -457,7 +460,7 @@ layer (PR #59).  This **always returns False** for real training runs.
 
 ```python
 has_policy = any(
-    p for p in (run_dir / "checkpoints" / run_id).glob("checkpoint_*.npz")
+    p for p in run_dir.glob("checkpoint_*.npz")
     if "_step" in p.stem
 )
 ```

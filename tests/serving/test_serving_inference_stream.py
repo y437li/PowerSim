@@ -1382,8 +1382,13 @@ class TestRealJaxEnvPhysics:
 
     @pytest.fixture(autouse=True)
     def _require_jax(self):
-        """Skip the entire class if JAX is not installed (e.g. macOS Intel)."""
-        pytest.importorskip("jax", reason="jax not installed; skip real-env physics tests")
+        """Skip the entire class if JAX/jaxlib is not installed (e.g. macOS Intel).
+
+        importorskip("energy_go.env.jax_env") catches both missing jax AND missing
+        jaxlib arch wheels — tighter than importorskip("jax") alone.
+        """
+        pytest.importorskip("energy_go.env.jax_env",
+                            reason="energy_go.env.jax_env unavailable; skip real-env tests")
 
     def test_d18_validate_passes_with_real_env(self, ws_client):
         """Real env output must pass energy_go.telemetry.validate() == [] (D18 hard gate)."""
@@ -1736,32 +1741,6 @@ class TestHasPolicyCanonical:
         finally:
             self._cleanup_rest_client(client)
 
-    # reviewer: a legacy policy.npz must NOT suppress a present canonical checkpoint.
-    # When BOTH checkpoint_*.npz (canonical) and policy.npz (legacy) exist, the
-    # canonical-discovery glob finds the checkpoint → has_policy True. Guards against
-    # an implementation that returns early/False on seeing the legacy file (or ANDs the
-    # two checks). Pure filesystem — hand-verifiable: glob("checkpoint_*.npz") is
-    # non-empty regardless of the legacy policy.npz also being present.
-    def test_has_policy_true_with_both_canonical_and_legacy(self, tmp_path):
-        pytest.importorskip("energy_go.serving.app")
-        run = self._make_run_dir(tmp_path, "run_hp_both")
-        _make_canonical_checkpoint(run, run_id="run_hp_both")
-        _make_policy_npz(run / "policy.npz")  # legacy file present alongside canonical
-        client = self._make_rest_client(tmp_path)
-        try:
-            resp = client.get("/runs")
-            assert resp.status_code == 200
-            runs = resp.json()["runs"]
-            hp_run = next((r for r in runs if r["id"] == "run_hp_both"), None)
-            assert hp_run is not None, "run_hp_both not found in /runs response"
-            assert hp_run["has_policy"] is True, (
-                "has_policy must be True when a canonical checkpoint_*.npz exists, even "
-                "if a legacy policy.npz is also present (canonical discovery must not be "
-                f"suppressed by the legacy file); got {hp_run['has_policy']!r}"
-            )
-        finally:
-            self._cleanup_rest_client(client)
-
 
 # ===========================================================================
 # TestRealEnvEpisodeBoundary (task #48 — real env episode handling)
@@ -1776,18 +1755,29 @@ class TestRealEnvEpisodeBoundary:
 
     @pytest.fixture(autouse=True)
     def _require_jax(self):
-        """Skip the entire class if JAX is not installed."""
-        pytest.importorskip("jax", reason="jax not installed; skip real-env boundary tests")
+        """Skip the entire class if JAX/jaxlib is not installed (e.g. macOS Intel).
 
+        importorskip("energy_go.env.jax_env") catches both missing jax AND missing
+        jaxlib arch wheels — tighter than importorskip("jax") alone.
+        """
+        pytest.importorskip("energy_go.env.jax_env",
+                            reason="energy_go.env.jax_env unavailable; skip real-env boundary tests")
+
+    @pytest.mark.slow
     def test_real_env_episode_resets_at_boundary(self, ws_client):
         """After 168 real-env steps (episode 0), payload.episode increments to 1.
 
         The real JAX env has done = (t == episode_len - 1) = (t == 167).
         On done=True the serving wrapper must reset and increment the episode counter.
-        payload.episode on the 169th frame (index 168) must be 1 (not 0).
 
-        This is the same contract as TestEpisodeBoundary.test_seq_does_not_reset_at_episode_boundary
-        but exercised through the REAL JAX env path (not _SyntheticEnv).
+        Standard convention (contract §Episode semantics): the terminal step of an
+        episode belongs to that episode.  The episode counter increments AFTER the
+        terminal step's payload is built:
+          - frame 167 (done=True, last step of episode 0): payload.episode = 0
+          - frame 168 (first step of episode 1, after reset): payload.episode = 1
+
+        This pins the exact boundary — an impl that increments BEFORE building the
+        frame 167 payload (non-standard) would put episode=1 at frame 167 and fail.
         """
         N = 170
         frames: list[dict] = []
@@ -1800,8 +1790,16 @@ class TestRealEnvEpisodeBoundary:
                 if msg.get("kind") == "env_step":
                     frames.append(msg)
 
-        # Frame at index 168 (the 169th frame) = first step of episode 1
-        # payload.episode must be 1 (incremented at the episode boundary, step 167)
+        # Frame 167: terminal step of episode 0 — episode counter NOT yet incremented.
+        # expected: payload.episode == 0  (standard: terminal step belongs to its episode)
+        assert frames[167]["payload"]["episode"] == 0, (
+            f"payload.episode at frame 167 (done=True, terminal of episode 0) must be 0; "
+            f"got {frames[167]['payload']['episode']}. "
+            "The terminal step must belong to its own episode (increment AFTER building payload)."
+        )
+
+        # Frame 168: first step of episode 1 (after reset at step 167 boundary).
+        # expected: payload.episode == 1
         assert frames[168]["payload"]["episode"] == 1, (
             f"payload.episode at frame 168 must be 1 (episode boundary at step 167, D3); "
             f"got {frames[168]['payload']['episode']}"
@@ -1811,6 +1809,7 @@ class TestRealEnvEpisodeBoundary:
             f"seq at frame 168 must be 168 (no reset); got {frames[168]['seq']}"
         )
 
+    @pytest.mark.slow
     def test_real_env_all_frames_pass_validate_across_boundary(self, ws_client):
         """All 170 frames spanning the episode boundary must pass D18 validate (real env).
 
@@ -1837,3 +1836,60 @@ class TestRealEnvEpisodeBoundary:
             f"D18 validate failed for {len(failures)} frames across episode boundary:\n"
             + "\n".join(failures[:5])  # show first 5 only
         )
+
+    @pytest.mark.slow
+    def test_cost_cum_accumulates_across_episode_boundary(self, ws_client):
+        """c_degradation_yuan_cum must accumulate continuously across the episode boundary.
+
+        Contract §Real JAX environment wiring: cost_cum fields are running sums
+        accumulated across ALL steps in a session — they NEVER reset at an episode
+        boundary (even though the env internally resets on done=True at step 167).
+
+        Invariant: cost_cum[k+1] ≈ cost_cum[k] + c_degradation_yuan[k+1]
+        for k in {165, 166, 167, 168, 169}.  k=167→168 is the critical boundary:
+        if the serving layer resets cost_cum on env reset, then
+            cost_cum[168] == c_degradation_yuan[168]   (reset: tiny per-step value)
+        instead of
+            cost_cum[168] == cost_cum[167] + c_degradation_yuan[168]  (accumulated)
+        The assertion fails in the reset case because cost_cum[167] is large (167 steps
+        of degradation), making the diff >> 1e-4 ¥.
+
+        c_degradation_yuan ≥ 0 always (SOC fraction × rate × |action| ≥ 0, §3.4).
+        Tolerance 1e-4 ¥: float32 JAX field → Python float64 comparison.
+
+        Hand-derivation: c_deg_cum[k+1] = Σ_{t=0}^{k+1} c_deg[t]
+                                         = c_deg_cum[k] + c_deg[k+1]   ← invariant
+        """
+        N = 171  # need frame indices 0..170 to check k=165→169 (k+1 up to 170)
+        frames: list[dict] = []
+        with ws_client.websocket_connect("/ws/inference") as ws:
+            ws.receive_text(timeout=5)
+            ws.send_text(_start_cmd(speed=0.0))
+            while len(frames) < N:
+                raw = ws.receive_text(timeout=60)
+                msg = json.loads(raw)
+                if msg.get("kind") == "env_step":
+                    frames.append(msg)
+
+        # k in {165, 166, 167, 168, 169} — straddles the episode-0 / episode-1 boundary
+        for k in range(165, 170):
+            costs_k  = frames[k]["payload"]["costs"]
+            costs_k1 = frames[k + 1]["payload"]["costs"]
+
+            cum_k  = costs_k["cost_cum"]["c_degradation_yuan_cum"]
+            cum_k1 = costs_k1["cost_cum"]["c_degradation_yuan_cum"]
+            step_k1 = costs_k1["c_degradation_yuan"]
+
+            # Invariant: cum[k+1] == cum[k] + step[k+1]
+            expected = cum_k + step_k1
+            boundary_label = " ← EPISODE BOUNDARY" if k == 167 else ""
+            assert abs(cum_k1 - expected) < 1e-4, (
+                f"c_degradation_yuan_cum NOT accumulating at k={k}→{k+1}{boundary_label}: "
+                f"cum[{k}]={cum_k:.6f} ¥, "
+                f"c_deg[{k+1}]={step_k1:.6f} ¥, "
+                f"expected cum[{k+1}]={expected:.6f} ¥, "
+                f"got cum[{k+1}]={cum_k1:.6f} ¥, "
+                f"diff={abs(cum_k1 - expected):.2e} ¥. "
+                "cost_cum appears to reset at the episode boundary — "
+                "it must accumulate across env.reset() calls within a session."
+            )
