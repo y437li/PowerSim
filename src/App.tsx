@@ -5,6 +5,7 @@ import TrainingPanel from "./routes/TrainingPanel";
 import { EvalComparison } from "./routes/EvalComparison";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { telemetryWsClient, trainingWsClient } from "./clients/wsClientSingleton";
+import { useTelemetryStore } from "./stores/telemetryStore";
 
 // App has NO BrowserRouter — the router is in main.tsx (or MemoryRouter in tests).
 // Direct imports (not React.lazy) so tests can render synchronously.
@@ -22,6 +23,11 @@ export default function App() {
     };
   }, []);
 
+  // runId advances with each new training session; use it as the ErrorBoundary
+  // resetKey so the boundary self-heals on session advance.
+  // Contract: contracts/frontend/error_boundary_reset_key.md §3
+  const runId = useTelemetryStore((s) => s.runId);
+
   return (
     <div className="app">
       <nav className="app__nav">
@@ -37,7 +43,7 @@ export default function App() {
       </nav>
 
       <main className="app__main">
-        <ErrorBoundary>
+        <ErrorBoundary resetKey={runId ?? ""}>
           <Routes>
             <Route path="/" element={<SiteView />} />
             <Route path="/training" element={<TrainingPanel />} />
