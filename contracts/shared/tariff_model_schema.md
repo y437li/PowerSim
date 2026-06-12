@@ -73,7 +73,7 @@ regions:
 | `schema_version` | string | — | `"1.0.0"` | Presence-only check in tests; equality check in validators |
 | `currency` | string | ISO-4217 | non-empty | Display only; env arithmetic is always ¥-internal |
 | `price_table_yuan_per_mwh` | list[list[float]] | ¥/MWh | shape (12, 24); values ≥ 0 by convention | **Hard error E-TARIFF-SHAPE if shape ≠ (12, 24)** |
-| `demand_rate_yuan_per_mw_month` | float | ¥/MW·month | ≥ 0 (W-TARIFF-DEMAND-NEG if < 0) | Maps directly to `EnvParams.demand_rate_yuan_per_mw_month`; 0.0 valid for no-demand-charge sites |
+| `demand_rate_yuan_per_mw_month` | float | ¥/MW·month | ≥ 0 (**E-TARIFF-DEMAND hard error if < 0**) | Maps directly to `EnvParams.demand_rate_yuan_per_mw_month`; 0.0 valid for no-demand-charge sites |
 | `spread_yuan_per_mwh` | float | ¥/MWh | ≥ 0 | D7: `eff_spread = max(0, spread + N(0, σ))` |
 | `spread_noise_std_yuan_per_mwh` | float | ¥/MWh | ≥ 0 | D7 σ; 0.0 = deterministic spread |
 
@@ -240,18 +240,22 @@ currency code is unusual and likely an operator data-entry error (e.g. copy-past
 foreign tariff file). Soft warning only — it does not affect env arithmetic.  
 Message template: `"W-TARIFF-CURRENCY-UNKNOWN: currency='{v}'; env is ¥-pure, only 'CNY' is recognised"`
 
-### W-TARIFF-DEMAND-NEG
+### E-TARIFF-DEMAND
 
 ```
-WARNING iff demand_rate_yuan_per_mw_month < 0
-rule_id: "W-TARIFF-DEMAND-NEG"
+HARD ERROR iff demand_rate_yuan_per_mw_month < 0
+rule_id: "E-TARIFF-DEMAND"
 field:   "demand_rate_yuan_per_mw_month"
 ```
 
-Negative demand rate implies a subsidy for peak demand (unusual in CN tariffs). Soft warning only:
-some research configurations intentionally model demand subsidies. 0.0 is valid (no demand charge)
-— rule is strictly `< 0`.  
-Message template: `"W-TARIFF-DEMAND-NEG: demand_rate={v:.1f} < 0 (unusual; negative implies demand subsidy)"`
+A negative demand charge rate (¥/MW·month fixed fee) is **commercially impossible** — no utility
+charges a negative fixed fee for peak demand. This is a hard error: unlike negative spot/spread
+prices (which genuinely occur in oversupply markets and warrant only a warning), a negative
+demand rate has no physically or commercially valid interpretation in the CN tariff context.
+
+Two-tier rationale (rl-architect ruling): impossible = hard error; suspicious-but-legal = warning.
+`0.0` is valid (no demand charge, common for smaller sites) — rule is strictly `< 0`.  
+Message template: `"E-TARIFF-DEMAND: demand_rate={v:.1f} < 0 (commercially impossible for CN demand charge)"`
 
 ### E-TARIFF-REGION (resolver error, not schema-file error)
 
@@ -370,13 +374,13 @@ reference PR #68.
 
 - [ ] cn-gansu 24-vector values match §3.7 + D8 minute=0 convention (especially h=10 peak vs h=11 critical-peak boundary)
 - [ ] (12, 24) shape correct for month×hour semantics (row = month, col = hour)
-- [ ] `demand_rate` units ¥/MW·month (not ¥/kW·month) matching `EnvParams` field; 0.0 valid (no demand charge); W-TARIFF-DEMAND-NEG fires at < 0
+- [ ] `demand_rate` units ¥/MW·month (not ¥/kW·month) matching `EnvParams` field; 0.0 valid (no demand charge); E-TARIFF-DEMAND hard error fires at < 0
 - [ ] D7 sell_clamp parameters sourced correctly (spread=30, σ=10 from LINEAGE D7)
 - [ ] E-TARIFF-SHAPE is HARD ERROR (in `result.errors`; NOT in `result.warnings`)
 - [ ] W-TARIFF-PRICE-NEG is WARNING (in `result.warnings`; NOT in `result.errors`)
 - [ ] W-TARIFF-SPREAD-NEG is WARNING (fires for spread < 0 OR σ < 0; 0.0 is valid for both)
 - [ ] W-TARIFF-CURRENCY-UNKNOWN is WARNING (fires for currency != "CNY")
-- [ ] W-TARIFF-DEMAND-NEG is WARNING (fires for demand_rate < 0; 0.0 valid)
+- [ ] E-TARIFF-DEMAND is HARD ERROR (fires for demand_rate < 0; in `result.errors`, NOT `result.warnings`; 0.0 valid)
 - [ ] `validate_tariff_region()` returns `ValidationResult` (not bare list); `ValidationIssue` has {rule_id, field, message, constraint} — NO severity field
 - [ ] `TariffRegion.provenance` field documented; resolver injects at load time; NOT in YAML
 - [ ] TariffBand server-side endpoint requirement documented in §7.1 (no client-side reconstruction)

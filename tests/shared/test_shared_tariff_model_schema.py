@@ -583,11 +583,17 @@ class TestValidationWTariffCurrencyUnknown:
 
 
 # ---------------------------------------------------------------------------
-# 9. Validation — W-TARIFF-DEMAND-NEG (WARNING)
+# 9. Validation — E-TARIFF-DEMAND (HARD ERROR)
 # ---------------------------------------------------------------------------
 
-class TestValidationWTariffDemandNeg:
-    """W-TARIFF-DEMAND-NEG warns when demand_rate < 0; 0.0 is valid (no demand charge)."""
+class TestValidationETariffDemand:
+    """E-TARIFF-DEMAND is a HARD ERROR when demand_rate < 0; 0.0 is valid (no demand charge).
+
+    rl-architect ruling: a negative demand charge rate (¥/MW·month fixed fee) is commercially
+    impossible — unlike negative spot/spread prices (which genuinely occur in oversupply
+    markets), no utility charges a negative fixed fee for peak demand.
+    Two-tier rule: impossible = hard error; suspicious-but-legal = warning.
+    """
 
     def _valid_region(self, demand_rate=32000.0):
         return {
@@ -597,59 +603,60 @@ class TestValidationWTariffDemandNeg:
             "sell_clamp": {"spread_yuan_per_mwh": 30.0, "spread_noise_std_yuan_per_mwh": 10.0},
         }
 
-    def test_negative_demand_rate_fires_warning(self):
-        """demand_rate < 0 → negative demand charge → suspicious (implies demand subsidy).
+    def test_negative_demand_rate_fires_error(self):
+        """demand_rate < 0 → commercially impossible demand charge → HARD ERROR.
 
-        Hand-computed: -100.0 ¥/MW·month is negative — real CN tariffs don't pay for peak
-        demand. This is a soft warning (not a hard error) because some research configs
-        intentionally use negative demand to model subsidies.
+        Hand-computed: -100.0 ¥/MW·month is negative — no CN utility charges a negative
+        fixed demand fee. This is a hard error (not a warning): the config is commercially
+        impossible and must be rejected, not silently accepted.
         """
         region = self._valid_region(demand_rate=-100.0)
         result = validate_tariff_region(region)
-        warning_ids = [i.rule_id for i in result.warnings]
-        assert "W-TARIFF-DEMAND-NEG" in warning_ids, (
-            f"demand_rate=-100.0 must fire W-TARIFF-DEMAND-NEG; got warnings {warning_ids}"
+        error_ids = [i.rule_id for i in result.errors]
+        assert "E-TARIFF-DEMAND" in error_ids, (
+            f"demand_rate=-100.0 must fire E-TARIFF-DEMAND hard error; got errors {error_ids}"
         )
 
-    def test_zero_demand_rate_no_warning(self):
-        """demand_rate=0.0 must NOT fire W-TARIFF-DEMAND-NEG.
+    def test_zero_demand_rate_no_error(self):
+        """demand_rate=0.0 must NOT fire E-TARIFF-DEMAND.
 
         Hand-computed: 0.0 means no demand charge (valid for sites without demand tariff).
         Rule is strictly '< 0'; 0.0 is the boundary and is valid.
         """
         region = self._valid_region(demand_rate=0.0)
         result = validate_tariff_region(region)
-        warning_ids = [i.rule_id for i in result.warnings]
-        assert "W-TARIFF-DEMAND-NEG" not in warning_ids, (
-            "demand_rate=0.0 must NOT fire W-TARIFF-DEMAND-NEG; "
+        error_ids = [i.rule_id for i in result.errors]
+        assert "E-TARIFF-DEMAND" not in error_ids, (
+            "demand_rate=0.0 must NOT fire E-TARIFF-DEMAND; "
             "0.0 is valid (no demand charge site)"
         )
 
-    def test_positive_demand_rate_no_warning(self):
-        """demand_rate=32000.0 (Gansu standard) must NOT fire W-TARIFF-DEMAND-NEG.
+    def test_positive_demand_rate_no_error(self):
+        """demand_rate=32000.0 (Gansu standard) must NOT fire E-TARIFF-DEMAND.
 
-        Hand-computed: 32 000 ¥/MW·month > 0 → no warning.
+        Hand-computed: 32 000 ¥/MW·month > 0 → no error.
         """
         region = self._valid_region(demand_rate=32000.0)
         result = validate_tariff_region(region)
-        warning_ids = [i.rule_id for i in result.warnings]
-        assert "W-TARIFF-DEMAND-NEG" not in warning_ids
+        error_ids = [i.rule_id for i in result.errors]
+        assert "E-TARIFF-DEMAND" not in error_ids
 
-    def test_demand_neg_is_warning_not_error(self):
-        """W-TARIFF-DEMAND-NEG must be in result.warnings, NOT result.errors.
+    def test_demand_neg_is_error_not_warning(self):
+        """E-TARIFF-DEMAND must be in result.errors, NOT result.warnings.
 
-        Rationale: negative demand rate is unusual but not operationally fatal —
-        the env will run with a negative demand charge component.
+        rl-architect ruling: commercially impossible values are hard errors; the validator
+        must reject (not warn about) a negative demand charge rate. Implementations that
+        silently demote this to a warning violate the contract.
         """
         region = self._valid_region(demand_rate=-100.0)
         result = validate_tariff_region(region)
         error_ids = [i.rule_id for i in result.errors]
         warning_ids = [i.rule_id for i in result.warnings]
-        assert "W-TARIFF-DEMAND-NEG" in warning_ids, (
-            "W-TARIFF-DEMAND-NEG must be in result.warnings"
+        assert "E-TARIFF-DEMAND" in error_ids, (
+            "E-TARIFF-DEMAND must be in result.errors (hard error)"
         )
-        assert "W-TARIFF-DEMAND-NEG" not in error_ids, (
-            "W-TARIFF-DEMAND-NEG must NOT be in result.errors"
+        assert "E-TARIFF-DEMAND" not in warning_ids, (
+            "E-TARIFF-DEMAND must NOT be in result.warnings"
         )
 
 
