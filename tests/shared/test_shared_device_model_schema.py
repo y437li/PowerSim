@@ -1137,11 +1137,10 @@ class TestUnitCounts:
 
 
 # ===========================================================================
-# v2.1.0 tests — economics field catalogue (task #57, contract §1.3–§1.4)
+# v1.1.0 tests — economics field catalogue (task #57, contract §1.3–§1.4)
 # ===========================================================================
 # All tests below are RED at contract time (device_models.yaml still has
-# economics: {} stubs).  They turn GREEN after the v2.1.0 YAML implementation
-# (blocked on v2.0.0 price_table reshape landing first).
+# economics: {} stubs).  They turn GREEN after the v1.1.0 YAML implementation.
 #
 # These tests do NOT import JAX / the resolver — they operate purely on
 # YAML content.  That means they run even if jaxlib is unavailable.
@@ -1160,13 +1159,13 @@ def _load_dm() -> dict:
 # §11 version string
 # ---------------------------------------------------------------------------
 
-class TestV210VersionString:
-    """schema_version bumps to 2.1.0 when economics fields land (on top of v2.0.0 baseline)."""
+class TestV110VersionString:
+    """schema_version bumps to 1.1.0 when economics fields land (additive; merges first off v1.0.0)."""
 
-    def test_schema_version_is_2_1_0(self):
+    def test_schema_version_is_1_1_0(self):
         dm = _load_dm()
-        assert dm["schema_version"] == "2.1.0", (
-            f"expected schema_version '2.1.0', got {dm['schema_version']!r}"
+        assert dm["schema_version"] == "1.1.0", (
+            f"expected schema_version '1.1.0', got {dm['schema_version']!r}"
         )
 
 
@@ -1421,7 +1420,7 @@ class TestResolverIgnoresEconomics:
     """The resolver returns identical EnvParams regardless of economics content.
 
     This test requires the resolver (skipped at contract time).
-    Once resolver is available AND device_models.yaml is at v2.1.0, both
+    Once resolver is available AND device_models.yaml is at v1.1.0, both
     resolve_gansu() calls must produce bit-identical EnvParams.
     """
 
@@ -1431,7 +1430,7 @@ class TestResolverIgnoresEconomics:
         Hand-computed: resolve_gansu() should equal EnvParams() regardless of
         the economics block content.  The resolver is spec'd to ignore economics:.
         """
-        # --- Load the v2.1.0 YAML (populated economics) ---
+        # --- Load the v1.1.0 YAML (populated economics) ---
         with open(_DM_PATH) as f:
             dm_populated = yaml.safe_load(f)
 
@@ -1505,11 +1504,11 @@ class TestResolverIgnoresEconomics:
 
 
 # ---------------------------------------------------------------------------
-# §1.4 Gansu v2.1.0 specific values (hand-derived from contract §1.4 table)
+# §1.4 Gansu v1.1.0 specific values (hand-derived from contract §1.4 table)
 # ---------------------------------------------------------------------------
 
 class TestGansuEconomicsValues:
-    """Spot-check the contracted Gansu v2.1.0 initial estimates.
+    """Spot-check the contracted Gansu v1.1.0 initial estimates.
 
     These are hand-derived from the contract §1.4 default-values table.
     If task #63 benchmark library updates these, the contract §1.4 table and
