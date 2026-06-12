@@ -291,8 +291,7 @@ class TestLeapYearNormalisation:
 
     def test_leap_year_drops_24_hours(self):
         """Leap year (2024): raw 8784h → 8760h after Feb-29 drop.
-        Feb-29 = hours 1392–1415 (0-indexed): Jan=31days=744h, Feb1-28=672h → offset 1416.
-        Actually: Jan (31d=744h) + Feb 1-28 (28d=672h) = 1416h.
+        Jan (31d=744h) + Feb 1-28 (28d=672h) = offset 1416h.
         Feb 29 = hours 1416–1439 (indices 1416 to 1439, inclusive → 24 hours).
         Drop hours 1416-1439 → 8784-24=8760h.
         """

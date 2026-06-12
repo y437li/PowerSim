@@ -188,7 +188,8 @@ v_hub[t] = v100[t] * (hub_height_m / 100.0) ^ α[t]
 ### 3.2 Leap year normalisation
 
 Calendar years from Open-Meteo may contain 8784h (leap year). **Drop February 29 entirely**
-(hours 1392–1415 in a leap year with Jan=0) to produce exactly 8760h per year. This is
+(hours 1416–1439: Jan 744h + Feb 1–28 672h = offset 1416; 24 hours dropped) to produce
+exactly 8760h per year. This is
 consistent with the §4 synthetic generator which always emits 8760h. The discarded hours
 are not blended — they are simply absent from the pool (Feb-29 weather is effectively
 replaced by nearby Mar-1 blocks when blocks are sampled).
