@@ -1134,3 +1134,387 @@ class TestUnitCounts:
         assert counts["wind"] == 150, (
             f"Explicit unit_count=150 must override derived 146; got {counts['wind']}"
         )
+
+
+# ===========================================================================
+# v1.1.0 tests — economics field catalogue (task #57, contract §1.3–§1.4)
+# ===========================================================================
+# All tests below are RED at contract time (device_models.yaml still has
+# economics: {} stubs).  They turn GREEN after the v1.1.0 YAML implementation.
+#
+# These tests do NOT import JAX / the resolver — they operate purely on
+# YAML content.  That means they run even if jaxlib is unavailable.
+# ===========================================================================
+
+_DM_PATH = _REPO_ROOT / "config" / "device_models.yaml"
+
+
+def _load_dm() -> dict:
+    """Load device_models.yaml and return the full parsed dict."""
+    with open(_DM_PATH) as f:
+        return yaml.safe_load(f)
+
+
+# ---------------------------------------------------------------------------
+# §11 version string
+# ---------------------------------------------------------------------------
+
+class TestV110VersionString:
+    """schema_version bumps to 1.1.0 when economics fields land."""
+
+    def test_schema_version_is_1_1_0(self):
+        dm = _load_dm()
+        assert dm["schema_version"] == "1.1.0", (
+            f"expected schema_version '1.1.0', got {dm['schema_version']!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# §1.3 economics field presence — all 4 Gansu device models
+# ---------------------------------------------------------------------------
+
+class TestEconomicsFieldPresence:
+    """All required economics fields are present for each Gansu device model."""
+
+    # Fields required by wind_turbine economics section
+    _WIND_FIELDS = {
+        "capex_per_kw_yuan",
+        "opex_fixed_per_kw_year_yuan",
+        "opex_var_per_mwh_yuan",
+        "lifetime_years",
+        "replacement_cost_fraction",
+        "residual_value_fraction",
+        "construction_months",
+        "decommissioning_cost_per_kw_yuan",
+    }
+
+    # Fields required by pv_panel economics section (same structure as wind)
+    _PV_FIELDS = {
+        "capex_per_kw_yuan",
+        "opex_fixed_per_kw_year_yuan",
+        "opex_var_per_mwh_yuan",
+        "lifetime_years",
+        "replacement_cost_fraction",
+        "residual_value_fraction",
+        "construction_months",
+        "decommissioning_cost_per_kw_yuan",
+    }
+
+    # Fields required by battery economics section
+    _BAT_FIELDS = {
+        "capex_energy_per_kwh_yuan",
+        "capex_power_per_kw_yuan",
+        "opex_fixed_per_kwh_year_yuan",
+        "opex_var_per_mwh_yuan",
+        "lifetime_years",
+        "cycle_life_full_equiv",
+        "eol_soh_threshold",
+        "replacement_cost_fraction",
+        "residual_value_fraction",
+        "construction_months",
+        "decommissioning_cost_per_kwh_yuan",
+    }
+
+    # Fields required by grid_connection economics section
+    _GRID_FIELDS = {
+        "capex_lump_sum_yuan",
+        "opex_fixed_per_mw_year_yuan",
+        "lifetime_years",
+        "residual_value_fraction",
+        "decommissioning_cost_yuan",
+    }
+
+    def _econ(self, model_id: str) -> dict:
+        dm = _load_dm()
+        econ = dm["models"][model_id]["economics"]
+        assert isinstance(econ, dict), f"{model_id} economics must be a dict, not empty or null"
+        return econ
+
+    def test_wind_economics_has_all_fields(self):
+        econ = self._econ("vestas-v150-4.2")
+        missing = self._WIND_FIELDS - set(econ)
+        assert not missing, f"vestas-v150-4.2 economics missing: {missing}"
+
+    def test_pv_economics_has_all_fields(self):
+        econ = self._econ("trina-vertex-n-670w")
+        missing = self._PV_FIELDS - set(econ)
+        assert not missing, f"trina-vertex-n-670w economics missing: {missing}"
+
+    def test_battery_economics_has_all_fields(self):
+        econ = self._econ("catl-lmp-300mwh")
+        missing = self._BAT_FIELDS - set(econ)
+        assert not missing, f"catl-lmp-300mwh economics missing: {missing}"
+
+    def test_grid_economics_has_all_fields(self):
+        econ = self._econ("pcc-substation-945mw")
+        missing = self._GRID_FIELDS - set(econ)
+        assert not missing, f"pcc-substation-945mw economics missing: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# §1.3 value types — all economics values must be float (not empty/null/string)
+# ---------------------------------------------------------------------------
+
+class TestEconomicsFieldTypes:
+    """Every economics value is a float (or int coercible to float, > 0 where noted)."""
+
+    def _check_float_fields(self, model_id: str, fields: list[str]) -> None:
+        dm = _load_dm()
+        econ = dm["models"][model_id]["economics"]
+        for field in fields:
+            val = econ[field]
+            assert isinstance(val, (int, float)), (
+                f"{model_id}.economics.{field} = {val!r} is not numeric"
+            )
+            assert val >= 0, (
+                f"{model_id}.economics.{field} = {val} must be ≥ 0"
+            )
+
+    def test_wind_economics_types(self):
+        self._check_float_fields("vestas-v150-4.2", [
+            "capex_per_kw_yuan", "opex_fixed_per_kw_year_yuan", "opex_var_per_mwh_yuan",
+            "lifetime_years", "replacement_cost_fraction", "residual_value_fraction",
+            "construction_months", "decommissioning_cost_per_kw_yuan",
+        ])
+
+    def test_pv_economics_types(self):
+        self._check_float_fields("trina-vertex-n-670w", [
+            "capex_per_kw_yuan", "opex_fixed_per_kw_year_yuan", "opex_var_per_mwh_yuan",
+            "lifetime_years", "replacement_cost_fraction", "residual_value_fraction",
+            "construction_months", "decommissioning_cost_per_kw_yuan",
+        ])
+
+    def test_battery_economics_types(self):
+        self._check_float_fields("catl-lmp-300mwh", [
+            "capex_energy_per_kwh_yuan", "capex_power_per_kw_yuan",
+            "opex_fixed_per_kwh_year_yuan", "opex_var_per_mwh_yuan",
+            "lifetime_years", "cycle_life_full_equiv",
+            "replacement_cost_fraction", "residual_value_fraction",
+            "construction_months",
+        ])
+
+    def test_grid_economics_types(self):
+        self._check_float_fields("pcc-substation-945mw", [
+            "capex_lump_sum_yuan", "opex_fixed_per_mw_year_yuan",
+            "lifetime_years", "residual_value_fraction", "decommissioning_cost_yuan",
+        ])
+
+
+# ---------------------------------------------------------------------------
+# §1.3 value ranges — fractions, cycle life, lifetime plausibility
+# ---------------------------------------------------------------------------
+
+class TestEconomicsValueRanges:
+    """Key economics fields satisfy physical constraints."""
+
+    def _econ(self, mid: str) -> dict:
+        return _load_dm()["models"][mid]["economics"]
+
+    def test_wind_lifetime_years_positive_and_realistic(self):
+        # Minimum 10yr, max 40yr for wind turbines
+        val = self._econ("vestas-v150-4.2")["lifetime_years"]
+        assert 10.0 <= val <= 40.0, (
+            f"wind lifetime_years={val} outside [10, 40] — check contract §1.4"
+        )
+
+    def test_pv_lifetime_years_positive_and_realistic(self):
+        val = self._econ("trina-vertex-n-670w")["lifetime_years"]
+        assert 10.0 <= val <= 40.0, (
+            f"pv lifetime_years={val} outside [10, 40]"
+        )
+
+    def test_battery_lifetime_years_positive_and_realistic(self):
+        # LFP calendar life: 8–20yr
+        val = self._econ("catl-lmp-300mwh")["lifetime_years"]
+        assert 5.0 <= val <= 25.0, (
+            f"battery lifetime_years={val} outside [5, 25]"
+        )
+
+    def test_battery_cycle_life_positive_and_realistic(self):
+        # LFP: 4000–10000 full-depth cycles
+        val = self._econ("catl-lmp-300mwh")["cycle_life_full_equiv"]
+        assert 1000.0 <= val <= 15000.0, (
+            f"cycle_life_full_equiv={val} outside [1000, 15000]"
+        )
+
+    def test_battery_eol_soh_threshold_is_fraction(self):
+        # EOL SOH typically 0.7–0.9 for LFP
+        val = self._econ("catl-lmp-300mwh")["eol_soh_threshold"]
+        assert 0.5 < val < 1.0, (
+            f"eol_soh_threshold={val} must be ∈ (0.5, 1.0)"
+        )
+
+    def test_all_replacement_cost_fractions_in_range(self):
+        """replacement_cost_fraction ∈ (0, 1] for all models that have it."""
+        dm = _load_dm()
+        for mid, entry in dm["models"].items():
+            econ = entry.get("economics", {})
+            if not isinstance(econ, dict):
+                continue
+            if "replacement_cost_fraction" in econ:
+                val = econ["replacement_cost_fraction"]
+                assert 0.0 < val <= 1.0, (
+                    f"{mid}.economics.replacement_cost_fraction={val} must be ∈ (0, 1]"
+                )
+
+    def test_all_residual_value_fractions_in_range(self):
+        """residual_value_fraction ∈ [0, 1) for all models."""
+        dm = _load_dm()
+        for mid, entry in dm["models"].items():
+            econ = entry.get("economics", {})
+            if not isinstance(econ, dict):
+                continue
+            if "residual_value_fraction" in econ:
+                val = econ["residual_value_fraction"]
+                assert 0.0 <= val < 1.0, (
+                    f"{mid}.economics.residual_value_fraction={val} must be ∈ [0, 1)"
+                )
+
+    def test_battery_capex_energy_nonzero(self):
+        # Battery CAPEX energy must be > 0 (it's the primary cost driver)
+        val = self._econ("catl-lmp-300mwh")["capex_energy_per_kwh_yuan"]
+        assert val > 0.0, (
+            f"catl-lmp-300mwh capex_energy_per_kwh_yuan={val} must be > 0"
+        )
+
+    def test_wind_capex_nonzero(self):
+        # Wind CAPEX must be > 0
+        val = self._econ("vestas-v150-4.2")["capex_per_kw_yuan"]
+        assert val > 0.0, (
+            f"vestas-v150-4.2 capex_per_kw_yuan={val} must be > 0"
+        )
+
+    def test_pv_capex_nonzero(self):
+        # PV CAPEX must be > 0
+        val = self._econ("trina-vertex-n-670w")["capex_per_kw_yuan"]
+        assert val > 0.0, (
+            f"trina-vertex-n-670w capex_per_kw_yuan={val} must be > 0"
+        )
+
+    def test_grid_lifetime_years_positive_and_realistic(self):
+        val = self._econ("pcc-substation-945mw")["lifetime_years"]
+        assert 20.0 <= val <= 60.0, (
+            f"grid lifetime_years={val} outside [20, 60]"
+        )
+
+
+# ---------------------------------------------------------------------------
+# §1.3 resolver ignorance — economics fields must NOT affect resolve_gansu()
+# ---------------------------------------------------------------------------
+
+class TestResolverIgnoresEconomics:
+    """The resolver returns identical EnvParams regardless of economics content.
+
+    This test requires the resolver (skipped at contract time).
+    Once resolver is available AND device_models.yaml is at v1.1.0, both
+    resolve_gansu() calls must produce bit-identical EnvParams.
+    """
+
+    def test_resolver_unaffected_by_economics_fields(self, tmp_path):
+        """Stripping economics: {} vs populated economics: {…} → same EnvParams.
+
+        Hand-computed: resolve_gansu() should equal EnvParams() regardless of
+        the economics block content.  The resolver is spec'd to ignore economics:.
+        """
+        # --- Load the v1.1.0 YAML (populated economics) ---
+        with open(_DM_PATH) as f:
+            dm_populated = yaml.safe_load(f)
+
+        # --- Create a stripped copy with economics: {} for all models ---
+        import copy
+        dm_stripped = copy.deepcopy(dm_populated)
+        for entry in dm_stripped["models"].values():
+            entry["economics"] = {}
+
+        stripped_path = tmp_path / "device_models_stripped.yaml"
+        with open(stripped_path, "w") as f:
+            yaml.dump(dm_stripped, f)
+
+        # Both resolve_gansu() calls must return bit-identical EnvParams
+        # (env parity gate: resolver IGNORES economics block)
+        params_populated, obs_dim, action_dim = resolve_gansu(str(_DM_PATH))
+        params_stripped, obs_dim2, action_dim2 = resolve_gansu(stripped_path)
+
+        assert obs_dim == obs_dim2 == 107
+        assert action_dim == action_dim2 == 6
+
+        # Compare all scalar fields
+        for field in EnvParams._fields:
+            v_pop = getattr(params_populated, field)
+            v_str = getattr(params_stripped, field)
+            import jax.numpy as jnp
+            if hasattr(v_pop, "__len__"):
+                # array field (price_table)
+                assert jnp.allclose(jnp.array(v_pop), jnp.array(v_str), rtol=1e-9), (
+                    f"EnvParams.{field} differs between populated and stripped economics"
+                )
+            else:
+                assert v_pop == pytest.approx(v_str, rel=1e-9), (
+                    f"EnvParams.{field} = {v_pop} (populated) vs {v_str} (stripped)"
+                )
+
+
+# ---------------------------------------------------------------------------
+# §1.4 Gansu v1.1.0 specific values (hand-derived from contract §1.4 table)
+# ---------------------------------------------------------------------------
+
+class TestGansuEconomicsValues:
+    """Spot-check the contracted Gansu v1.1.0 initial estimates.
+
+    These are hand-derived from the contract §1.4 default-values table.
+    If task #63 benchmark library updates these, the contract §1.4 table and
+    these tests must be updated together in the same PR.
+    """
+
+    def _econ(self, mid: str) -> dict:
+        return _load_dm()["models"][mid]["economics"]
+
+    def test_vestas_capex_per_kw(self):
+        # Contracted: 5800.0 ¥/kW (≈800 USD/kW, onshore wind China 2024)
+        val = self._econ("vestas-v150-4.2")["capex_per_kw_yuan"]
+        assert val == pytest.approx(5800.0, rel=1e-6), f"got {val}"
+
+    def test_vestas_lifetime_years(self):
+        # Contracted: 25.0 yr
+        val = self._econ("vestas-v150-4.2")["lifetime_years"]
+        assert val == pytest.approx(25.0, rel=1e-6), f"got {val}"
+
+    def test_trina_capex_per_kw(self):
+        # Contracted: 3200.0 ¥/kW (≈450 USD/kW, utility PV China 2024)
+        val = self._econ("trina-vertex-n-670w")["capex_per_kw_yuan"]
+        assert val == pytest.approx(3200.0, rel=1e-6), f"got {val}"
+
+    def test_catl_capex_energy_per_kwh(self):
+        # Contracted: 1000.0 ¥/kWh (≈140 USD/kWh, LFP grid-scale China 2024)
+        val = self._econ("catl-lmp-300mwh")["capex_energy_per_kwh_yuan"]
+        assert val == pytest.approx(1000.0, rel=1e-6), f"got {val}"
+
+    def test_catl_cycle_life(self):
+        # Contracted: 6000.0 full-depth equivalent cycles
+        val = self._econ("catl-lmp-300mwh")["cycle_life_full_equiv"]
+        assert val == pytest.approx(6000.0, rel=1e-6), f"got {val}"
+
+    def test_catl_eol_soh_threshold(self):
+        # Contracted: 0.80 (80% remaining capacity triggers replacement)
+        val = self._econ("catl-lmp-300mwh")["eol_soh_threshold"]
+        assert val == pytest.approx(0.80, rel=1e-6), f"got {val}"
+
+    def test_catl_replacement_cost_fraction(self):
+        # Contracted: 0.70 (70% of original CAPEX)
+        val = self._econ("catl-lmp-300mwh")["replacement_cost_fraction"]
+        assert val == pytest.approx(0.70, rel=1e-6), f"got {val}"
+
+    def test_catl_lifetime_years(self):
+        # Contracted: 12.0 yr (LFP calendar life at ≥80% SOH)
+        val = self._econ("catl-lmp-300mwh")["lifetime_years"]
+        assert val == pytest.approx(12.0, rel=1e-6), f"got {val}"
+
+    def test_catl_capex_power_bundled(self):
+        # Contracted: 0.0 ¥/kW (power CAPEX bundled into energy CAPEX for LFP)
+        val = self._econ("catl-lmp-300mwh")["capex_power_per_kw_yuan"]
+        assert val == pytest.approx(0.0, abs=1e-9), f"got {val}"
+
+    def test_pcc_lifetime_years(self):
+        # Contracted: 40.0 yr
+        val = self._econ("pcc-substation-945mw")["lifetime_years"]
+        assert val == pytest.approx(40.0, rel=1e-6), f"got {val}"

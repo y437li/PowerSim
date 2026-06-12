@@ -5,9 +5,14 @@
 **Test file:** `tests/shared/test_shared_device_model_schema.py`  
 **Spec sections:** §2.1 (obs), §2.2 (action), §3.1–§3.4 (physics), §7 (JAX purity), §8 (composable assets)  
 **Decisions:** D2, D3, D5, D12, D19, D22c, D23  
-**Plan:** `docs/design/master_plan_geo_finance.md` §2 (Workstream B), §8 (Gansu thin slice)  
+**Plan:** `docs/design/master_plan_geo_finance.md` §2 (Workstream B), §5.6 (CAPEX/OPEX/lifetime), §8 (Gansu thin slice)  
 **Owner:** jax-env-engineer  
 **Related locked contracts:** `contracts/shared/telemetry_schema.md` (unchanged), `contracts/shared/checkpoint_format.md` (unchanged), `assets/3d/registry.json` (unchanged — device-model IDs are the join key but this contract does NOT modify the registry)
+
+**v1.1.0 amendment (task #57):** adds `economics:` field catalogue (CAPEX/OPEX/lifetime/replacement/residual)
+for Workstreams C (multi-year degradation) and D (project finance).  The resolver continues to
+**ignore all `economics:` fields** — no resolver API change, no `EnvParams` change.  Minor version
+bump per the v1.0.0 LOCK versioning rule (additive optional fields → no re-LOCK required).
 
 ---
 
@@ -92,6 +97,135 @@ All `physics` fields listed below are **required** for the given type.
 |-------|------|------|-------------|
 | `max_export_mw` | float | MW | PCC export limit; D5; site-overridable |
 | `max_import_mw` | float | MW | Grid import limit; D12; site-overridable |
+
+### 1.3 `economics:` field catalogue (v1.1.0 — task #57)
+
+**Resolver ignores all `economics:` fields** — these are consumed exclusively by
+Workstreams C (multi-year degradation/replacement) and D (project finance: LCOE/LCOS/OPEX/NPV/IRR).
+
+All `economics:` fields are **optional** (the resolver succeeds whether or not they are
+present; missing = the field is unavailable to C/D, not an error).  Finance workstream
+SHOULD assert that required fields for its specific calculation are present at finance-layer
+entry time, not at resolver time.
+
+Field values below are **initial estimates sourced from publicly available Chinese
+utility-scale market benchmarks (2024/25)**.  They will be refined by the benchmark
+library (task #63).  All values are ≥ 0; fractions are ∈ (0, 1] unless noted.
+
+#### `wind_turbine` — economics
+
+| Field | Type | Unit | Description |
+|-------|------|------|-------------|
+| `capex_per_kw_yuan` | float | ¥/kW | Overnight CAPEX per kW of rated power; master plan §5.6 |
+| `opex_fixed_per_kw_year_yuan` | float | ¥/kW·yr | Fixed O&M per rated kW per year |
+| `opex_var_per_mwh_yuan` | float | ¥/MWh | Variable O&M per MWh generated (≠ D13 `c_degradation`) |
+| `lifetime_years` | float | yr | Design lifetime; C replacement trigger |
+| `replacement_cost_fraction` | float | — | Replacement cost / original CAPEX; ∈ (0, 1] |
+| `residual_value_fraction` | float | — | Salvage value / original CAPEX at end-of-life; ∈ [0, 1) |
+| `construction_months` | float | months | Construction duration (for IDC if debt-financed) |
+| `decommissioning_cost_per_kw_yuan` | float | ¥/kW | Decommissioning cost per rated kW at end-of-life |
+
+#### `pv_panel` — economics
+
+| Field | Type | Unit | Description |
+|-------|------|------|-------------|
+| `capex_per_kw_yuan` | float | ¥/kW | Overnight CAPEX per kW of DC peak capacity |
+| `opex_fixed_per_kw_year_yuan` | float | ¥/kW·yr | Fixed O&M per rated kW per year |
+| `opex_var_per_mwh_yuan` | float | ¥/MWh | Variable O&M per MWh generated |
+| `lifetime_years` | float | yr | Module design lifetime |
+| `replacement_cost_fraction` | float | — | ∈ (0, 1] |
+| `residual_value_fraction` | float | — | ∈ [0, 1) |
+| `construction_months` | float | months | |
+| `decommissioning_cost_per_kw_yuan` | float | ¥/kW | |
+
+#### `battery` — economics
+
+The battery CAPEX formula is two-part:
+`CAPEX = fleet_capacity_mwh * 1000 * capex_energy_per_kwh_yuan + fleet_power_mw * 1000 * capex_power_per_kw_yuan`
+(master plan §5.6).
+
+| Field | Type | Unit | Description |
+|-------|------|------|-------------|
+| `capex_energy_per_kwh_yuan` | float | ¥/kWh | Energy-capacity component of CAPEX |
+| `capex_power_per_kw_yuan` | float | ¥/kW | Power-capacity component of CAPEX (0.0 if bundled into energy) |
+| `opex_fixed_per_kwh_year_yuan` | float | ¥/kWh·yr | Fixed O&M per installed kWh per year |
+| `opex_var_per_mwh_yuan` | float | ¥/MWh | Variable O&M per MWh cycled (≠ D13 `c_degradation`) |
+| `lifetime_years` | float | yr | Calendar lifetime; C secondary replacement trigger |
+| `cycle_life_full_equiv` | float | cycles | Full-depth equivalent cycle life; C primary replacement trigger |
+| `eol_soh_threshold` | float | — | State-of-health fraction below which replacement is triggered; ∈ (0, 1) |
+| `replacement_cost_fraction` | float | — | ∈ (0, 1] |
+| `residual_value_fraction` | float | — | ∈ [0, 1) |
+| `construction_months` | float | months | |
+| `decommissioning_cost_per_kwh_yuan` | float | ¥/kWh | |
+
+#### `grid_connection` — economics
+
+| Field | Type | Unit | Description |
+|-------|------|------|-------------|
+| `capex_lump_sum_yuan` | float | ¥ | Grid-connection infrastructure CAPEX (highly site-specific; may be 0.0 if absorbed into site capex) |
+| `opex_fixed_per_mw_year_yuan` | float | ¥/MW·yr | Fixed O&M per connected MW per year |
+| `lifetime_years` | float | yr | Infrastructure lifetime |
+| `residual_value_fraction` | float | — | ∈ [0, 1) |
+| `decommissioning_cost_yuan` | float | ¥ | Decommissioning lump sum |
+
+### 1.4 Gansu v1.1.0 default economics values
+
+Initial estimates (2024/25 Chinese utility-scale market; source: IRENA/NEA public data; to be
+refined by task #63 benchmark library).  All values are **non-zero documented estimates**,
+not placeholder zeros, so the finance engine produces plausible order-of-magnitude results
+from day one.
+
+#### vestas-v150-4.2 (wind_turbine)
+
+| Field | Value | Notes |
+|-------|-------|-------|
+| `capex_per_kw_yuan` | 5800.0 | ≈800 USD/kW; onshore wind China 2024 |
+| `opex_fixed_per_kw_year_yuan` | 180.0 | ≈25 USD/kW·yr |
+| `opex_var_per_mwh_yuan` | 0.0 | negligible at this scale; captured in fixed |
+| `lifetime_years` | 25.0 | IEC Class III design life |
+| `replacement_cost_fraction` | 0.15 | major overhaul (not full replacement) at EOL |
+| `residual_value_fraction` | 0.05 | scrap value |
+| `construction_months` | 18.0 | |
+| `decommissioning_cost_per_kw_yuan` | 100.0 | |
+
+#### trina-vertex-n-670w (pv_panel)
+
+| Field | Value | Notes |
+|-------|-------|-------|
+| `capex_per_kw_yuan` | 3200.0 | ≈450 USD/kW; utility PV China 2024 |
+| `opex_fixed_per_kw_year_yuan` | 80.0 | ≈11 USD/kW·yr |
+| `opex_var_per_mwh_yuan` | 0.0 | |
+| `lifetime_years` | 25.0 | |
+| `replacement_cost_fraction` | 0.20 | inverter replacement |
+| `residual_value_fraction` | 0.02 | |
+| `construction_months` | 12.0 | |
+| `decommissioning_cost_per_kw_yuan` | 60.0 | |
+
+#### catl-lmp-300mwh (battery)
+
+| Field | Value | Notes |
+|-------|-------|-------|
+| `capex_energy_per_kwh_yuan` | 1000.0 | ≈140 USD/kWh; LFP grid-scale China 2024 |
+| `capex_power_per_kw_yuan` | 0.0 | bundled into energy CAPEX for LFP |
+| `opex_fixed_per_kwh_year_yuan` | 20.0 | ≈2.8 USD/kWh·yr |
+| `opex_var_per_mwh_yuan` | 0.0 | |
+| `lifetime_years` | 12.0 | LFP calendar life at ≥80% SOH |
+| `cycle_life_full_equiv` | 6000.0 | LFP at 0.8 EOL; 1 cycle/day × 12yr ≈ 4380; 6k gives head-room |
+| `eol_soh_threshold` | 0.80 | 80% remaining capacity triggers replacement |
+| `replacement_cost_fraction` | 0.70 | cell+BMS replacement; learning-curve reduction vs original |
+| `residual_value_fraction` | 0.05 | |
+| `construction_months` | 6.0 | |
+| `decommissioning_cost_per_kwh_yuan` | 30.0 | |
+
+#### pcc-substation-945mw (grid_connection)
+
+| Field | Value | Notes |
+|-------|-------|-------|
+| `capex_lump_sum_yuan` | 0.0 | site-specific; treated as sunk cost at Gansu; operators override per-site |
+| `opex_fixed_per_mw_year_yuan` | 5000.0 | ≈700 USD/MW·yr; transmission service fee |
+| `lifetime_years` | 40.0 | |
+| `residual_value_fraction` | 0.10 | |
+| `decommissioning_cost_yuan` | 0.0 | |
 
 ---
 
@@ -476,8 +610,14 @@ None — this contract adds new functionality.
 
 ## 11. Versioning
 
-`config/device_models.yaml` carries `schema_version: "1.0.0"`.  
-Additive new model entries = minor bump (`"1.1.0"`) — no re-LOCK required.
+`config/device_models.yaml` carries `schema_version`.
+
+| Version | Content | Re-LOCK? |
+|---------|---------|---------|
+| `"1.0.0"` | 4 Gansu device models, `physics:` catalogue (LOCKED PR #79) | — |
+| `"1.1.0"` | Adds `economics:` field catalogue, Gansu initial estimates (task #57) | No — additive optional fields |
+| future minor | Additional device-model entries, additional optional fields | No |
+| future major | Field removal, rename, type change, composition-rule change | Yes → superseding DECISION + re-LOCK + re-review |
 
 **Adding non-Gansu models that produce different `(obs_dim, action_dim)` is also a
 minor schema bump** — it does NOT reopen the LOCKED Gansu checkpoint.  The Gansu
@@ -485,6 +625,11 @@ checkpoint remains authoritative at `obs_dim=107, action_dim=6`; non-Gansu site
 compositions receive their own site-specific checkpoints (per §8 design and the
 checkpoint-format contract §6 note on non-Gansu sites).  Each composition is
 independently verifiable by `resolve_site()`.
+
+**`economics:` values** are initial estimates (2024/25 Chinese market) and will be
+refined by the benchmark library (task #63).  Updating economics values = minor bump
+(no re-LOCK); updating economics field names or adding required-field enforcement in
+the resolver = major bump.
 
 Field removal, rename, type change, or semantics change = major bump → superseding
 DECISION + re-LOCK + re-review.
