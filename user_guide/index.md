@@ -2,7 +2,7 @@
 
 This guide is for **operators and analysts** running Energy GO: installing it, launching the app, and using the live dashboard, 3D site view, inference sessions, and training panel. For the system specification see [`REBUILD_SPEC.md`](../REBUILD_SPEC.md); for contributing see the [developer guide](../developer_guide/index.md).
 
-> **What Energy GO is.** A reinforcement-learning system that dispatches a grid-connected **wind + solar + battery** plant (modeled on Gansu/Jiuquan, China) to minimise total electricity cost — via time-of-use arbitrage, peak shaving, and renewable routing. See [`README.md`](../README.md) for the one-paragraph overview and current component status.
+> **What Energy GO is.** A reinforcement-learning system that dispatches a grid-connected **wind + solar + battery** plant (modeled on Gansu/Jiuquan, China) to minimise total electricity cost — via time-of-use arbitrage, peak shaving, and renewable routing. The product's canonical shape is a five-stage pipeline: **config → select algorithm → train → eval → project finance**. See [`README.md`](../README.md) for the one-paragraph overview and current component status.
 
 ## Contents
 
@@ -17,4 +17,4 @@ This guide is for **operators and analysts** running Energy GO: installing it, l
 
 ## A note on accuracy
 
-Everything in this guide is written against what is **merged on `main`** and was exercised against the running app or the actual scripts (per the [documentation standard](../.claude/skills/docs-style/SKILL.md)). Where a capability is documented but its full back end is still in review, the page says so explicitly — most importantly, **end-to-end training is not yet runnable from `main`** (the JAX environment core and training harness are still in review); see [Training](training.md).
+Everything in this guide is written against what is **merged on `main`** and was exercised against the running app or the actual scripts (per the [documentation standard](../.claude/skills/docs-style/SKILL.md)). End-to-end training is now runnable from `main` — the JAX environment core (PR #33), the SAC training pipeline (PR #40), and the training/eval harness (PR #43) are all merged.

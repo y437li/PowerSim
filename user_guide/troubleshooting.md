@@ -64,7 +64,7 @@ Pass `--checkpoint <id-or-path>`. A previously-launched box records its checkpoi
 ERROR [4]: Site YAML not found: 'config/site_gansu.yaml'. Remediation: Pass --site <path> or create config/site_gansu.yaml.
 ```
 
-The default `--site` path (`config/site_gansu.yaml`) is **not yet in the repository** (see the [installation note](installation.md#all-flags)). Pass `--site <path>` to an existing YAML.
+The default `config/site_gansu.yaml` is in the repository. This error usually means you are running the script from a directory other than the repository root, or you accidentally deleted the file. Run from the repo root, or pass `--site <path>` pointing to an existing site YAML.
 
 ## "Run install_app first" (run_app, exit 1)
 

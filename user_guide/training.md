@@ -2,9 +2,9 @@
 
 The **Training** tab (`/training`) shows live metrics from a SAC training run, plus checkpoints and an eval comparison. It reads the training-metrics websocket stream (`train_metrics`) and the run history over REST.
 
-> **Important — current limitation.** An **end-to-end training run is not yet runnable from `main`.** The SAC training *library* (`energy_go.training`) is merged and unit-tested, but it depends on the pure-JAX environment core, which is still in review. The launch scripts' `training`/`full` launch path also targets the training/eval **harness** (`energy_go.harness.train`), which has not landed yet. Until those merge, the training panel renders correctly but will show "Waiting for training data…" with no live run to attach to. This page documents the panel as it exists today and how training launches once the back end is complete.
+Training is stage ③ of the five-stage pipeline (`config → algorithm → **train** → eval → finance`). The pure-JAX environment core (PR #33), the SAC training pipeline (PR #40), and the training/eval harness (PR #43) are all merged on `main` — end-to-end training is now runnable.
 
-## Launching a training job (once available)
+## Launching a training job
 
 Training is launched by server type, not from the browser:
 

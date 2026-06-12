@@ -78,7 +78,7 @@ If a port is already in use the script fails with **exit code 5** and tells you 
 |---|---|---|
 | `--server-type <dev\|training\|serving\|full>` | Machine role (**required**) | — |
 | `--accel <cpu\|gpu>` | jaxlib variant | auto-detect (gpu→cpu) |
-| `--site <PATH>` | Site YAML config | `config/site_gansu.yaml` *(see note)* |
+| `--site <PATH>` | Site YAML config | `config/site_gansu.yaml` |
 | `--checkpoint <ID_OR_PATH>` | Policy checkpoint (**required** for `serving`/`full`) | `.run/last_checkpoint` if present |
 | `--backend-port <PORT>` | FastAPI port (1–65535) | `8000` |
 | `--frontend-port <PORT>` | Frontend port (1–65535) | `5173` |
@@ -87,7 +87,7 @@ If a port is already in use the script fails with **exit code 5** and tells you 
 | `--purge` | With `--uninstall`: also remove `checkpoints/` | — |
 | `--help` | Show usage and exit | — |
 
-> **Note on `--site`.** The scripts default `--site` to `config/site_gansu.yaml`, but that file is **not yet checked into the repository**. The serving layer exposes the site catalog over `GET /config/sites` (it lists `gansu`), and the reference simulator currently sources Gansu parameters from `src/reference/gansu_params.py`. For `serving`/`full`, if you don't pass an existing `--site` you'll get a config error (**exit code 4**) — see [Troubleshooting](troubleshooting.md).
+> **Note on `--site`.** The default `config/site_gansu.yaml` is checked into the repository and describes the Gansu/Jiuquan site (146 turbines × 4.2 MW, 330 MW PV, 294.5 MWh battery; see `contracts/shared/device_model_schema.md`). Pass `--site <path>` if you want to run a different site YAML.
 
 ## Idempotency & uninstall
 
