@@ -9,10 +9,12 @@
 **Owner:** jax-env-engineer  
 **Related locked contracts:** `contracts/shared/telemetry_schema.md` (unchanged), `contracts/shared/checkpoint_format.md` (unchanged), `assets/3d/registry.json` (unchanged — device-model IDs are the join key but this contract does NOT modify the registry)
 
-**v1.1.0 amendment (task #57):** adds `economics:` field catalogue (CAPEX/OPEX/lifetime/replacement/residual)
+**v2.1.0 amendment (task #57):** adds `economics:` field catalogue (CAPEX/OPEX/lifetime/replacement/residual)
 for Workstreams C (multi-year degradation) and D (project finance).  The resolver continues to
 **ignore all `economics:` fields** — no resolver API change, no `EnvParams` change.  Minor version
-bump per the v1.0.0 LOCK versioning rule (additive optional fields → no re-LOCK required).
+bump per the v2.0.0 LOCK versioning rule (additive optional fields → no re-LOCK required).
+**Sequencing:** v2.1.0 sits on the v2.0.0 baseline (price_table `(12,24)` reshape); implementation
+of this PR is blocked until v2.0.0 merges.
 
 ---
 
@@ -98,7 +100,7 @@ All `physics` fields listed below are **required** for the given type.
 | `max_export_mw` | float | MW | PCC export limit; D5; site-overridable |
 | `max_import_mw` | float | MW | Grid import limit; D12; site-overridable |
 
-### 1.3 `economics:` field catalogue (v1.1.0 — task #57)
+### 1.3 `economics:` field catalogue (v2.1.0 — task #57)
 
 **Resolver ignores all `economics:` fields** — these are consumed exclusively by
 Workstreams C (multi-year degradation/replacement) and D (project finance: LCOE/LCOS/OPEX/NPV/IRR).
@@ -168,7 +170,7 @@ The battery CAPEX formula is two-part:
 | `residual_value_fraction` | float | — | ∈ [0, 1) |
 | `decommissioning_cost_yuan` | float | ¥ | Decommissioning lump sum |
 
-### 1.4 Gansu v1.1.0 default economics values
+### 1.4 Gansu v2.1.0 default economics values
 
 Initial estimates (2024/25 Chinese utility-scale market; source: IRENA/NEA public data; to be
 refined by task #63 benchmark library).  All values are **non-zero documented estimates**,
@@ -615,7 +617,8 @@ None — this contract adds new functionality.
 | Version | Content | Re-LOCK? |
 |---------|---------|---------|
 | `"1.0.0"` | 4 Gansu device models, `physics:` catalogue (LOCKED PR #79) | — |
-| `"1.1.0"` | Adds `economics:` field catalogue, Gansu initial estimates (task #57) | No — additive optional fields |
+| `"2.0.0"` | `price_table` reshaped `(24,)→(12,24)` seasonal; Gansu replicated ×12 (bit-identical parity) | Yes — shape change |
+| `"2.1.0"` | Adds `economics:` field catalogue, Gansu initial estimates (task #57) | No — additive optional fields |
 | future minor | Additional device-model entries, additional optional fields | No |
 | future major | Field removal, rename, type change, composition-rule change | Yes → superseding DECISION + re-LOCK + re-review |
 
