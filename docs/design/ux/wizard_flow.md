@@ -21,6 +21,8 @@ Config → Algorithm → Train → Eval → Finance
 
 The existing app has three isolated routes (`/`, `/training`, `/eval`). The wizard **replaces the flat nav** with a structured pipeline that preserves the same underlying components (TrainingPanel, EvalComparison, SiteView) and wraps them in the stage shell.
 
+**Comparison workbench (planned sibling view, task #67):** A separate `/compare` route for selecting multiple variants (site config × policy/algorithm × finance assumptions), running headless batch simulations, and viewing side-by-side finance projections. The wizard is the **creation path**; the workbench is the **comparison path**. Three wizard stages carry `[+ Add to Comparison]` affordances so a finished result can be pushed to the workbench in one click: Config ①, Eval ④, and Finance ⑤. The workbench uses headless batch-eval only — no 3D scene, no streaming telemetry, output is tables + charts. See `docs/design/ux/comparison_workbench.md`.
+
 ---
 
 ## 2. Stage dependency model — the core design rule
@@ -225,6 +227,7 @@ Compose the site: geographic location, device fleet, weather source, tariff regi
   - **Soft warnings** (amber `⚠`) — shown with a per-warning Acknowledge button; user must explicitly dismiss each before proceeding (not silently bypassed). Example: "Historical weather coverage: 2 years available (2022–2023) — short horizon may affect training diversity."
 - **Edit mode (Class A notice)** — when stage is COMPLETE, any field change triggers an amber notice in Stage ③ (not a blocking modal): "Current config differs from trained policies — start a new run to train a policy with the current setup." Stage ③ is NOT hard-blocked; ④ and ⑤ retain their existing results with provenance labels. (No stale cascade to ④⑤ per the decoupled-eval model.)
 - **Weather mode** — three-way selector: Synthetic / Historical / Bootstrap (§2/§3 map modes from master_plan §3); historical/bootstrap gated on data-availability for the chosen lat/lon
+- **Add to comparison** — `[+ Add to Comparison]` secondary action in the stage footer (beside "Save & Continue") sends the current site config as a new variant seed to the Comparison Workbench. Disabled when hard errors are present. Allows the user to set up baseline vs. variant before ever training — e.g. "traditional grid connection" vs. "SST grid connection". See `docs/design/ux/comparison_workbench.md`.
 - **Scenario composition — multi-select composable toggles** (USER revision): scenario is not a single exclusive choice but a set of enabled device/stream groups composed onto the power base. For v1, only the power base is active and shown. When H₂ or datacenter scenarios activate in later versions, they appear as additional toggleable cards — each adding its device config section (e.g. electrolyzer fleet row, load_data_center row) and revenue streams. **Unactivated scenarios are HIDDEN entirely** (not greyed-out "coming soon") per USER decision. The layout must be designed to accommodate future toggles additively — no single-choice assumption baked in.
 
 ### Units displayed
@@ -476,6 +479,7 @@ POLICY LIBRARY
 - **Auto-select in Finance** — clicking `[→ Finance]` on any result pre-populates Stage ⑤ with that result and navigates there.
 - **Best-in-column** — in the expanded metric table, the best value per row is highlighted with a subtle green tint (lowest net cost / highest net value).
 - **Units** — all monetary values in ¥ nominal; sign convention: negative = cost/expense, positive = revenue added.
+- **Add to comparison** — each row in the Eval Results Library has an `[+ Compare]` action that registers the `(policy, env config, eval result)` tuple as a new variant in the Comparison Workbench. The workbench will display the eval metrics and compute the finance projection in-workbench. See `docs/design/ux/comparison_workbench.md`.
 
 ---
 
@@ -604,6 +608,9 @@ The panel never disables controls during computation — the loading state appea
 
 #### Export
 - `[Export results + assumptions]` produces a self-contained file (CSV or PDF) containing: headline metrics table, cash-flow series by year, NPV-vs-rate data, sensitivity inputs, **and the full current assumptions as a structured block**. A result without its assumptions is not a valid deliverable.
+
+#### Add to comparison
+- `[+ Add to Comparison]` in the footer (beside "Export results + assumptions") sends the current `(eval result + finance assumptions snapshot)` to the Comparison Workbench as a fully-specified variant. This is the **primary entry point for the company demo story**: configure the baseline (e.g. traditional grid connection), save it, duplicate-and-vary (swap to SST grid connection), then view IRR/NPV side-by-side in the workbench. The workbench will apply the same assumptions to all variants for apples-to-apples comparison, or allow per-variant overrides when the user explicitly requests them. See `docs/design/ux/comparison_workbench.md`.
 
 #### Units
 - Monetary: ¥ millions (¥M) on charts; ¥ full value on headline cards and assumption overrides
@@ -771,9 +778,10 @@ After this flow document is reviewed and course-corrections incorporated:
 
 1. **Per-screen layout docs** — detailed wireframes for each stage in `docs/design/ux/stage_N_*.md`
 2. **Component inventory doc** — prop specs for each new component listed in §10
-3. **design_system.md coordination** — once task #59 (frontend-engineer codifying the design system) lands, integrate tokens and evolve style if USER approves
-4. **Frontend contracts** — `contracts/frontend/wizard_shell.md`, `contracts/frontend/stage_config.md`, etc. (frontend-reviewer gates; authored AFTER USER design review)
+3. **Comparison workbench design** — multi-select variant UX, execution-tier model, tables+charts output layout in `docs/design/ux/comparison_workbench.md` (task #67). Primary user story: SST vs. traditional grid connection (device-swap variant pair). Headless batch-eval only — no 3D scene, no streaming, output is analysis-report style. Design gates the workbench frontend contract the same way this doc gates the wizard contracts.
+4. **design_system.md coordination** — once task #59 (frontend-engineer codifying the design system) lands, integrate tokens and evolve style if USER approves
+5. **Frontend contracts** — `contracts/frontend/wizard_shell.md`, `contracts/frontend/stage_config.md`, etc. (frontend-reviewer gates; authored AFTER USER design review)
 
 ---
 
-*docs/design/ux/wizard_flow.md — ui-designer, task #65 — v0.1 2026-06-11 · v0.2 (rl-architect ruling) · v0.3 (USER: decouple eval, policy library, composable scenarios, finance split) · v0.4 2026-06-12 (USER: full finance assumptions panel, CAPM decomposition, provenance badges, assumptions strip; Q1+Q6 closed — all 6 resolved)*
+*docs/design/ux/wizard_flow.md — ui-designer, task #65 — v0.1 2026-06-11 · v0.2 (rl-architect ruling) · v0.3 (USER: decouple eval, policy library, composable scenarios, finance split) · v0.4 2026-06-12 (USER: full finance assumptions panel, CAPM decomposition, provenance badges, assumptions strip; Q1+Q6 closed — all 6 resolved) · v0.5 2026-06-12 (add Comparison Workbench sibling-view note + "Add to comparison" hooks at Config/Eval/Finance stages; §12 item 3; task #67)*
