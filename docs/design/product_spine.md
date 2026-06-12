@@ -91,6 +91,8 @@ D13 **extends**, doesn't break: `reward_basis = Σ(active real-money streams, ca
 
 A stale edge is **machine-visible** (same provenance-guard family as `dispatch_fidelity`): the wizard refuses to present a stage-⑤ number whose underlying eval's `evaluated-on` provenance ≠ the current config — and *flags* (does not block) a deliberate **cross-eval** (a library policy run against a config it wasn't trained on, §2.2).
 
+**UX-layer notes (ui-designer owns `wizard_flow.md`; recorded here only so the spine doesn't contradict them).** Stale downstream results are **preserved, not deleted** — kept and flagged, so the user can still see the prior numbers while knowing they're stale (stale-*preserve*, not stale-erase). The guided wizard is the primary path, but **raw `/training` and `/eval` routes are retained as power-user entry points**. And **all finance parameters are UI-visible and editable in the finance panel with provenance badges** — *nothing* is config-file-only; the `config`/`treasury_curves.yaml` mentions above describe where a value's *default/source* lives, not a file-only-non-editable constraint.
+
 ## 6. Config validation — two-tier, single source (sibling `config_validation` contract)
 
 Obviously-unreasonable configs **error**; suspicious-but-legal configs **warn** (USER directive). Rules span device + tariff + econ → a **sibling shared contract `config_validation`** (NOT folded into `device_model_schema`), task #66. **All rules live in the resolver layer (jax-env), exactly once**; serving exposes a `validate` endpoint; the UI renders field-level — **no duplicate TypeScript rule set** (precedent: D26 two-tier, D18 single-validator).
