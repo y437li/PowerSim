@@ -1763,41 +1763,43 @@ class TestMonthIndexedLookupParity:
             assert table[m, 23] == pytest.approx(250.0, abs=1e-3), f"month {m} h=23 (Valley)"
 
     def test_step_output_parity_fixed_seed(self):
-        """A 24-step episode with EnvParams() produces identical costs/obs under v2.0.0.
+        """A 24-step episode with EnvParams() produces finite costs/obs under v2.0.0.
 
         Parity argument: price_table[MONTH_OF_STEP[t], hour] == PRICE_TABLE_YPW[hour]
         for all t ∈ [0,8759], so c_import_yuan and r_export_yuan are unchanged step-by-step.
 
-        This test imports jax_env directly and steps with fixed seed for determinism.
-        It checks that total_cost and obs are not NaN (behavioral smoke test).
+        Uses inline zero data (no dependency on data_gen, which is not yet implemented).
+        Smoke test: reward not NaN, total import cost finite and non-negative.
+
+        Three bugs fixed per FREEZE PROTOCOL (rl-architect): (1) replaced data_gen
+        import+skip with zero data — data_gen not yet implemented, skip was masking
+        bugs 2 and 3; (2) reset(rng, data, params) → reset(rng, params, data) —
+        actual signature is reset(key, params, data); (3) step returns
+        (new_state, obs, reward, done, info) so unpack as (state, _, reward, done, info),
+        not (state, reward, done, _, info) which mis-assigned obs→reward.
         """
+        import math
         import jax
         import jax.numpy as jnp
-        from energy_go.env.jax_env import reset, step, get_obs, MONTH_OF_STEP
+        from energy_go.env.jax_env import reset, step
         rng = jax.random.PRNGKey(42)
         params = EnvParams()
-        data_rng, rng = jax.random.split(rng)
 
-        # We need synthetic data — use a minimal approach: create dummy data arrays
-        # matching the shape expected by reset()/step()
-        # If data generation is available, use it; otherwise skip.
-        try:
-            from energy_go.env.data_gen import make_gansu_year
-            data = make_gansu_year(data_rng)
-        except ImportError:
-            pytest.skip("data_gen not available — skip step parity smoke test")
+        # Synthetic data: zeros (no wind/irradiance/load → zero generation, zero demand).
+        # Sufficient for smoke test: step executes, c_import=0, reward=0, no NaN.
+        data = jnp.zeros((8760, 4), dtype=jnp.float32)
 
-        state, obs = reset(rng, data, params)
+        state, obs = reset(rng, params, data)   # fixed: params before data
         total_cost = 0.0
         for _ in range(24):
-            action = jnp.zeros(6)  # neutral action: no battery, equal fractions
-            rng, step_rng = jax.random.split(rng)
-            state, reward, done, _, info = step(state, action, params, data)
+            action = jnp.zeros(6)  # neutral: no battery, equal fractions
+            rng, _ = jax.random.split(rng)
+            state, _, reward, done, info = step(state, action, params, data)  # fixed: discard obs
             total_cost += float(info.c_import_yuan)
-            assert not jnp.isnan(reward), "reward must not be NaN"
+            assert not bool(jnp.isnan(reward)), "reward must not be NaN"
         # Cost must be finite and non-negative
         assert total_cost >= 0.0, f"total import cost = {total_cost} must be ≥ 0"
-        assert not jnp.isnan(jnp.array(total_cost)), "total cost must be finite"
+        assert math.isfinite(total_cost), "total cost must be finite"
 
 
 # ---------------------------------------------------------------------------
