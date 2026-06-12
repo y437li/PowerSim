@@ -307,3 +307,68 @@ describe("STACK.md — build tooling notes reflect new structure (§5)", () => {
     expect(hasMerged).toBe(true);
   });
 });
+
+// ===========================================================================
+// reviewer: added cases — frontend-reviewer (PR #99 contract+tests gate)
+// ===========================================================================
+
+// reviewer: MUST-FIX #1. The contract §3.2 and the developer test (suite 6, "has
+// include array with 'src'") both miss that tsconfig `include` paths resolve
+// RELATIVE TO THE TSCONFIG FILE. After moving to .config/, `include: ["src"]`
+// resolves to `.config/src` (nonexistent) -> `tsc -p .config/tsconfig.app.json`
+// errors "No inputs were found" -> `npm run build` BREAKS in CI (the PR #62/#70
+// guard). The correct value is `["../src"]`. These tests resolve each include
+// entry relative to .config/ and require it to point at a real directory — which
+// a bare toContain("src") assertion (suite 6) would wave straight through while
+// actually enforcing the broken value.
+describe("reviewer: .config/tsconfig.app.json include resolves to a real source tree", () => {
+  it("reviewer: every include entry resolves (relative to .config/) to an existing path", () => {
+    const json = readJson(".config/tsconfig.app.json") as { include?: string[] };
+    const include = json.include ?? [];
+    expect(include.length).toBeGreaterThan(0);
+    for (const entry of include) {
+      const resolved = path.resolve(REPO_ROOT, ".config", entry);
+      expect(
+        fs.existsSync(resolved),
+        'include entry "' + entry + '" resolves to ' + resolved +
+        ' which does not exist - after the move it must be "../src" (relative to .config/), not "src"'
+      ).toBe(true);
+    }
+  });
+
+  it("reviewer: include contains ../src and NOT bare src (suite-6 assertion must be corrected to match)", () => {
+    const json = readJson(".config/tsconfig.app.json") as { include?: string[] };
+    expect(json.include).toContain("../src");
+    expect(json.include).not.toContain("src");
+  });
+});
+
+// reviewer: MUST-FIX #2. Playwright's webServer.cwd "defaults to the directory of
+// the configuration file" (node_modules/playwright/types/test.d.ts) — NOT the
+// process CWD, as the contract §3.4 claims. After moving the config to
+// tests/frontend_e2e/, the default cwd becomes tests/frontend_e2e/, so
+// `npm run dev` launches vite from there and fails to find vite.config.ts /
+// index.html (both root-mandated) -> the e2e dev server is misconfigured. CI does
+// NOT run test:e2e, so this would merge green and break e2e silently. The moved
+// config MUST set webServer.cwd back to the repo root.
+describe("reviewer: playwright webServer runs from repo root after the move", () => {
+  it("reviewer: webServer sets an explicit cwd (Playwright default is the config dir, not repo root)", () => {
+    const src = readFile("tests/frontend_e2e/playwright.config.ts");
+    expect(
+      /cwd\s*:/.test(src),
+      "webServer must set an explicit cwd: Playwright defaults it to the config dir (tests/frontend_e2e/), which cannot run `npm run dev` correctly"
+    ).toBe(true);
+  });
+
+  it("reviewer: webServer.cwd climbs two levels back to repo root", () => {
+    const src = readFile("tests/frontend_e2e/playwright.config.ts");
+    const climbsToRoot =
+      /cwd\s*:\s*['"]\.\.\/\.\.\/?['"]/.test(src) ||
+      /cwd\s*:\s*path\.resolve\(\s*__dirname\s*,\s*['"]\.\.\/\.\.['"]\s*\)/.test(src) ||
+      /cwd\s*:\s*path\.join\(\s*__dirname\s*,\s*['"]\.\.['"]\s*,\s*['"]\.\.['"]\s*\)/.test(src);
+    expect(
+      climbsToRoot,
+      "webServer.cwd must resolve to the repo root (two levels up from tests/frontend_e2e/)"
+    ).toBe(true);
+  });
+});
