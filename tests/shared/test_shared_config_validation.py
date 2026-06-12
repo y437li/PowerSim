@@ -732,6 +732,28 @@ class TestNonRaising:
         result = validate(site, GANSU_MODELS)
         assert isinstance(result.errors, list)
 
+    def test_malformed_device_models_string_no_crash(self):
+        # reviewer: backend-reviewer (PR #89 stage-2 [HIGH] — §3.2 malformed device_models)
+        # device_models="not-a-dict" → validate() must coerce to None (not raise AttributeError)
+        # Reproduced AttributeError in e3b1d9b via 'str' has no 'get'.
+        validate = _import_validate()
+        result = validate(GANSU_SITE, "not-a-dict")   # must NOT raise
+        assert isinstance(result.errors, list), "malformed device_models must not raise"
+
+    def test_malformed_device_models_models_not_dict_no_crash(self):
+        # reviewer: backend-reviewer (PR #89 stage-2 [HIGH] — §3.2 malformed device_models)
+        # {"models": "nope"} → _check_e_econ_neg iterates "nope".items() → AttributeError.
+        validate = _import_validate()
+        result = validate(GANSU_SITE, {"models": "nope"})   # must NOT raise
+        assert isinstance(result.errors, list)
+
+    def test_malformed_device_models_model_entry_not_dict_no_crash(self):
+        # reviewer: backend-reviewer (PR #89 stage-2 [HIGH] — §3.2 malformed device_models)
+        # {"models": {"x": "str"}} → model_def.get("physics") → AttributeError.
+        validate = _import_validate()
+        result = validate(GANSU_SITE, {"models": {"x": "str"}})   # must NOT raise
+        assert isinstance(result.errors, list)
+
 
 class TestExhaustive:
     """validate() collects ALL issues, never short-circuits."""

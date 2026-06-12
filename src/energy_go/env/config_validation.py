@@ -90,11 +90,24 @@ def _deep_get(d: Any, *keys: str, default: Any = None) -> Any:
     return d
 
 
-def _get_model_physics(device_models: dict, model_id: str) -> dict:
-    """Return physics sub-dict for a model; empty dict if not found."""
-    if device_models is None or model_id is None:
+def _get_model_physics(device_models: "dict | None", model_id: "str | None") -> dict:
+    """Return physics sub-dict for a model; empty dict if not found or malformed.
+
+    Guards every step against non-dict values so a malformed device_models can
+    never propagate an AttributeError (§3.2 non-raising).
+    """
+    if not isinstance(device_models, dict) or model_id is None:
         return {}
-    return device_models.get("models", {}).get(model_id, {}).get("physics", {})
+    models = device_models.get("models")
+    if not isinstance(models, dict):
+        return {}
+    model = models.get(model_id)
+    if not isinstance(model, dict):
+        return {}
+    physics = model.get("physics")
+    if not isinstance(physics, dict):
+        return {}
+    return physics
 
 
 def _resolve_grid_limits(
@@ -365,8 +378,12 @@ def _check_e_econ_neg(site: dict, device_models: dict, issues: list) -> None:
         "capex_per_kw_ac_yuan",
     })
 
-    models = device_models.get("models", {})
+    models = device_models.get("models")
+    if not isinstance(models, dict):
+        return
     for model_id, model_def in models.items():
+        if not isinstance(model_def, dict):
+            continue  # malformed model entry — skip
         econ = model_def.get("economics")
         if not isinstance(econ, dict):
             continue  # no economics block — skip this device
@@ -514,6 +531,11 @@ def validate(
     """
     if not isinstance(site_config, dict):
         return ValidationResult(errors=[], warnings=[])
+
+    # §3.2 non-raising: coerce malformed device_models to None rather than
+    # letting .get()/.items() raise AttributeError downstream.
+    if device_models is not None and not isinstance(device_models, dict):
+        device_models = None
 
     errors: list = []
     warnings: list = []
