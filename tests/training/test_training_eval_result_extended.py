@@ -433,6 +433,47 @@ class TestCostAndDemandIdentities:
         )
         assert demand_billing_mw_month == pytest.approx(0.0, abs=1e-9)
 
+    # reviewer: RE-ADDED — these two cross-source identity cases were dropped by the
+    # 91c641a stream-shape revision (originally added at 2b12566). Restored verbatim;
+    # they remain valid against the 36-field result (curtailed/grid_import still accumulate).
+    #
+    # AGGREGATE-vs-per-source curtailment: env defines p_curtailed_mw = p_sol_curtailed
+    # + p_wind_curtailed + p_bat_curtailed, so curtailed_mwh must equal the sum of the
+    # three per-source curtailed accumulators.
+    # 4 steps: p_curtailed=25 = wind 10 + pv 10 + bat 5 → curtailed_mwh=100; sum=40+40+20=100.
+    def test_aggregate_curtailed_equals_per_source_sum(self):
+        _acc = _import_accumulate()
+        infos = _make_mock_infos(
+            4,
+            p_curtailed_mw=25.0,
+            p_wind_curtailed_mw=10.0, p_sol_curtailed_mw=10.0, p_bat_curtailed_mw=5.0,
+        )
+        r = _acc(infos)
+        lhs = r["curtailed_mwh"]
+        rhs = r["wind_curtailed_mwh"] + r["pv_curtailed_mwh"] + r["bat_curtailed_mwh"]
+        assert lhs == pytest.approx(rhs, rel=1e-4), (
+            f"aggregate curtailed_mwh={lhs:.4f} ≠ Σ per-source {rhs:.4f}"
+        )
+
+    # reviewer: grid-import decomposition — ties to the F-IMPORT fix (§3.6 row 9):
+    # env guarantees P_import = grid_to_load + grid_to_bat, so grid_import_mwh must equal
+    # grid_to_bat_mwh + grid_to_load_mwh. A battery-first F-IMPORT regression breaks this.
+    # 6 steps: p_import=150 = grid_to_bat 50 + grid_to_load 100 → grid_import_mwh=900; sum=300+600=900.
+    def test_grid_import_equals_to_bat_plus_to_load(self):
+        _acc = _import_accumulate()
+        infos = _make_mock_infos(
+            6,
+            p_import_mw=150.0,
+            p_grid_to_bat_mw=50.0, p_grid_to_load_mw=100.0,
+        )
+        r = _acc(infos)
+        lhs = r["grid_import_mwh"]
+        rhs = r["grid_to_bat_mwh"] + r["grid_to_load_mwh"]
+        assert lhs == pytest.approx(rhs, rel=1e-4), (
+            f"grid_import_mwh={lhs:.4f} ≠ grid_to_bat+grid_to_load {rhs:.4f} "
+            "(F-IMPORT §3.6 row 9: P_import = grid_to_load + grid_to_bat)"
+        )
+
 
 # ---------------------------------------------------------------------------
 # 5. Wire isolation — _policy_dict must return exactly the 9 LOCKED fields
