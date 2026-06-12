@@ -62,6 +62,6 @@ Certain shared contracts are **LOCKED** — they have a version number and may n
 - `assets/3d/registry.json` — 3D asset IDs (LOCKED PR #24)
 - `contracts/shared/device_model_schema.md` v2.0.0 — site/device YAML schema (LOCKED PR #87)
 - `contracts/shared/tariff_model_schema.md` v1.0.0 — tariff YAML schema (LOCKED PR #91)
-- `contracts/shared/config_validation.md` v1.0.0 — config validation rules (LOCKED PR #89)
+- `contracts/shared/config_validation.md` v1.0.0 — two-tier site-config validator (LOCKED PR #89)
 
-Locked contracts are listed in [`LINEAGE.md`](../LINEAGE.md). A PR that deviates from a LOCKED contract without a DECISION is a stop-the-line item.
+**Authoritative record:** [`LINEAGE.md`](../LINEAGE.md) is the definitive list of LOCKED entries. The above is a snapshot; when in doubt, read LINEAGE directly. A PR that deviates from a LOCKED contract without a superseding DECISION is a stop-the-line item.
