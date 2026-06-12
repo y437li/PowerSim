@@ -1,9 +1,10 @@
 # Stage ⑤ — Finance: Per-Screen Layout
 
 > **Owner:** ui-designer · **Task:** #65
-> **Status:** DRAFT v0.1 (2026-06-12)
-> **Gate:** frontend-reviewer verdict on PR #85 before frontend contract is authored.
-> **Parent doc:** wizard_flow.md v0.5 (§8, §10) — this document deepens Stage ⑤ only.
+> **Status:** DRAFT v0.2 (2026-06-12) — distribution-aware results: P50/P90 bankability pair headline, NpvFanChart, percentile-selector cash-flow chart, ensemble-size indicator, CI convergence hint; M-series instant client-side re-discount; workbench delta footnote
+> **Gate:** frontend-reviewer verdict before frontend contract is authored.
+> **Parent doc:** wizard_flow.md v0.6 (§8, §10) — this document deepens Stage ⑤ only.
+> **§13 alignment pending:** finance-expert is drafting §13 (project-finance spec); field names in this doc should be reconciled with §13 before the frontend contract is written.
 > **Prerequisite:** Stage ④ Eval must have at least one COMPLETE eval result.
 > **Core principle:** Every finance parameter is displayed and editable in this panel — nothing buried in config files. The compute-residency split (instant vs ~1–3 s) is invisible plumbing. The operator adjusts any assumption; results update.
 
@@ -222,18 +223,54 @@ Left column (assumptions) appears as a collapsible `▾ Assumptions` section abo
 
 ---
 
-## 10. Results panel — Headline metrics
+## 10. Results panel — Headline metrics (distribution-aware)
+
+Finance results are distributions over the M-scenario weather ensemble. The headline shows the P50 (median) as the primary value with the P90 immediately beneath — the "bankability pair" that lenders and investors use. Detailed percentile breakdown and histogram are one click away.
 
 ```
 ┌─ HEADLINE METRICS ──────────────────────────────────────────────────────────┐
 │                                                                              │
-│  IRR         11.2 %                NPV @ WACC    ¥142 M                    │
-│  MIRR         9.8 %                LCOE          ¥312 /MWh                 │
-│  Payback      8.3 yr               LCOS          ¥148 /MWh (View II only)  │
+│  IRR                              NPV @ WACC                                │
+│  8.2 %   ← P50 (median)          ¥142 M   ← P50                            │
+│  7.6 %   ← P90 (downside)        ¥118 M   ← P90                            │
+│  [▾ P50/P75/P90/P99 + hist]       [▾ P50/P75/P90/P99 + hist]               │
+│                                                                              │
+│  MIRR  7.1 % P50    Payback  8.3 yr P50    LCOE  ¥312/MWh P50              │
+│                                            LCOS  ¥148/MWh P50 (View II)    │
+│                                                                              │
+│  M = 50 weather draws · 90% CI: IRR 7.4%–8.9%                              │
+│  ↑ Wide IRR range — add more weather scenarios for tighter confidence bounds│
+│  (hint appears only when P10–P90 spread exceeds threshold — see §Q5)        │
 │                                                                              │
 │  [loading state: shimmer cards while ~1–3 s server call completes]          │
 └──────��───────────────────────────────���───────────────────────────────────────┘
 ```
+
+**P50 / P90 semantics:**
+- **P50** = median scenario. The "expected case" headline — half the M weather draws produce a better result, half worse.
+- **P90** = 90th-worst-case percentile. In 90% of weather scenarios the project achieves *at least* this IRR / NPV. The bankability floor — the number a lender uses to stress-test debt service coverage. For IRR/NPV/MIRR, *higher* P90 = better; for LCOE/payback, *lower* P90 = better.
+
+**Expandable distribution block** (`[▾ P50/P75/P90/P99 + hist]`)
+
+Clicking the expand control on any headline metric opens an inline panel:
+
+```
+  IRR distribution (M = 50 draws)
+  ───────────────────────────────────────────
+  P50 (median)     8.2 %
+  P75              7.9 %   (75th worst case)
+  P90              7.6 %   (bankability floor)
+  P99              6.9 %   (stress scenario)
+  ───────────────────────────────────────────
+  [histogram sparkline: M bars, x = IRR %, y = count]
+  90% CI (P5–P95): 7.4 % – 8.9 %
+  ───────────────────────────────────────────
+  [▲ Collapse]
+```
+
+**Ensemble-size indicator:** `M = 50` appears in the headline area, always visible. If M = 1 (point-estimate, no ensemble), P90 / CI / histogram are hidden gracefully; the single-scenario value is shown without a percentile label. No error state — M = 1 is valid for quick iteration.
+
+**Convergence hint:** if the 90% CI width exceeds a threshold (suggested: ≥ 2 pp for IRR, ≥ 20% of NPV magnitude), a subtle inline notice appears: "↑ Wide IRR range — add more weather scenarios for tighter confidence bounds." Dismissable. Threshold values to be locked in the finance contract (§Q5 below).
 
 **Loading state:** when a Class C parameter change triggers a server-side recalculation, all metric cards show a shimmer/skeleton overlay. The assumptions panel remains fully interactive — the operator can stack multiple changes during the loading period; the backend batches them.
 
@@ -253,9 +290,10 @@ The AssumptionsStrip is always visible on the results panel — it does not scro
 ```
 ┌─ ASSUMPTIONS ───────────────────────────────────────────────────────────────┐
 │  r_f 2.85% · β 0.75 · ERP 5.50% → WACC 7.0% · 20yr · View I · Merchant   │
-│  Pre-tax · Synthetic M=1 · Config #a1b2c3                                  │
+│  Pre-tax · Synthetic M=50 · Config #a1b2c3                                 │
+│  Results: P50 IRR 8.2% · P90 7.6% · P50 NPV ¥142M                         │
 │  (or, when WACC is overridden:)                                              │
-│  WACC 8.0% [overridden; CAPM gives 7.0%] · 20yr · View I · ...            │
+│  WACC 8.0% (overridden; CAPM 7.0%) · 20yr · View I · Synthetic M=50 · ...  │
 └────────────────────────────────���─────────────────────────────────────────────┘
 ```
 
@@ -265,10 +303,12 @@ This strip is the **investment-committee guard**: it is reproduced verbatim on e
 
 ---
 
-## 12. CashFlowChart
+## 12. CashFlowChart (with percentile selector)
 
 ```
 Year-by-year bar/waterfall chart, year 0 to 20.
+
+ Scenario: [P50 ▼]  (selector: P10 / P50 / P90 / P99)
 
  ¥200M │
        │       ████████████████████████████
@@ -280,40 +320,58 @@ Year-by-year bar/waterfall chart, year 0 to 20.
        │  ████ │             │             │  (dotted vertical line)
 -¥800M │  ████ (yr 0: CAPEX)│             │
        │       └─────────────┘ (yr 12: batt replace cost)
+
+  (optional range overlay when M > 1 draws:)
+  ░░░░░ P25–P75 envelope (shaded, same color as bars at low opacity)
 ```
 
+**Percentile selector:** `[P50 ▼]` dropdown switches the year-by-year bars to show the selected scenario's cash flows: P10 (optimistic), P50 (median, default), P90 (conservative), P99 (stress). The selected scenario's IRR and cumulative NPV are shown in a subtitle below the chart.
+
+**Range overlay (M > 1):** when the ensemble has more than one draw, a light shaded envelope (P25–P75) can be toggled on with `[Show ±P25-P75 range]`. This shows year-by-year variability without cluttering the main bars. The envelope is hidden by default.
+
 **Chart elements:**
-- Year 0: large negative bar = CAPEX outlay
-- Years 1–N: positive bars = net annual cash flow (revenue − OPEX − debt service if applicable)
+- Year 0: large negative bar = CAPEX outlay (identical across scenarios — CAPEX is deterministic)
+- Years 1–N: positive bars = net annual cash flow for the selected percentile scenario
 - Year 12 (or configured replacement year): a notch negative bar for battery replacement cost + dotted vertical reference line with label
-- Cumulative line (optional `[Show cumulative]` toggle): shows running NPV accumulation
+- Cumulative line (optional `[Show cumulative]` toggle): shows running NPV accumulation for the selected scenario
 
 **Responsive:** chart is 100% width of the right column; minimum height 280 px.
 
 ---
 
-## 13. NpvCurveChart
+## 13. NpvFanChart (replaces single-curve NpvCurveChart)
+
+With M > 1 weather draws, the NPV-vs-rate chart becomes a **fan chart**: a median line flanked by two shaded uncertainty bands. The fan chart shows at a glance both expected performance and downside risk across the full rate spectrum.
 
 ```
-NPV vs Discount Rate — same as comparison_workbench.md §4.3 but single-policy.
+NPV vs Discount Rate — fan chart (M = 50 draws)
 
-  ¥300M │ ●──────
-        │        ●─────────
-  ¥150M │                  ●────
-        │                       ●──●──
-     ¥0 ├────────────────────────────────●───── IRR = 11.2%
-        │                                   ●──
- -¥150M │                                        ●──
-        └─────────────────────────────────────────────── rate %
+  ¥300M │
+        │ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ P10-P90 band (light)
+  ¥200M │ ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒ P25-P75 band (dark)
+        │          ────────────────────────────────── median (P50)
+  ¥100M │   ░░░░░▒▒▒▒▒────────────────────────────────────────────
+        │           ▒▒────────────────────────────────────────── ·
+     ¥0 ├────────────────────────────────── ●───────────────────── rate %
+        │                           P90 IRR  ●(P50 IRR = 8.2%)
+ -¥100M │                         = 7.6%
+        └─────────────────────────────────────────────────────────
           3%     5%    7%(WACC)   9%    11%    13%    15%
-                       ↑ current WACC
+                       ↑ WACC ref
 ```
 
-**Elements:**
-- Single NPV curve (blue line; if the operator uses the WACC override, the curve is live-updated as the slider moves)
-- Current WACC vertical dotted reference line
-- IRR x-intercept circle + label `"IRR 11.2%"`
-- Hover tooltip: NPV at cursor rate
+**Fan chart elements:**
+- **Median line (P50)**: solid blue line; thicker weight. Live-updated as WACC override slider moves.
+- **P25–P75 band**: medium-opacity shaded area (blue, ~30% opacity); "most likely" band — 50% of scenarios fall within it.
+- **P10–P90 band**: low-opacity shaded area (blue, ~15% opacity); "uncertainty envelope" — 80% of scenarios fall within it.
+- **P50 IRR marker**: circle at P50 IRR x-intercept + label `"P50 IRR 8.2%"`.
+- **P90 IRR marker**: smaller circle at P90 IRR x-intercept + label `"P90 7.6%"` (both together form the bankability pair axis-markers).
+- **Current WACC**: vertical dotted reference line.
+- **Hover tooltip**: shows P10/P50/P90 NPV simultaneously at the cursor rate.
+
+**Rate-slider interactivity:** when M cached cash-flow series are held client-side, adjusting the WACC override slider re-discounts all M series instantly (< 50 ms) — the fan animates live. This is the same Class B instant re-discount path as the single-curve version; no server call required.
+
+**M = 1 graceful fallback:** when M = 1 (point estimate), the chart renders as the original single-curve NpvCurveChart (no bands, single line). The component detects M from the result payload and renders accordingly.
 
 ---
 
@@ -388,7 +446,7 @@ CSV includes: headline metrics, year-by-year cash flows, NPV vs rate table (3%�
 
 | User action | Response behaviour |
 |-------------|-------------------|
-| Change r_f / β / ERP / WACC override / View I⇔II / horizon / currency | Instant (<50 ms) — client-side rediscount of cached cash-flow series. No loading state. |
+| Change r_f / β / ERP / WACC override / View I⇔II / horizon / currency | Instant (<50 ms) — client-side re-discount of **M cached cash-flow series** (all M draws). Fan chart bands re-render live as slider moves. No loading state. |
 | Change D/E ratio → WACC recompute | Instant — WACC = (D/V)×Kd×(1−t) + (E/V)×Ke; client-side. |
 | Toggle tax shield / debt enable/disable | ~1–3 s — structural cash-flow change. Loading shimmer on headline metrics only. Assumptions panel remains interactive. |
 | Change CAPEX / OPEX / lifecycle costs | ~1–3 s — server-side cash-flow series change. Same shimmer. |
@@ -436,8 +494,10 @@ The assumptions panel is shown but all results are blank/pending. Once an eval r
 | `CAPMBuilder` | New (within DISCOUNT RATE section): r_f/β/ERP → WACC build-up, tenor picker, override slider, Restore CAPM |
 | `AssumptionField` | New primitive: editable control + provenance badge + ↺ reset; used throughout |
 | `AssumptionsStrip` | New: sticky one-liner summary on results side; reproduced on every export |
-| `CashFlowChart` | New: year-by-year bar/waterfall with replacement markers |
-| `NpvCurveChart` | New: NPV vs discount rate, IRR x-intercept, WACC marker |
+| `CashFlowChart` | New: year-by-year bar/waterfall with replacement markers + percentile selector + P25-P75 range overlay |
+| `NpvFanChart` | New: NPV vs discount rate fan chart — median line + P25-P75 + P10-P90 bands + dual IRR markers (P50/P90); degrades to single-curve when M=1 |
+| `MetricDistributionPopover` | New: expandable percentile table (P50/P75/P90/P99) + histogram sparkline; used inside each headline metric card |
+| `EnsembleSizeIndicator` | New primitive: `M = N` badge + convergence hint; shown in headline area |
 | `TornadoChart` | New: sensitivity bar chart ±ΔNPV, ranked |
 | `AddToComparisonModal` | Shared (from comparison_workbench.md §6) |
 | `StageSaveButton` | Shared primitive (used as [Export] button in this stage) |
@@ -454,6 +514,12 @@ The assumptions panel is shown but all results are blank/pending. Once an eval r
 
 **Q4 — Finance config persistence:** Are the assumptions saved automatically (on every change) or only on explicit save? Current design: assumptions auto-save to the server on every server-side call (Class C). Class B changes are in-memory only until the user navigates away or exports — at which point a `POST /api/finance/assumptions` saves the final state. Flag in serving contract.
 
+**Q5 — §13 field-name alignment:** finance-expert is drafting §13 (project-finance REBUILD_SPEC section, task #72). Before the frontend contract is written, the metric field names in this doc (IRR, MIRR, NPV, LCOE, LCOS, P50/P90 labels, percentile payload keys) must be reconciled with §13's numerical spec. **This reconciliation is a gate on the frontend contract** — the contract must reference §13 field names, not informal labels from this design doc.
+
+**Q6 — Convergence-hint thresholds:** What P10–P90 spread width triggers the "wide CI" convergence hint? Suggested: ≥ 2 pp for IRR, ≥ 20% of P50-NPV magnitude for NPV. finance-expert should lock these values in §13 or the finance contract so they are not hardcoded in the frontend.
+
+**Q7 — Client-side M-series memory:** With M = 50 weather draws, the client holds M full year-by-year cash-flow series for instant Class B re-discounting. At 20 years × 50 draws × ~6 metrics per year, this is ~6 000 floats ≈ trivial. At M = 500, still ≤ 60 000 floats. Document the upper bound in the serving contract response schema so the frontend can size its memory budget.
+
 ---
 
-*docs/design/ux/stage_5_finance.md — ui-designer, task #65 — v0.1 2026-06-12 (initial per-screen layout: two-column assumptions+results, all six assumption sections (CAPM build-up, capital structure, escalation, lifecycle, CAPEX/OPEX, accounting), AssumptionsStrip, headline metrics, CashFlowChart, NpvCurveChart, TornadoChart, eval basis picker, loading states, export, [+Add to Comparison], a11y notes, component checklist, 4 open questions)*
+*docs/design/ux/stage_5_finance.md — ui-designer, task #65 — v0.1 2026-06-12 (initial per-screen layout: two-column assumptions+results, all six assumption sections, AssumptionsStrip, headline metrics, CashFlowChart, NpvCurveChart, TornadoChart, eval basis picker, loading states, export, a11y notes, component checklist, 4 open questions) · v0.2 2026-06-12 (USER directive: distribution-aware results — P50/P90 bankability pair headline, expandable percentile table + histogram, NpvCurveChart → NpvFanChart (median + P25-P75 + P10-P90 bands), CashFlowChart + percentile selector + P25-P75 range overlay, ensemble-size M= indicator, convergence-hint affordance, instant M-series client-side re-discount clarified, AssumptionsStrip shows M=N, 3 new open questions, §13 alignment gate)*

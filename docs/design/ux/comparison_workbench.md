@@ -1,7 +1,7 @@
 # Comparison Workbench — UX Design
 
 > **Owner:** ui-designer · **Task:** #67
-> **Status:** DRAFT v0.2 — incorporates rl-architect v1.1 spine ruling (2026-06-12)
+> **Status:** DRAFT v0.3 — distribution-aware comparison table (P50 + P90 columns per variant), delta-of-P50s with seed-pairing footnote slot, NpvFanChart multi-variant, per-variant detail updated (2026-06-12)
 > **Gate:** USER reviews aesthetic direction before frontend contracts are written against this.
 > **Inputs:** wizard_flow.md (sibling doc), master_plan_geo_finance.md §5, REBUILD_SPEC §3–§5
 > **USER directive:** "有个地方可以多选,然后跑simulation根据算法看finance projection"
@@ -173,7 +173,7 @@ Key layout decisions:
 - **[Run missing]** button appears only when at least one Tier 2 variant exists; label counts: "Run missing ▶ 2 evals". No button if all variants are Tier 0/1 (results update automatically).
 - **Export** produces a PDF/CSV with all variant assumptions and all result tables.
 
-### 4.2 Results tab — Table
+### 4.2 Results tab — Table (distribution-aware)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -181,77 +181,87 @@ Key layout decisions:
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │  ASSUMPTIONS SUMMARY                                                        │
-│  WACC 7.0% · 20yr horizon · View I (absolute) · Merchant · Synthetic M=1   │
+│  WACC 7.0% · 20yr horizon · View I (absolute) · Merchant · Synthetic M=50  │
 │  (or: "⚠ Assumptions differ across variants — see per-variant detail")      │
 │                                                                              │
-│  ┌────────────────────┬──────────────┬──────────────────┬──────────────────┐ │
-│  │ Metric             │ ★ Baseline   │ A (SST)          │ B (new config)   │ │
-│  │                    │ Gansu-v1     │ Gansu-v1 +SST    │ Gansu-SST        │ │
-│  ├────────────────────┼──────────────┼──────────────────┼──────────────────┤ │
-│  │ IRR                │  11.2 %      │  11.7 % (+0.5pp) │ ─ (retrain req.) │ │
-│  │ NPV @ WACC   ¥M    │  ¥142 M      │  ¥156 M (+¥14 M) │ ─                │ │
-│  │ MIRR               │   9.8 %      │  10.1 % (+0.3pp) │ ─                │ │
-│  │ LCOE          ¥/MWh│    312       │    311 (−1)       │ ─                │ │
-│  │ Payback        yr  │    8.3       │    7.9 (−0.4)     │ ─                │ │
-│  ├────────────────────┼──────────────┼──────────────────┼──────────────────┤ │
-│  │ CAPEX          ¥M  │ ¥1 800 M     │ ¥1 920 M (+6.7%) │ ─                │ │
-│  │ Levelized opex ¥/yr│  ¥28 M/yr    │   ¥30 M/yr (+7%) │ ─                │ │
-│  │ Export      MWh/yr │ 1 234 567    │ 1 234 567 (0)     │ ─                │ │
-│  └────────────────────┴──────────────┴──────────────────┴──────────────────┘ │
+│  ┌────────────┬─────────────────┬───────────────────────┬──────────────────┐ │
+│  │ Metric     │ ★ Baseline      │ A (SST)               │ B (new config)   │ │
+│  │            │ Gansu-v1        │ Gansu-v1 +SST         │ Gansu-SST        │ │
+│  │            │  P50    P90     │  P50       P90  ΔP50  │                  │ │
+│  ├────────────┼─────────────────┼───────────────────────┼──────────────────┤ │
+│  │ IRR        │  8.2%   7.6%    │  8.7%  8.1%  +0.5pp  │ ─ (retrain req.) │ │
+│  │ NPV ¥M     │  ¥142   ¥118    │  ¥156  ¥130   +¥14M  │ ─                │ │
+│  │ MIRR       │  7.1%   6.7%    │  7.4%  6.9%  +0.3pp  │ ─                │ │
+│  │ LCOE ¥/MWh │   312    319    │   311    318    −1    │ ─                │ │
+│  │ Payback yr │   8.3    9.0    │   7.9    8.5   −0.4   │ ─                │ │
+│  ├────────────┼─────────────────┼───────────────────────┼──────────────────┤ │
+│  │ CAPEX ¥M   │ ¥1 800 M        │ ¥1 920 M       +6.7%  │ ─                │ │
+│  │ OPEX ¥M/yr │  ¥28 M          │  ¥30 M          +7%   │ ─                │ │
+│  │ Export MWh │ 1 234 567       │ 1 234 567         0    │ ─                │ │
+│  └────────────┴─────────────────┴───────────────────────┴──────────────────┘ │
+│                                                                              │
+│  † ΔP50 = baseline P50 vs variant P50 (independent ensembles). If runs are  │
+│    seed-paired, seed-paired Δ (per-draw mean) is available — see finance-    │
+│    expert §13 ruling.                                                        │
 │                                                                              │
 │  Delta coloring: green = better than baseline; red = worse; amber = neutral  │
-│  Best value per row highlighted with subtle green tint (across all variants) │
+│  Best value per metric highlighted with subtle green tint (across variants)  │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Delta display rules:**
-- Baseline column: absolute values only, no delta.
-- Other columns: `absolute_value (Δ_vs_baseline)`. Delta colored green/red/amber based on direction: for IRR/NPV/MIRR — higher is better (green); for CAPEX/LCOE/Payback — lower is better (green).
-- Tier 3 variants (retrain required): cells show `—` with a tooltip explaining the reason.
-- Tier 2 variants currently running: cells show a shimmer/loading placeholder.
+- Baseline column: P50 + P90 absolute values, no delta.
+- Other variant columns: P50 + P90 absolute values + `ΔP50` (delta of P50s). Delta colored green/red/amber: for IRR/NPV/MIRR — higher is better (green); for CAPEX/LCOE/Payback — lower is better (green).
+- **Delta is delta of P50s, not P50 of deltas.** This is the default because variants run independent weather ensembles (different random seeds). If the ensembles are seed-paired (same seeds across variants), finance-expert will supply a per-draw delta in `POST /api/compare/finance`; the UI then swaps to show it automatically, and the footnote `†` updates to reflect the seed-pairing.
+- Tier 3 variants (retrain required): cells show `—` with a tooltip.
+- Tier 2 variants currently running: cells show a shimmer placeholder.
+
+**P90 direction:** for IRR/NPV/MIRR, P90 represents the downside (90% of scenarios achieve *at least* this value) — it is shown *beneath* P50. For LCOE/Payback, P90 represents the upside (90% of scenarios have costs *no worse* than this value). Column header suffix clarifies direction for each row type.
 
 **Metric groups:**
-The table has two sections: **Finance metrics** (IRR, NPV, MIRR, LCOE, Payback) and **Operational summary** (CAPEX, levelized OPEX, annual export, battery cycles/yr if available). A `[▾ Show all]` toggle expands to show additional rows (cash flows by year, P50/P90/P99 if available).
+The table has two sections: **Finance metrics** (IRR, NPV, MIRR, LCOE, Payback) with P50 + P90 columns, and **Operational summary** (CAPEX, levelized OPEX, annual export, battery cycles/yr) with deterministic values only (CAPEX is not a distribution). A `[▾ Show all]` toggle expands to show P75/P99 rows and year-by-year cash-flow breakdown.
 
-### 4.3 Results tab — NPV vs Discount Rate
+### 4.3 Results tab — NPV vs Discount Rate (NpvFanChart, multi-variant)
+
+With M > 1 weather draws the chart shows **one fan per variant**: each variant contributes a median line + P25-P75 band. The fan widths give an immediate visual read on which variant has tighter vs wider uncertainty, which is as important as the median level.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │  [Table]  [NPV vs Rate ●]  [Per-variant detail]                              │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  NPV vs Discount Rate (¥M)                                                  │
+│  NPV vs Discount Rate — P50 ± P25-P75 bands (M = 50)                       │
 │                                                                              │
 │  ¥300M │                                                                     │
-│        │ ★─────                                                              │
-│  ¥200M │       ★────────                          A─────                    │
-│        │               ★────A────                        A────              │
-│  ¥100M │                         ★──A──                        ★,A─         │
-│        │                               ★,A──                        ─────   │
-│     ¥0 ├─────────────────────────────────────┼──────────────────────────────│
-│        │                             IRR: ★11.2  A11.7%           rate %    │
-│ −¥100M │                                                                     │
-│        │                                                                     │
-│        └─────────────────────────────────────────────────────────────────── │
-│         3%     5%     7% (WACC)    9%    11%    13%    15%                  │
-│                       ↑ current                                             │
+│        │ ★░░░░░░░░  ← baseline P10-P90 band (light blue)                    │
+│  ¥200M │ ★▒▒▒▒▒▒▒▒  ← baseline P25-P75 band (medium blue)                  │
+│        │ ★────────  ← baseline P50 median                                   │
+│  ¥100M │   A░░░░░░  ← variant A P10-P90 band (light orange)                 │
+│        │   A▒▒▒▒▒▒  ← variant A P25-P75 band (medium orange)               │
+│        │   A──────  ← variant A P50 median  (dashed line)                  │
+│     ¥0 ├─────────────────────────────────────────────────────────────────── │
+│        │         ★P90 IRR ★P50 IRR A P90 A P50        rate %               │
+│ -¥100M │         (7.6%)  (8.2%) (8.1%) (8.7%)                              │
+│        └────────────────────────────────────────────────────────────────── │
+│          3%     5%     7% (WACC)    9%    11%    13%    15%                 │
+│                         ↑ WACC ref                                          │
 │                                                                              │
-│  Legend:  ★ Baseline (solid)  ·  A (SST) (dashed)  ·  B — (unavailable)    │
-│  Hover: shows tooltip with NPV value at cursor rate                          │
-│  IRR marker: vertical dotted line at IRR x-intercept per variant            │
+│  Legend: ★ Baseline (blue)  ·  A (SST) (orange, dashed)  ·  B — (unavail.) │
+│  [✎ Range]  [● Show P10-P90 bands]  [○ Median-only view]                   │
+│  Hover: P10/P50/P90 NPV for all variants simultaneously at cursor rate      │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Chart behaviour:**
-- X-axis: discount rate 3%–15% (configurable range via `[✎ Range]` inline button)
-- Y-axis: NPV in ¥M; zero line prominent (thicker border)
-- One line per non-retrain variant; Tier 3 variants excluded with a legend note
-- Current WACC marked with a vertical dotted reference line
-- IRR x-intercepts: where NPV = 0; marked with a small circle + label `"IRR: 11.2%"`
-- Hover tooltip: shows NPV at cursor rate for all lines simultaneously
-- Variants share the same x-axis range for direct comparison
+**Fan chart behaviour:**
+- **Per-variant color coding:** each variant gets a distinct hue (baseline = blue; A = orange; C = green; etc.). The median line is solid for baseline, dashed for variants. Fan bands use the same hue at 30% opacity (P25-P75) and 15% opacity (P10-P90).
+- **IRR markers:** both P50 IRR and P90 IRR x-intercepts are marked per variant on the zero line (small circles; P50 = filled, P90 = open). This gives the full "bankability spread" for each variant visually.
+- **Toggle controls:** `[● Show P10-P90 bands]` / `[○ Median-only view]` — default is bands shown; median-only reduces visual complexity for clean screenshots.
+- **Rate-slider interaction:** adjusting the WACC slider in the Assumptions panel live-updates the WACC reference line and re-discounts all M×N-variant series client-side (instant, same as §13 of stage_5_finance.md).
+- Tier 3 variants: excluded from chart, noted in legend as `B — (retrain required)`.
+- X-axis range configurable via `[✎ Range]` inline button (default 3%–15%).
+- Hover tooltip: P10/P50/P90 NPV for all shown variants simultaneously at cursor rate.
 
 ### 4.4 Results tab — Per-variant detail
 
@@ -266,7 +276,9 @@ The table has two sections: **Finance metrics** (IRR, NPV, MIRR, LCOE, Payback) 
 │  Config: #a1b2c3  ·  Eval: run-a1b2c3 / best_ckpt  ·  2026-06-10           │
 │                                                                              │
 │  HEADLINE METRICS                                                            │
-│  IRR 11.2%  ·  NPV ¥142M  ·  MIRR 9.8%  ·  LCOE ¥312/MWh  ·  Payback 8.3yr│
+│  IRR  8.2%  P50  ·  7.6% P90       NPV  ¥142M P50  ·  ¥118M P90            │
+│  MIRR  7.1% P50  ·  LCOE ¥312/MWh  ·  Payback 8.3yr P50                   │
+│  [▾ full distribution: P50/P75/P90/P99 + histogram]  M=50                  │
 │                                                                              │
 │  CASH FLOW (bar chart, year-by-year — same as Finance Stage ⑤)             │
 │  [chart — year 0 to 20, with battery replacement year marker]               │
@@ -436,7 +448,7 @@ Reuses from wizard_flow.md §10:
 - `PolicyLibrary` — policy + baseline selector (same component, same data)
 - `FinanceAssumptionsPanel` — full assumptions panel (read-only mode in Per-variant detail; edit mode in variant editor)
 - `AssumptionsStrip` — one-liner summary (shared assumptions bar above results table)
-- `NpvCurveChart` — NPV vs discount rate (multi-line variant of Finance Stage ⑤ chart)
+- `NpvFanChart` — NPV vs discount rate fan chart (multi-variant: one median + bands per variant; degrades to multi-line when M=1)
 - `CashFlowChart` — per-variant detail tab
 - `TornadoChart` — per-variant sensitivity
 
@@ -476,7 +488,11 @@ Tier (a) 0 (instant finance re-slice from same cash-flow series) is handled clie
 
 **Q2 — Shared-assumption mutation:** If the user edits the shared assumptions while some variants are Tier 2 (have eval results), does that trigger an instant finance re-projection on those variants (Tier 0/1)? Yes — changing only the discount-rate parameters should always be Tier 0. If CAPEX/OPEX in shared assumptions changes, it may push Tier 0 → Tier 1. The execution plan is always re-run server-side after any assumption change.
 
-**Q3 — Weather mode per variant:** In v1, all variants use the same weather mode (Synthetic M=1). Cross-variant weather comparisons (Synthetic vs Historical) are a v2 feature to avoid combinatorial complexity.
+**Q3 — Weather mode per variant:** In v1, all variants use the same weather mode and ensemble size M. Per-variant M override and cross-variant weather mode comparisons (Synthetic vs Historical) are deferred to v2. The ensemble size M is a workbench-level parameter, not a per-variant one — all variants in a comparison run share the same M.
+
+**Q5 — Delta method (seed-pairing):** The default Δ is delta-of-P50s (independent ensembles). If the backend supports seed-paired runs (same weather draws across variants), the `POST /api/compare/finance` response can include a `seed_paired_delta` field. The `ComparisonTable` will display it when present and update the `†` footnote accordingly. **finance-expert must rule in §13 which delta method is the default and whether seed-pairing is supported in v1.** This is a gate on the table schema in the frontend contract.
+
+**Q6 — Band toggle memory:** Should `[● Show P10-P90 bands]` / `[○ Median-only]` state persist across tab switches? Yes — user preference is sticky within the session. Noted for frontend-engineer's state management.
 
 **Q4 — Export format:** For the company demo, the primary output is likely a one-page PDF comparing two variants side-by-side. v1 will produce CSV + a raw-data dump. A formatted PDF report is v2.
 
@@ -503,4 +519,4 @@ Neutral (±0)          — #94a3b8 (slate)
 
 ---
 
-*docs/design/ux/comparison_workbench.md — ui-designer, task #67 — v0.1 2026-06-12 (initial design: variant model, execution tiers, layout, wireframes, component inventory) · v0.2 2026-06-12 (rl-architect v1.1 ruling: DELTA framework, NO-DOUBLE-COUNT, two-mode terminology observed/batch, (a)/(b)/(c) canonical tier labels, SST showcase path, vmapped batch eval for Tier (b), serving-/finance-expert ownership notes)*
+*docs/design/ux/comparison_workbench.md — ui-designer, task #67 — v0.1 2026-06-12 (initial design: variant model, execution tiers, layout, wireframes, component inventory) · v0.2 2026-06-12 (rl-architect v1.1 ruling: DELTA framework, NO-DOUBLE-COUNT, two-mode terminology observed/batch, (a)/(b)/(c) canonical tier labels, SST showcase path, vmapped batch eval for Tier (b), serving-/finance-expert ownership notes) · v0.3 2026-06-12 (USER directive: distribution-aware comparison — §4.2 table with P50+P90 columns per variant + delta-of-P50s default + seed-pairing footnote slot; §4.3 NpvFanChart multi-variant with per-variant bands + IRR P50/P90 markers + band-toggle control; §4.4 headline updated to P50/P90 pair; AssumptionsStrip M=50; §9 NpvCurveChart → NpvFanChart; Q5 delta-method gate on finance contract + Q6 band-toggle memory)*
