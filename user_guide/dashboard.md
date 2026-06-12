@@ -32,7 +32,7 @@ The headline is the **cumulative real-money cost** so far (`cost_total_real_yuan
 
 ### Monthly Peak
 
-Tracks the running **monthly peak grid import (MW)** — the quantity the demand charge is billed on (¥/kW·month). Shaving this peak is one of the agent's three levers, so this card shows the headroom against the current month's maximum.
+Tracks the running **monthly peak grid import (MW)** — the quantity the demand charge is billed on (¥/MW·month; `demand_rate_yuan_per_mw_month = 32 000`). Shaving this peak is one of the agent's three levers, so this card shows the headroom against the current month's maximum.
 
 ### Power Flows
 
