@@ -1,7 +1,7 @@
 # Five-Stage Pipeline Wizard — UX Flow & Interaction Design
 
 > **Owner:** ui-designer · **Task:** #65
-> **Status:** DRAFT v0.4 — adds full finance assumptions panel (all params front-loaded, CAPM decomposition, provenance badges, assumptions strip); closes Q1 stale-preserve + Q6 raw routes; all 6 questions resolved (2026-06-12)
+> **Status:** DRAFT v0.6 — v0.5 added Comparison Workbench sibling-view hooks; v0.6 addresses frontend-reviewer REQUEST_CHANGES (three edit classes, Class A no-modal, STALE scope, cost-table D13, §8 finance parity note)
 > **Gate:** USER reviews aesthetic direction before frontend contracts are written against this.
 > **Inputs:** master_plan_geo_finance.md (workstreams A/E), REBUILD_SPEC §3–§5, existing app at http://localhost:15174
 > **Pending reference:** D32 product-spine amendment (task #64) — once landed in `docs/design/`, supersedes any conflicts here
@@ -27,7 +27,7 @@ The existing app has three isolated routes (`/`, `/training`, `/eval`). The wiza
 
 ## 2. Stage dependency model — the core design rule
 
-### 2.0 Two edit classes — the product asymmetry *(rl-architect ruling + USER revision, 2026-06-12)*
+### 2.0 Three edit classes — the product asymmetry *(rl-architect ruling + USER revision, 2026-06-12)*
 
 The entire wizard UX is built on **one architectural asymmetry**:
 
@@ -105,7 +105,7 @@ Each stage has one of five states, shown in the wizard bar:
 **PENDING** — prerequisites met, stage not yet started.
 **IN_PROGRESS** — active work (training run / eval run / finance loading).
 **COMPLETE** — output exists and upstream is unchanged.
-**STALE** — output exists but an upstream stage was edited after it ran; results shown with amber banner "⚠ Config changed after this ran — results may not reflect current setup."
+**STALE** — output exists but an upstream stage was edited after it ran; results shown with amber banner "⚠ Config changed after this ran — results may not reflect current setup." *(Applies to Stages ①, ②, and ③ only. Stages ④ Eval and ⑤ Finance never enter STALE — they use provenance-based labeling on their result records instead; see §2.3.)*
 
 ### 2.3 State semantics per stage
 
@@ -288,7 +288,7 @@ Choose the training algorithm (SAC) and baseline policies to compare against. Co
 - **Reset to default** — restores all SAC params to spec §5 defaults
 - **Baseline selection** — checkboxes; at minimum one baseline must be selected for eval to be meaningful (soft warning if none; can override)
 - **No destructive state** — navigating back and forward preserves selections
-- **Class A confirmation** — algorithm and hyperparam changes are Class A (physical config) edits (rl-architect ruling). If stage is COMPLETE, any change triggers the same two-step modal as Config edits: "Changing algorithm will mark Train, Eval, and Finance as stale." Field reverts on Cancel.
+- **Class A — immediate, no modal** — algorithm and hyperparam changes are Class A (physical config) edits (rl-architect ruling). Changes take effect immediately: no blocking modal, no field revert on "cancel" (there is no cancel). If Stage ③ has existing results, an amber notice appears in Stage ③ only: "Algorithm or hyperparameters changed since the last training run. Start a new run to train with the current settings." Stage ④ and ⑤ are unaffected — existing eval results retain their provenance and remain fully valid (decoupled-eval model).
 
 ---
 
@@ -348,7 +348,7 @@ The existing TrainingPanel components mount here directly:
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                      │
 │  NOTE: You can navigate away and return — training continues         │
-│  in the background. Progress shown in wizard bar (⑤ amber spinner). │
+│  in the background. Progress shown in wizard bar (③ amber spinner). │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -437,7 +437,7 @@ POLICY LIBRARY
 │  ┌──────────────┬───────────┬──────────┬──────────────┬──────────┐  │
 │  │ # Policy      │ Env       │ Date     │ Total ¥/yr   │         │  │
 │  ├──────────────┼───────────┼──────────┼──────────────┼──────────┤  │
-│  │ 1 SAC abc-123 │ Gansu syn │ Jun 11   │ −18 420 000  │ [View]  │  │
+│  │ 1 SAC abc-123 │ Gansu syn │ Jun 11   │ −16 420 000  │ [View]  │  │
 │  │              │           │          │              │ [→ Fin.] │  │
 │  │ 2 SAC abc-123 │ Gansu his │ Jun 11   │ −17 890 000  │ [View]  │  │
 │  │              │           │          │              │ [→ Fin.] │  │
@@ -449,7 +449,7 @@ POLICY LIBRARY
 │  ┌─────────────────────┬──────────────┬──────────────┬───────────┐  │
 │  │ Metric              │ RL (SAC)     │ TOU Rule     │ No Bat    │  │
 │  ├─────────────────────┼──────────────┼──────────────┼───────────┤  │
-│  │ Total cost (¥/yr)   │ −18 420 000  │ −16 110 000  │ −22 880K  │  │
+│  │ Total cost (¥/yr)   │ −16 420 000  │ −15 110 000  │ −22 880K  │  │
 │  │ Energy cost (¥)     │ −12 340 000  │ −10 920 000  │ −19 450K  │  │
 │  │ Demand charge (¥)   │  −3 210 000  │  −3 890 000  │  −3 430K  │  │
 │  │ Degradation (¥)     │    −870 000  │    −300 000  │        0  │  │
@@ -459,9 +459,12 @@ POLICY LIBRARY
 │  │ Import (MWh/yr)     │    123 456   │    145 670   │    234K   │  │
 │  │ Bat throughput (MWh)│    234 567   │     89 340   │        0  │  │
 │  ├─────────────────────┼──────────────┼──────────────┼───────────┤  │
-│  │ vs No-Battery (¥)   │ ▲+4 460 000 │ ▲+6 770 000  │ baseline  │  │
+│  │ vs No-Battery (¥)   │ ▲+6 460 000 │ ▲+7 770 000  │ baseline  │  │
 │  └─────────────────────┴──────────────┴──────────────┴───────────┘  │
 │  (¥ nominal; negative = net cost; positive vs No-Bat = value added) │
+│  **D13 display invariant:** cost-component rows must sum exactly to   │
+│  the Total cost row. Any discrepancy is a display bug. Verified by   │
+│  the cost-sum assertion in the eval result schema (PR #34 class).    │
 │                                                                      │
 │  P50/P90/P99: v1 = point estimate (M=1 draw). Ensemble              │
 │  exceedances activate when §12 historical weather feeds M>1 draws.  │
@@ -588,6 +591,8 @@ Provenance badge key in wireframe: `[U]`=USER-set · `[B]`=benchmark-cited · `[
 | Eval basis switch | **~2–5 s** (server-side) | Full finance recompute from new operating data |
 
 The panel never disables controls during computation — the loading state appears in the results panel only.
+
+> **Class B client-side parity requirement** *(forward note — enforce in finance contract)*: The "Instant" rows above run IRR, MIRR, and NPV in TypeScript on the client. These must match the server-side finance engine to a defined tolerance: ≤ 0.01 pp for rate metrics (IRR, MIRR, WACC), ≤ ¥1 000 for NPV. The finance contract must include a shared test vector (at minimum: one positive-IRR scenario, one sub-WACC scenario, one multi-cycle replacement) so both implementations are verifiably equivalent. IRR in particular (Newton-Raphson root-find) is sensitive to convergence choices and iteration limits; if tolerance cannot be reliably guaranteed client-side, prefer keeping IRR server-side (Class C) rather than risking slider values that disagree with the next server recompute.
 
 #### CAPM decomposition — WACC build-up visible to the user
 - `r_f` (risk-free rate): selectable treasury tenor (1yr/5yr/10yr/30yr CNY, date-anchored); current value shown
@@ -784,4 +789,4 @@ After this flow document is reviewed and course-corrections incorporated:
 
 ---
 
-*docs/design/ux/wizard_flow.md — ui-designer, task #65 — v0.1 2026-06-11 · v0.2 (rl-architect ruling) · v0.3 (USER: decouple eval, policy library, composable scenarios, finance split) · v0.4 2026-06-12 (USER: full finance assumptions panel, CAPM decomposition, provenance badges, assumptions strip; Q1+Q6 closed — all 6 resolved) · v0.5 2026-06-12 (add Comparison Workbench sibling-view note + "Add to comparison" hooks at Config/Eval/Finance stages; §12 item 3; task #67)*
+*docs/design/ux/wizard_flow.md — ui-designer, task #65 — v0.1 2026-06-11 · v0.2 (rl-architect ruling) · v0.3 (USER: decouple eval, policy library, composable scenarios, finance split) · v0.4 2026-06-12 (USER: full finance assumptions panel, CAPM decomposition, provenance badges, assumptions strip; Q1+Q6 closed — all 6 resolved) · v0.5 2026-06-12 (add Comparison Workbench sibling-view note + "Add to comparison" hooks at Config/Eval/Finance stages; §12 item 3; task #67) · v0.6 2026-06-11 (frontend-reviewer REQUEST_CHANGES: three edit classes heading; Class A no-modal correct model; STALE scope ①②③ only; cost-table D13 invariant + corrected totals; §8 Class B client-side parity note)*
