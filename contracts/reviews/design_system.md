@@ -42,3 +42,22 @@
 
 **Verdict: REQUEST_CHANGES** — resolve #1 (honest a11y classification) + #2 (specify required
 exports); apply #3 and the minors. Hex values + test structure otherwise excellent.
+
+---
+
+## Re-review @ `f3bab6c` — APPROVE (contract+tests gate cleared)
+
+- **Date:** 2026-06-12 · **Verdict:** APPROVE
+
+All six findings resolved, verified by reading the doc + tests:
+1. **(must-fix) a11y honesty ✓** — faint-on-surface pulled out of the AA table into an explicit
+   "⚠ Known a11y gap — sub-AA-normal (3.23:1)" callout correctly identifying `.card__title` as
+   NORMAL text (12px/600); no AA claim via a large-text exemption. Suite-4 test renamed.
+2. **(should) exports specified ✓** — §6 defines the `PANELS: {key,color}[]` interface +
+   `SOC_LINE_COLOR/SOC_BOUNDS_COLOR/SOC_BAND_BG` signatures (the suite-6/7 requirement).
+3. §7 exact ratios ✓. 4. accent-blue "SOC line" removed ✓. 5. accent-grey forward-looking ✓.
+6. suite-5 style.css now strips CSS block comments ✓.
+
+Reviewer tests (exact-contrast pin + card-title sub-AA-normal, pre-refactor source-hex coverage,
+style.css CSS-comment stripping) intact and untouched. Approved suite = developer suites 1–9
+(faint test renamed) + the 3 reviewer blocks. **APPROVE** — clear to implement.
