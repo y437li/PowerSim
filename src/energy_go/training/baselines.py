@@ -938,13 +938,17 @@ class MpcPolicy:
             a_bat_lp = 0.0
 
         # Clip to SOC-feasible window derived from actual env_state.soc.
-        # The LP is solved in float64; the JAX env uses float32 — small rounding
-        # differences can overshoot SOC bounds.  Clipping to the live feasible
-        # window prevents violations without changing the LP objective.
-        soc_now   = float(env_state.soc)
-        a_ch_max  = min(1.0, (soc_max_f - soc_now) * bat_cap / (eta_ch * bat_pow))
-        a_dis_max = min(1.0, (soc_now - soc_min_f) * bat_cap * eta_dis / bat_pow)
-        a_bat_lp  = float(np.clip(a_bat_lp, -a_dis_max, a_ch_max))
+        # Same (1-1e-5) relative margin as DpOraclePolicy: the LP is float64 but
+        # the JAX env stores SOC in float32 — even a float64→float32 conversion
+        # in a_bat * bat_power can land 1 ULP above max_P_ch.  The margin
+        # (≈250 W on 50 MW, 80× float32 epsilon) absorbs that without affecting
+        # the LP objective.
+        soc_now    = float(env_state.soc)
+        _max_P_ch  = max(0.0, (soc_max_f - soc_now) * bat_cap / eta_ch)
+        _max_P_dis = max(0.0, (soc_now - soc_min_f) * bat_cap * eta_dis)
+        a_ch_max   = min(1.0, _max_P_ch  * (1.0 - 1e-5) / bat_pow)
+        a_dis_max  = min(1.0, _max_P_dis * (1.0 - 1e-5) / bat_pow)
+        a_bat_lp   = float(np.clip(a_bat_lp, -a_dis_max, a_ch_max))
 
         # Apply greedy renewable routing with LP's a_bat
         greedy = GreedyPolicy()
