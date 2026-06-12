@@ -184,7 +184,10 @@ def resolve_site(
             f"price_table_yuan_per_mwh must have exactly 24 entries; "
             f"got {len(price_table_raw)}"
         )
-    price_table = jnp.array(price_table_raw, dtype=jnp.float32)
+    # v2.0.0: build (12, 24) seasonal table; flat (24,) site YAML replicated ×12.
+    # Real per-month data arrives via tariff_model_schema; until then all rows are identical.
+    _row = jnp.array(price_table_raw, dtype=jnp.float32)  # shape (24,)
+    price_table = jnp.stack([_row] * 12, axis=0)           # shape (12, 24)
 
     # ------------------------------------------------------------------
     # Costs
@@ -253,7 +256,7 @@ def resolve_gansu(
     """Convenience: resolve the Gansu site (config/site_gansu.yaml).
 
     Acceptance gate: ``resolve_gansu()[0] == EnvParams()`` must hold bit-exactly
-    for all scalar fields and the ``(24,)`` price_table array.
+    for all scalar fields and the ``(12, 24)`` price_table array (v2.0.0: each row == PRICE_TABLE_YPW).
 
     Returns:
         (params, obs_dim=107, action_dim=6)

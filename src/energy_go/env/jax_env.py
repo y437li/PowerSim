@@ -39,6 +39,13 @@ PRICE_TABLE_YPW: jax.Array = jnp.array(
     dtype=jnp.float32,
 )
 
+# PRICE_TABLE_SEASONAL_YPW — shape (12, 24) ¥/MWh (v2.0.0)
+# Gansu: old (24,) row replicated ×12 — bit-identical parity for all (month, hour) lookups.
+# Real per-month data arrives via tariff_model_schema; until then all rows are identical.
+PRICE_TABLE_SEASONAL_YPW: jax.Array = jnp.stack(
+    [PRICE_TABLE_YPW] * 12, axis=0
+)  # shape (12, 24), dtype float32
+
 # MONTH_OF_STEP — shape (8761,) int32
 # MONTH_OF_STEP[t] = month index 0=Jan…11=Dec for step t ∈ [0,8759].
 # Extra element at index 8760 = 11 (safe t+1 lookup at t=8759).
@@ -101,9 +108,10 @@ class EnvParams(NamedTuple):
     forecast_sigma_max:          float = 0.10
     # Episode
     episode_len:                 int   = 168
-    # Tariff — was module-level PRICE_TABLE_YPW (§7 purity; PR #79 device_model_schema)
-    # Default preserves Gansu backward-compatibility: EnvParams() still Gansu-correct.
-    price_table:                 jax.Array = PRICE_TABLE_YPW  # shape (24,) float32 ¥/MWh
+    # Tariff — (12, 24) seasonal monthly table (v2.0.0; PR #79 → v2.0.0 reshape)
+    # Default is PRICE_TABLE_SEASONAL_YPW: Gansu (24,) replicated ×12 — bit-identical parity.
+    # Lookup: params.price_table[month, hour]; month = MONTH_OF_STEP[t].
+    price_table:                 jax.Array = PRICE_TABLE_SEASONAL_YPW  # shape (12,24) float32 ¥/MWh
 
 
 class EnvInfo(NamedTuple):
@@ -191,7 +199,7 @@ def get_obs(
         data[t, 2],                                                   # obs[2] temp °C
         data[t, 3],                                                   # obs[3] load MW
         state.soc,                                                    # obs[4] SOC fraction
-        params.price_table[h],                                        # obs[5] price ¥/MWh
+        params.price_table[month, h],                                  # obs[5] price ¥/MWh (v2.0.0: monthly lookup)
         state.month_peak / 500.0,                                     # obs[6] peak/500
         jnp.sin(2.0 * jnp.pi * h / 24.0),                           # obs[7]
         jnp.cos(2.0 * jnp.pi * h / 24.0),                           # obs[8]
@@ -214,7 +222,7 @@ def get_obs(
         wind_true  = data[t_fc, 0]
         irr_true   = data[t_fc, 1]
         load_true  = data[t_fc, 3]
-        price_true = params.price_table[t_fc % 24]
+        price_true = params.price_table[MONTH_OF_STEP[t_fc], t_fc % 24]  # v2.0.0: monthly lookup
 
         fc_wind  = jnp.clip(wind_true  * (1.0 + eps[0]), 0.0, 25.0) / 20.0
         fc_irr   = jnp.clip(irr_true   * (1.0 + eps[1]), 0.0) / 1000.0
@@ -448,8 +456,9 @@ def step(
     # ------------------------------------------------------------------
     # STEP 8 — Price lookup (D7, D8)
     # ------------------------------------------------------------------
-    hour = (t % 24).astype(jnp.int32)
-    price_buy = params.price_table[hour]
+    hour  = (t % 24).astype(jnp.int32)
+    month = MONTH_OF_STEP[t]                                   # v2.0.0: month for seasonal lookup
+    price_buy = params.price_table[month, hour]                # v2.0.0: (12,24) indexed by (month, hour)
 
     # 3-way RNG split: price-spread, forecast-noise, new state key
     rng_spread, rng_fc_init, new_rng = jax.random.split(state.rng, 3)

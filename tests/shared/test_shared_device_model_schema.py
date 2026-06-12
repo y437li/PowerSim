@@ -8,7 +8,7 @@ Tests are RED at contract time (resolver + config files not yet implemented).
 They turn GREEN after Workstream B implementation.
 
 FIRST ACCEPTANCE GATE: resolve_gansu() == EnvParams() bit-parity on all scalar
-fields AND the (24,) price_table array (see TestGansuParity).
+fields AND the (12,24) price_table array (v2.0.0: each row == PRICE_TABLE_YPW).
 
 All expected values are hand-derived from the contract §8 mapping table and the
 current EnvParams() defaults (which the resolver must reproduce exactly).
@@ -42,6 +42,8 @@ jax_env = pytest.importorskip(
 )
 EnvParams = jax_env.EnvParams
 PRICE_TABLE_YPW = jax_env.PRICE_TABLE_YPW
+# v2.0.0: new module-level seasonal constant
+PRICE_TABLE_SEASONAL_YPW = getattr(jax_env, "PRICE_TABLE_SEASONAL_YPW", None)
 
 # ---------------------------------------------------------------------------
 # Expected Gansu values (hand-derived from contract §8 + current EnvParams defaults)
@@ -127,11 +129,14 @@ class TestYamlSchema:
         )
 
     def test_schema_version_present(self):
-        """schema_version field must be present.  The specific version string is
-        asserted by the versioned tests (e.g. test_schema_version_is_1_1_0); this
-        stays version-agnostic so it survives §11-sanctioned minor bumps (1.x.y)
-        without breaking.  Option-A fix: backend-reviewer approved, rl-architect
-        confirmed (2026-06-12 — PR #86 CI failure, stale == '1.0.0' assertion).
+        """schema_version field must be present (presence-only — version strings evolve).
+
+        Option A: backend-reviewer-approved on PR #86, rl-architect-confirmed.
+        The specific version string is asserted by the versioned test
+        TestV200VersionString.test_schema_version_is_2_0_0; this stays
+        version-agnostic so it survives §11-sanctioned version bumps without
+        breaking.  Rebase note: main's Option A is the later, reviewer-approved
+        resolution — restored here after a wrong conflict-side pick in the rebase.
         """
         with open(_DEVICE_MODELS_PATH) as f:
             doc = yaml.safe_load(f)
@@ -499,56 +504,73 @@ class TestGansuParity:
 
     # --- Tariff array (THE NEW FIELD — the critical part of the parity gate) ---
 
+    # --- v2.0.0 shape: (12, 24) ---
+
     def test_price_table_shape(self, resolved):
-        """price_table must be shape (24,) float32."""
+        """price_table must be shape (12, 24) float32 (v2.0.0 seasonal reshape).
+
+        v1.0.0 was (24,); v2.0.0 reshapes to (12, 24) months × hours.
+        Gansu: all 12 rows are identical (replicated ×12 parity).
+        """
         params, _, _ = resolved
-        # After refactor, price_table is a JAX array; convert to numpy for comparison
         table = np.asarray(params.price_table)
-        assert table.shape == (24,), (
-            f"price_table shape must be (24,); got {table.shape}"
+        assert table.shape == (12, 24), (
+            f"price_table shape must be (12, 24) after v2.0.0 reshape; got {table.shape}"
         )
         assert table.dtype == np.float32, (
             f"price_table dtype must be float32; got {table.dtype}"
         )
 
     def test_price_table_values(self, resolved):
-        """price_table values match the Gansu TOU tariff exactly (D8).
+        """Each of the 12 monthly rows matches the Gansu TOU tariff exactly (D8, replicated ×12).
 
         Hand-derived: Valley=250, Mid=450, Peak=620, Critical-peak=780 ¥/MWh.
         h=0–6 Valley, h=7 Mid, h=8–10 Peak, h=11 Crit, h=12–17 Mid,
         h=18 Peak, h=19–20 Crit, h=21–22 Peak, h=23 Valley.
+        All 12 months must equal this row (replicated ×12 until real seasonal data).
         """
         params, _, _ = resolved
         table = np.asarray(params.price_table)
-        np.testing.assert_array_equal(
-            table, _EXPECTED_PRICE_TABLE,
-            err_msg="price_table does not match Gansu TOU tariff (D8)",
-        )
+        for m in range(12):
+            np.testing.assert_array_equal(
+                table[m], _EXPECTED_PRICE_TABLE,
+                err_msg=f"price_table[{m}] does not match Gansu TOU tariff (D8)",
+            )
 
     def test_price_table_equals_module_constant(self, resolved):
-        """resolve_gansu().price_table must equal the existing PRICE_TABLE_YPW module constant."""
+        """resolve_gansu().price_table[m, h] == PRICE_TABLE_YPW[h] for all months m.
+
+        Bit-identity parity: v2.0.0 seasonal lookup is transparent for Gansu data.
+        """
         params, _, _ = resolved
-        np.testing.assert_array_equal(
-            np.asarray(params.price_table),
-            np.asarray(PRICE_TABLE_YPW),
-            err_msg=(
-                "resolve_gansu().price_table != PRICE_TABLE_YPW: "
-                "backward-compatibility broken"
-            ),
-        )
+        table = np.asarray(params.price_table)
+        flat = np.asarray(PRICE_TABLE_YPW)
+        for m in range(12):
+            np.testing.assert_array_equal(
+                table[m], flat,
+                err_msg=(
+                    f"resolve_gansu().price_table[{m}] != PRICE_TABLE_YPW: "
+                    "seasonal-parity broken for month {m}"
+                ),
+            )
 
     def test_price_table_equals_envparams_default(self):
-        """EnvParams().price_table must equal PRICE_TABLE_YPW (default preserved)."""
-        # This test does not depend on the resolver — it checks the EnvParams refactor.
+        """EnvParams().price_table must be (12,24) with each row == PRICE_TABLE_YPW."""
+        # This test does not depend on the resolver — checks the EnvParams v2.0.0 refactor.
         params = EnvParams()
         assert hasattr(params, "price_table"), (
             "EnvParams must have a 'price_table' field after the §5 refactor"
         )
-        np.testing.assert_array_equal(
-            np.asarray(params.price_table),
-            np.asarray(PRICE_TABLE_YPW),
-            err_msg="EnvParams().price_table != PRICE_TABLE_YPW",
+        table = np.asarray(params.price_table)
+        assert table.shape == (12, 24), (
+            f"EnvParams().price_table.shape must be (12, 24); got {table.shape}"
         )
+        flat = np.asarray(PRICE_TABLE_YPW)
+        for m in range(12):
+            np.testing.assert_array_equal(
+                table[m], flat,
+                err_msg=f"EnvParams().price_table[{m}] != PRICE_TABLE_YPW",
+            )
 
     # --- Parametrized all-fields parity sweep (future-proof gate) ---
 
@@ -1140,10 +1162,11 @@ class TestUnitCounts:
 
 
 # ===========================================================================
-# v1.1.0 tests — economics field catalogue (task #57, contract §1.3–§1.4)
+# economics tests — field catalogue (task #57, contract §1.3–§1.4)
 # ===========================================================================
-# All tests below are RED at contract time (device_models.yaml still has
-# economics: {} stubs).  They turn GREEN after the v1.1.0 YAML implementation.
+# Rebase note (post-PR-#87): these tests remain valid — economics fields exist
+# in device_models.yaml v2.0.0.  schema_version bumped 1.1.0→2.0.0 (price_table
+# reshape); TestV200VersionString below reflects the final version.
 #
 # These tests do NOT import JAX / the resolver — they operate purely on
 # YAML content.  That means they run even if jaxlib is unavailable.
@@ -1162,13 +1185,13 @@ def _load_dm() -> dict:
 # §11 version string
 # ---------------------------------------------------------------------------
 
-class TestV110VersionString:
-    """schema_version bumps to 1.1.0 when economics fields land (additive; merges first off v1.0.0)."""
+class TestV200VersionString:
+    """schema_version is 2.0.0 after price_table reshape (PR #87, rebased on v1.1.0 economics)."""
 
-    def test_schema_version_is_1_1_0(self):
+    def test_schema_version_is_2_0_0(self):
         dm = _load_dm()
-        assert dm["schema_version"] == "1.1.0", (
-            f"expected schema_version '1.1.0', got {dm['schema_version']!r}"
+        assert dm["schema_version"] == "2.0.0", (
+            f"expected schema_version '2.0.0' (v2.0.0 after price_table reshape), got {dm['schema_version']!r}"
         )
 
 
@@ -1570,3 +1593,294 @@ class TestGansuEconomicsValues:
         # Contracted: 40.0 yr
         val = self._econ("pcc-substation-945mw")["lifetime_years"]
         assert val == pytest.approx(40.0, rel=1e-6), f"got {val}"
+# v2.0.0 tests — price_table (24,)→(12,24) seasonal reshape
+# ===========================================================================
+# rl-architect ruling: combined contract+impl PR; parity bit-identity is the
+# acceptance gate.  Tests are GREEN with the implementation (combined flow).
+#
+# The 4 tests above (test_price_table_shape, _values, _equals_module_constant,
+# _equals_envparams_default) were UPDATED from v1.0.0 shapes to v2.0.0 shapes
+# as part of this PR's re-review scope.
+# ===========================================================================
+
+
+class TestPriceTableSeasonalConstant:
+    """PRICE_TABLE_SEASONAL_YPW exists, is (12,24), and each row == PRICE_TABLE_YPW."""
+
+    def test_seasonal_constant_exists(self):
+        """jax_env exports PRICE_TABLE_SEASONAL_YPW after v2.0.0."""
+        assert PRICE_TABLE_SEASONAL_YPW is not None, (
+            "energy_go.env.jax_env must export PRICE_TABLE_SEASONAL_YPW (v2.0.0)"
+        )
+
+    def test_seasonal_constant_shape(self):
+        """PRICE_TABLE_SEASONAL_YPW.shape == (12, 24)."""
+        table = np.asarray(PRICE_TABLE_SEASONAL_YPW)
+        assert table.shape == (12, 24), (
+            f"PRICE_TABLE_SEASONAL_YPW.shape must be (12, 24); got {table.shape}"
+        )
+
+    def test_seasonal_constant_dtype(self):
+        """PRICE_TABLE_SEASONAL_YPW.dtype == float32."""
+        assert np.asarray(PRICE_TABLE_SEASONAL_YPW).dtype == np.float32
+
+    def test_seasonal_constant_each_row_equals_flat(self):
+        """Each of the 12 monthly rows must equal PRICE_TABLE_YPW bit-exactly.
+
+        Arithmetic: PRICE_TABLE_SEASONAL_YPW = jnp.stack([PRICE_TABLE_YPW]*12).
+        jnp.stack of identical float32 arrays → all rows are byte-identical.
+        """
+        flat = np.asarray(PRICE_TABLE_YPW)
+        seasonal = np.asarray(PRICE_TABLE_SEASONAL_YPW)
+        for m in range(12):
+            np.testing.assert_array_equal(
+                seasonal[m], flat,
+                err_msg=f"PRICE_TABLE_SEASONAL_YPW[{m}] != PRICE_TABLE_YPW (not replicated-×12)",
+            )
+
+
+class TestResolverBuildsSeasonal:
+    """Resolver builds (12, 24) price_table from a flat (24,) site YAML input."""
+
+    def test_resolver_price_table_shape_from_flat_input(self, tmp_path):
+        """resolve_site() with price_table_yuan_per_mwh=[24] → params.price_table.shape==(12,24).
+
+        Hand-computed: resolver receives a list of 24 floats → stacks ×12 → shape (12,24).
+        """
+        import yaml as _yaml
+        dm = {
+            "schema_version": "2.0.0",
+            "models": {
+                "vestas-v150-4.2": {
+                    "type": "wind_turbine",
+                    "physics": {"v_cutin_mps": 3.0, "v_rated_mps": 12.0,
+                                "v_cutout_mps": 25.0, "hub_height_m": 105.0,
+                                "rated_mw_per_unit": 4.2},
+                    "economics": {},
+                },
+                "trina-vertex-n-670w": {
+                    "type": "pv_panel",
+                    "physics": {"k_T_per_c": -0.003, "eta_inverter": 0.97,
+                                "degradation_yr1": 0.98},
+                    "economics": {},
+                },
+                "catl-lmp-300mwh": {
+                    "type": "battery",
+                    "physics": {"eta_ch": 0.97, "eta_dis": 0.97, "soc_min": 0.2,
+                                "soc_max": 0.9, "capacity_mwh_per_unit": 300.0,
+                                "power_mw_per_unit": 100.0},
+                    "economics": {},
+                },
+                "pcc-substation-945mw": {
+                    "type": "grid_connection",
+                    "physics": {"max_export_mw": 945.0, "max_import_mw": 400.0},
+                    "economics": {},
+                },
+            },
+        }
+        site = {
+            "assets": {
+                "wind": {"model": "vestas-v150-4.2", "fleet_rated_mw": 615.0},
+                "solar": {"model": "trina-vertex-n-670w", "fleet_capacity_mw": 330.0},
+                "battery": {"model": "catl-lmp-300mwh",
+                            "fleet_capacity_mwh": 294.5, "fleet_power_mw": 98.16},
+                "grid": {"model": "pcc-substation-945mw"},
+            },
+            "tariff": {
+                "price_table_yuan_per_mwh": [float(x) for x in _EXPECTED_PRICE_TABLE]
+            },
+            "costs": {
+                "c_deg_yuan_per_mwh": 10.0, "voll_yuan_per_mwh": 20000.0,
+                "curtail_yuan_per_mwh": 800.0,
+                "demand_rate_yuan_per_mw_month": 32000.0,
+                "soc_penalty_yuan_per_mwh": 20000.0, "reward_scale": 1e-5,
+                "price_spread_yuan_per_mwh": 30.0, "price_spread_sigma": 10.0,
+            },
+            "forecast": {"sigma_max": 0.10},
+        }
+        dm_path = tmp_path / "device_models.yaml"
+        site_path = tmp_path / "site.yaml"
+        with open(dm_path, "w") as f:
+            _yaml.dump(dm, f)
+        with open(site_path, "w") as f:
+            _yaml.dump(site, f)
+
+        params, obs_dim, action_dim = resolve_site(str(site_path), str(dm_path))
+        table = np.asarray(params.price_table)
+        assert table.shape == (12, 24), (
+            f"resolve_site() must build (12,24) price_table from 24-entry flat input; got {table.shape}"
+        )
+        assert table.dtype == np.float32
+        # Every row must equal the input flat table
+        flat = np.array([float(x) for x in _EXPECTED_PRICE_TABLE], dtype=np.float32)
+        for m in range(12):
+            np.testing.assert_array_equal(
+                table[m], flat,
+                err_msg=f"resolve_site() price_table[{m}] != input flat table (not replicated-×12)",
+            )
+
+
+class TestMonthIndexedLookupParity:
+    """month-indexed lookup params.price_table[month, h] == PRICE_TABLE_YPW[h] for all months.
+
+    This is the acceptance gate: if this holds, the seasonal reshape is a behavioral no-op
+    for all Gansu scenarios.
+    """
+
+    @pytest.fixture(scope="class")
+    def resolved(self):
+        """Same fixture as TestGansuParity.resolved — class-scoped fixtures are not
+        visible to sibling classes in pytest, so the fixture must be duplicated here.
+        Fix approved by backend-reviewer (PR #87, 2026-06-11): strictly additive,
+        no assertion changed.
+        """
+        params, obs_dim, action_dim = resolve_gansu(_DEVICE_MODELS_PATH)
+        return params, obs_dim, action_dim
+
+    def test_all_months_all_hours_bit_identical(self, resolved):
+        """params.price_table[m, h] == PRICE_TABLE_YPW[h] for m in [0,11], h in [0,23].
+
+        Arithmetic: PRICE_TABLE_SEASONAL_YPW = stack([PRICE_TABLE_YPW]*12).
+        For any (month, hour), the lookup value is identical to the v1.0.0 flat lookup.
+        Total: 12 × 24 = 288 assertions.
+        """
+        params, _, _ = resolved
+        table = np.asarray(params.price_table)
+        flat = np.asarray(PRICE_TABLE_YPW)
+        for m in range(12):
+            for h in range(24):
+                assert table[m, h] == flat[h], (
+                    f"price_table[{m}, {h}] = {table[m, h]} != PRICE_TABLE_YPW[{h}] = {flat[h]}"
+                )
+
+    def test_envparams_default_month_indexed_lookup(self):
+        """EnvParams().price_table[m, h] == PRICE_TABLE_YPW[h] for all (m, h).
+
+        This proves that code using params.price_table[MONTH_OF_STEP[t], hour] produces
+        the same result as the old PRICE_TABLE_YPW[hour] for every step of a Gansu episode.
+        """
+        params = EnvParams()
+        flat = np.asarray(PRICE_TABLE_YPW)
+        table = np.asarray(params.price_table)
+        # Spot-check all 12 months at the 4 canonical Gansu price tiers
+        # Valley (h=0): 250 ¥/MWh; Peak (h=8): 620 ¥/MWh
+        # Mid (h=7): 450 ¥/MWh; Critical-peak (h=11): 780 ¥/MWh
+        # Arithmetic: valley=250, mid=450, peak=620, crit=780 — from the Gansu TOU table
+        for m in range(12):
+            assert table[m, 0]  == pytest.approx(250.0, abs=1e-3), f"month {m} h=0 (Valley)"
+            assert table[m, 7]  == pytest.approx(450.0, abs=1e-3), f"month {m} h=7 (Mid)"
+            assert table[m, 8]  == pytest.approx(620.0, abs=1e-3), f"month {m} h=8 (Peak)"
+            assert table[m, 11] == pytest.approx(780.0, abs=1e-3), f"month {m} h=11 (Critical-peak)"
+            assert table[m, 23] == pytest.approx(250.0, abs=1e-3), f"month {m} h=23 (Valley)"
+
+    def test_step_output_parity_fixed_seed(self):
+        """A 24-step episode with EnvParams() produces finite costs/obs under v2.0.0.
+
+        Parity argument: price_table[MONTH_OF_STEP[t], hour] == PRICE_TABLE_YPW[hour]
+        for all t ∈ [0,8759], so c_import_yuan and r_export_yuan are unchanged step-by-step.
+
+        Uses inline zero data (no dependency on data_gen, which is not yet implemented).
+        Smoke test: reward not NaN, total import cost finite and non-negative.
+
+        Three bugs fixed per FREEZE PROTOCOL (rl-architect): (1) replaced data_gen
+        import+skip with zero data — data_gen not yet implemented, skip was masking
+        bugs 2 and 3; (2) reset(rng, data, params) → reset(rng, params, data) —
+        actual signature is reset(key, params, data); (3) step returns
+        (new_state, obs, reward, done, info) so unpack as (state, _, reward, done, info),
+        not (state, reward, done, _, info) which mis-assigned obs→reward.
+        """
+        import math
+        import jax
+        import jax.numpy as jnp
+        from energy_go.env.jax_env import reset, step
+        rng = jax.random.PRNGKey(42)
+        params = EnvParams()
+
+        # Synthetic data: zeros (no wind/irradiance/load → zero generation, zero demand).
+        # Sufficient for smoke test: step executes, c_import=0, reward=0, no NaN.
+        data = jnp.zeros((8760, 4), dtype=jnp.float32)
+
+        state, obs = reset(rng, params, data)   # fixed: params before data
+        total_cost = 0.0
+        for _ in range(24):
+            action = jnp.zeros(6)  # neutral: no battery, equal fractions
+            rng, _ = jax.random.split(rng)
+            state, _, reward, done, info = step(state, action, params, data)  # fixed: discard obs
+            total_cost += float(info.c_import_yuan)
+            assert not bool(jnp.isnan(reward)), "reward must not be NaN"
+        # Cost must be finite and non-negative
+        assert total_cost >= 0.0, f"total import cost = {total_cost} must be ≥ 0"
+        assert math.isfinite(total_cost), "total cost must be finite"
+
+
+# ---------------------------------------------------------------------------
+# Month-selection mechanism — the identical-rows parity suite is STRUCTURALLY
+# BLIND to a month-index bug (all 12 Gansu rows equal, so MONTH_OF_STEP[t]
+# could be off-by-one or constant and every parity test still passes). These
+# two classes verify the month-selection mechanism the seasonal/tariff path
+# will depend on.  (backend-reviewer, PR #87)
+# ---------------------------------------------------------------------------
+
+class TestMonthOfStepCalendar:
+    """# reviewer: backend-reviewer — MONTH_OF_STEP calendar boundaries (PR #87).
+
+    Pins the non-leap 8760-hour calendar so a transposition/leap-year slip in
+    _DAYS_PER_MONTH is caught — which the identical-rows price parity suite cannot.
+    Hand-derived (_DAYS_PER_MONTH = [31,28,31,30,31,30,31,31,30,31,30,31]):
+      Jan = 31*24 = 744 h  -> indices 0..743 are month 0; index 744 = Feb 1 -> month 1.
+      Jan+Feb = (31+28)*24 = 1416 h -> indices ..1415 month 1; 1416 = Mar 1 -> month 2.
+      last real step 8759 = Dec 31 23:00 -> month 11; sentinel [8760] = 11 (safe t+1).
+    """
+
+    def test_month_of_step_boundaries(self):
+        from energy_go.env.jax_env import MONTH_OF_STEP
+        m = np.asarray(MONTH_OF_STEP)
+        assert m.shape == (8761,), f"expected (8761,) incl. t+1 sentinel; got {m.shape}"
+        assert m[0]    == 0,  f"t=0 (Jan 1 00:00) must be month 0; got {m[0]}"
+        assert m[743]  == 0,  f"t=743 (Jan 31 23:00) must be month 0; got {m[743]}"
+        assert m[744]  == 1,  f"t=744 (Feb 1 00:00) must be month 1; got {m[744]}"
+        assert m[1415] == 1,  f"t=1415 (Feb 28 23:00) must be month 1; got {m[1415]}"
+        assert m[1416] == 2,  f"t=1416 (Mar 1 00:00) must be month 2; got {m[1416]}"
+        assert m[8759] == 11, f"t=8759 (Dec 31 23:00) must be month 11; got {m[8759]}"
+        assert m[8760] == 11, f"sentinel [8760] must be 11 (Dec); got {m[8760]}"
+
+
+class TestMonthSelectionDistinctTable:
+    """# reviewer: backend-reviewer — get_obs selects the RIGHT month (PR #87).
+
+    Injects a synthetic price_table where every (month, hour) cell is DISTINCT
+    (synthetic[m, h] = m*24 + h) so a month off-by-one in the obs[5] lookup is
+    observable — the exact failure the identical-rows Gansu parity suite cannot
+    detect (there, price_table[wrong_month, h] == price_table[right_month, h]).
+
+    obs[5] = params.price_table[MONTH_OF_STEP[t], t % 24].  Hand-derived expecteds:
+      t=0    -> (month 0,  hour 0)  -> 0*24 + 0  = 0.0
+      t=744  -> (month 1,  hour 0)  -> 1*24 + 0  = 24.0
+      t=8759 -> (month 11, hour 23) -> 11*24 + 23 = 287.0
+    All exactly representable in float32 (integers ≤ 287), so assert == exactly.
+    """
+
+    def test_get_obs_price_uses_correct_month(self):
+        import jax
+        import jax.numpy as jnp
+        from energy_go.env.jax_env import EnvParams, EnvState, get_obs, MONTH_OF_STEP
+
+        synthetic = jnp.arange(12 * 24, dtype=jnp.float32).reshape(12, 24)  # [m,h]=m*24+h
+        params = EnvParams(price_table=synthetic)
+        data = jnp.zeros((8760, 4), dtype=jnp.float32)  # obs[5] is independent of data
+
+        expected = {0: 0.0, 744: 24.0, 8759: 287.0}
+        for t, exp in expected.items():
+            st = EnvState(
+                soc=jnp.float32(0.5),
+                month_peak=jnp.float32(0.0),
+                t=jnp.int32(t),
+                rng=jax.random.PRNGKey(0),
+            )
+            obs = get_obs(st, params, data)
+            month, hour = int(MONTH_OF_STEP[t]), t % 24
+            assert float(obs[5]) == exp, (
+                f"t={t}: obs[5]={float(obs[5])} but expected {exp} "
+                f"(MONTH_OF_STEP[{t}]={month}, hour={hour}, synthetic[{month},{hour}]={month*24+hour}) "
+                f"— month-index lookup is wrong"
+            )
