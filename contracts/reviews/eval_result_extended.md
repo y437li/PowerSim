@@ -3,32 +3,39 @@
 **Reviewer:** backend-reviewer · **Routing:** training area (backend-reviewer binding gate; not shared)
 **Tests:** `tests/training/test_training_eval_result_extended.py`
 
-## Stage 1 — contract + tests gate: APPROVE (stream-shaped revision @ 91c641a + reviewer restore)
+## Stage 1 — contract + tests gate: APPROVE (v3 stream-keyed @ 67e9033)
 
-### Design
-Extends `PolicyEvalResult` 9 → **36** fields (9 existing wire-locked + 27 new), stream-shaped per
-finance §5.3. All new fields are **pure accumulation/derivation of existing EnvInfo** — zero new
-physics, zero LOCKED-env touch (my forward-looking flag was heeded):
-- `generation_mwh = Σ(p_wind_mw + p_pv_mw)` (LCOE denominator), `bat_throughput_mwh = Σ(p_bat_ch_mw
-  + p_bat_dis_mw)` (cycle-life/VarOM) — existing fields.
-- `demand_billing_mw_month = demand_charge_yuan / params.demand_rate_yuan_per_mw_month` — a pure
-  **derivation** (no new EnvInfo field); reconciliation `billing × rate = demand_charge_yuan` tested.
+### Design (v3, per rl-architect D31/F1 architectural ruling)
+`PolicyEvalResult` gains `streams: dict[str, StreamAccumulator]` where
+`StreamAccumulator(volume, value_yuan)` is a 2-leaf NamedTuple. 6 rev4 keys pre-declared:
+`grid_export`, `grid_import`, `demand_charge`, `h2_sale`, `avoided_cost`, `token_sale`
+(last three = zero placeholders, no structural change needed to activate). Plus the
+physical-quantity accumulators. All `value_yuan` are **real year-1 ¥** (D31/F1 constant-real;
+escalation is finance-layer post-eval). Pure accumulation/derivation of existing EnvInfo —
+no new physics, no LOCKED-env touch.
 
 ### Verified
-- **Wire isolation — STRONG.** `test_policy_dict_has_exactly_9_keys` still asserts the *exact* 9-key
-  set on the fully-populated 36-field result → any leak to the LOCKED `eval_compare` wire fails.
-- **Scope creep — NONE.** All `info.*` accumulation sources cross-checked against EnvInfo; no
-  EnvInfo/eval_compare LOCKED change → no DECISION needed. h2/avoided/token confirmed v1-out-of-scope
-  (tests guard against their presence).
-- **Identities/hand-values** — wind/pv/bat conservation, D13 cost (`energy_cost = c_import − r_export`),
-  generation/throughput decomposition, demand-billing reconciliation — all with correct hand-values.
+- **Wire isolation — STRONG.** `test_wire_has_exactly_9_locked_keys` asserts the exact 9-key
+  set on the full v3 result, and `assert "streams" not in wire` — the `streams` dict does NOT
+  leak to the LOCKED `eval_compare` wire. ✓
+- **D13 identity — correct.** `energy_cost_yuan == streams["grid_import"].value_yuan −
+  streams["grid_export"].value_yuan` (= Σc_import − Σr_export = Σc_energy); both import+export
+  and export-dominant cases tested. ✓
+- **`demand_charge` (D31/F1) — correct.** `volume = max(c_demand_charge_yuan)/demand_rate` =
+  annual peak MW (the highest monthly peak); `value_yuan = Σ c_demand_charge_yuan` (total).
+  Tested separately (volume=5.0, value=800 in the worked case) — correctly does NOT assert a
+  `volume×rate=value` identity (they are different quantities in v3). ✓
+- **Conservation / hand-values** — wind/pv/bat conservation, generation/throughput
+  decomposition, the 8 identities all tested with correct hand-computed values.
+- **Scope creep — NONE.** No EnvInfo or eval_compare LOCKED change → no DECISION needed.
 
-### Reviewer-added cases (2, `# reviewer:`, hand-derived)
-- `test_aggregate_curtailed_equals_per_source_sum` — `curtailed_mwh == Σ per-source curtailed`.
-- `test_grid_import_equals_to_bat_plus_to_load` — `grid_import_mwh == grid_to_bat + grid_to_load`;
-  **cross-checks the F-IMPORT §3.6-row-9 fix**.
+### Reviewer-added cases (2, `# reviewer:`)
+- `test_aggregate_curtailed_equals_per_source_sum` — unchanged from v2 (`curtailed_mwh ==
+  Σ per-source curtailed`).
+- `test_grid_import_volume_equals_to_bat_plus_to_load` — **adapted** for v3 (LHS now
+  `streams["grid_import"].volume`); same F-IMPORT §3.6-row-9 physics assertion, adaptation
+  disclosed in the docstring. Reviewer-verified: the adaptation preserves the cross-check.
 
-### Process note
-These 2 cases (originally @ 2b12566) + this review record were **dropped by the 91c641a revision**;
-restored. Fifth reviewer-artifact drop across PRs — pre-push `git diff <prior-HEAD>..HEAD` must be
-adopted to catch `# reviewer:` / `contracts/reviews/` deletions.
+### Lineage
+v2 (flat 36-field) was APPROVED @ d61bc27; rl-architect ruled the stream-keyed structure → v3.
+Reviewer cases survived the v3 restructure (grid-import correctly adapted, not dropped).
