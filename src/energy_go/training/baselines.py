@@ -595,7 +595,7 @@ class DpOraclePolicy:
         """Return the DP-optimal a_bat for step t, with greedy renewable fractions.
 
         Args:
-            env_state: EnvState (uses env_state.t)
+            env_state: EnvState (uses env_state.t and env_state.soc)
             step_data: (4,) array — [wind, irr, temp, load]
             params:    EnvParams
 
@@ -604,11 +604,28 @@ class DpOraclePolicy:
         """
         # JAX dynamic indexing — valid inside lax.scan / @jax.jit
         # (do NOT use int(env_state.t): concretizing a traced value fails in jit)
-        a_bat = self.optimal_actions[env_state.t]  # scalar float32 JAX array
+        a_bat = self.optimal_actions[env_state.t].astype(jnp.float32)
+
+        # Clip to the SOC-feasible window using the actual env_state.soc.
+        # The DP was solved on a discretized float64 SOC grid; the JAX env uses
+        # float32 — trajectories diverge over 8760 steps, causing SOC bound
+        # violations. Clipping to the live feasible window prevents this.
+        a_ch_max = jnp.minimum(
+            1.0,
+            (params.soc_max - env_state.soc) * params.bat_capacity_mwh
+            / (params.bat_eta_ch * params.bat_power_mw),
+        )
+        a_dis_max = jnp.minimum(
+            1.0,
+            (env_state.soc - params.soc_min) * params.bat_capacity_mwh
+            * params.bat_eta_dis / params.bat_power_mw,
+        )
+        a_bat = jnp.clip(a_bat, -a_dis_max, a_ch_max)
+
         # Use greedy renewable routing fractions; override only a_bat with DP value
         greedy = GreedyPolicy()
         greedy_action = greedy.action(env_state, step_data, params)
-        return greedy_action.at[0].set(a_bat.astype(jnp.float32))
+        return greedy_action.at[0].set(a_bat)
 
 
 # ---------------------------------------------------------------------------
@@ -911,8 +928,14 @@ class MpcPolicy:
         else:
             a_bat_lp = 0.0
 
-        # Clip to valid range
-        a_bat_lp = float(np.clip(a_bat_lp, -1.0, 1.0))
+        # Clip to SOC-feasible window derived from actual env_state.soc.
+        # The LP is solved in float64; the JAX env uses float32 — small rounding
+        # differences can overshoot SOC bounds.  Clipping to the live feasible
+        # window prevents violations without changing the LP objective.
+        soc_now   = float(env_state.soc)
+        a_ch_max  = min(1.0, (soc_max_f - soc_now) * bat_cap / (eta_ch * bat_pow))
+        a_dis_max = min(1.0, (soc_now - soc_min_f) * bat_cap * eta_dis / bat_pow)
+        a_bat_lp  = float(np.clip(a_bat_lp, -a_dis_max, a_ch_max))
 
         # Apply greedy renewable routing with LP's a_bat
         greedy = GreedyPolicy()
