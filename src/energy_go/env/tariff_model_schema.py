@@ -186,6 +186,12 @@ def validate_tariff_region(region_dict: dict) -> ValidationResult:
     errors: list[ValidationIssue] = []
     warnings: list[ValidationIssue] = []
 
+    # Non-dict input: return empty result (non-raising, mirrors config_validation §3.2).
+    # The resolver only feeds parsed-YAML dicts; this guard is a belt-and-suspenders
+    # consistency measure noted by backend-reviewer in the PR #91 code audit.
+    if not isinstance(region_dict, dict):
+        return ValidationResult(errors=errors, warnings=warnings)
+
     # ------------------------------------------------------------------
     # E-TARIFF-SHAPE — price_table must be exactly shape (12, 24)
     # Checks ALL rows explicitly to catch ragged tables (row-0-only sampling misses
@@ -216,18 +222,20 @@ def validate_tariff_region(region_dict: dict) -> ValidationResult:
         # ---------------------------------------------------------------
         # W-TARIFF-PRICE-NEG — any price entry < 0 (only when shape is valid)
         # Fire once on first negative cell found (avoids issue flooding).
+        # Non-numeric cells are silently skipped (safe_float returns None).
         # ---------------------------------------------------------------
         for m, row in enumerate(raw_table):
             for h, v in enumerate(row):
-                if float(v) < 0.0:
+                v_f = _safe_float(v)
+                if v_f is not None and v_f < 0.0:
                     warnings.append(ValidationIssue(
                         rule_id="W-TARIFF-PRICE-NEG",
                         field="price_table_yuan_per_mwh",
                         message=(
-                            f"W-TARIFF-PRICE-NEG: price_table[{m}][{h}]={float(v):.1f} < 0 "
+                            f"W-TARIFF-PRICE-NEG: price_table[{m}][{h}]={v_f:.1f} < 0 "
                             f"(unusual for CN market)"
                         ),
-                        constraint=f"price_table[{m}][{h}]={float(v):.1f} < 0",
+                        constraint=f"price_table[{m}][{h}]={v_f:.1f} < 0",
                     ))
                     # One warning is sufficient; break out of both loops.
                     break
@@ -322,6 +330,20 @@ def validate_tariff_region(region_dict: dict) -> ValidationResult:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _safe_float(value: object) -> "float | None":
+    """Convert to float; return None on failure (None input, non-numeric, NaN string).
+
+    Mirrors config_validation._safe_float — used to avoid bare float() raises on
+    non-numeric table cells (noted by backend-reviewer PR #91 code audit).
+    """
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
 
 def _check_table_shape(raw_table: object) -> bool:
     """Return True iff raw_table has exactly shape (12, 24) with no ragged rows.
