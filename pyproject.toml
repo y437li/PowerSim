@@ -61,6 +61,16 @@ dev = [
     "jsonschema>=4.21",
     "starlette>=0.36",
 ]
+# Historical weather data pipeline — fetch/cache (Open-Meteo API), Parquet store,
+# wind-shear transform, and block bootstrap.  Install with:
+#   pip install -e ".[weather]"
+# These are lazy-imported inside energy_go.data so the JAX core stays dep-free.
+weather = [
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    "requests>=2.31",
+]
+
 # Training dependencies — install with:  pip install -e ".[training]"
 # IMPORTANT: the SAC-in-JAX library is "sbx-rl" on PyPI (NOT "sbx" which is a flashcard app).
 training = [
@@ -85,4 +95,5 @@ addopts = "-q"
 asyncio_mode = "auto"
 markers = [
     "slow: marks tests as slow (full install + venv creation); deselect with -m 'not slow'",
+    "network: marks tests that require live network access; deselect with -m 'not network'",
 ]
