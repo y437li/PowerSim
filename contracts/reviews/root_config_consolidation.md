@@ -44,3 +44,21 @@
 
 **Verdict: REQUEST_CHANGES** — fix #1 (include + the suite-6 assertion) and #2 (webServer.cwd +
 §3.4 text). The migration is otherwise well-specified.
+
+---
+
+## Re-review @ `8e74a29` — APPROVE (contract+tests gate cleared)
+
+- **Date:** 2026-06-12 · **Verdict:** APPROVE
+
+Both must-fixes resolved, verified by reading doc + tests:
+1. **tsconfig.app.json include ✓** — §3.2 specifies `["src"] → ["../src"]` with the
+   `.config/src`-nonexistent → "No inputs found" → CI-build-break rationale; suite-6 test now
+   asserts `toContain("../src")` + `not.toContain("src")` (no longer enforces the broken value).
+2. **webServer.cwd ✓** — §3.4 corrected to "defaults to the config file's directory, not the
+   process CWD"; shows `cwd: path.resolve(__dirname, '../..')` as REQUIRED; suite-8 has a
+   webServer.cwd climbs-to-root test.
+
+Reviewer tests (include-resolves-to-real-dir, webServer-cwd-climbs-to-root) intact + untouched —
+they cover the should-fix (functional-ish verification of the two risk paths). Approved suite =
+developer suites + the 2 reviewer blocks. **APPROVE** — clear to implement.
