@@ -4,6 +4,14 @@
 //           contracts/frontend/root_config_consolidation.md §3.4
 import { defineConfig, devices } from '@playwright/test';
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+// ESM polyfill for __dirname: `"type": "module"` in package.json means CJS globals
+// (__dirname, __filename) are not defined. Node.js loads this config natively in ESM
+// mode (no CJS polyfill). path.dirname(fileURLToPath(import.meta.url)) is the
+// standard Node.js ESM equivalent.
+// Contract: contracts/frontend/root_config_consolidation.md §3.4
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ENERGY_GO_FRONTEND_PORT: port Vite dev server binds to (default 5173).
 // When unset the value is identical to the previous hardcoded constant.
