@@ -1,11 +1,13 @@
-schema_version: "1.0.0"
+schema_version: "1.1.0"
 # Device model library — physics constants keyed by LOCKED registry.json IDs (D23).
 # Non-overridable constants (see contracts/shared/device_model_schema.md §3.1):
 #   wind_turbine: v_cutin_mps, v_rated_mps, v_cutout_mps
 #   pv_panel:     k_T_per_c, eta_inverter
 #   battery:      eta_ch, eta_dis, soc_min, soc_max
 # Site-overridable and fleet params come from config/site_<name>.yaml.
-# economics: {} is a reserved hook for the finance workstream (resolver ignores it).
+# economics: consumed by finance workstream (Workstreams C/D); resolver ignores all economics fields.
+# Source: 2024/25 Chinese utility-scale market benchmarks (IRENA/NEA public data).
+# Values are initial estimates — to be refined by task #63 benchmark library.
 
 models:
 
@@ -18,7 +20,15 @@ models:
       v_cutout_mps:     25.0    # m/s  — cut-out (§3.1, non-overridable)
       hub_height_m:    105.0    # m    — model default; site-overridable
       rated_mw_per_unit: 4.2    # MW   — nameplate per turbine
-    economics: {}
+    economics:
+      capex_per_kw_yuan:             5800.0   # ¥/kW  — ≈800 USD/kW; onshore wind China 2024
+      opex_fixed_per_kw_year_yuan:    180.0   # ¥/kW·yr — ≈25 USD/kW·yr
+      opex_var_per_mwh_yuan:            0.0   # ¥/MWh — negligible at this scale; captured in fixed
+      lifetime_years:                  25.0   # yr    — IEC Class III design life
+      replacement_cost_fraction:        0.15  # —     — major overhaul (not full replacement) at EOL
+      residual_value_fraction:          0.05  # —     — scrap value
+      construction_months:             18.0   # months
+      decommissioning_cost_per_kw_yuan: 100.0 # ¥/kW
 
   # ---- Solar PV ----
   trina-vertex-n-670w:
@@ -27,7 +37,15 @@ models:
       k_T_per_c:        -0.003  # /°C  — temperature coefficient (§3.2, non-overridable)
       eta_inverter:      0.97   # —    — inverter efficiency (non-overridable)
       degradation_yr1:   0.98   # —    — year-1 output fraction; site-overridable
-    economics: {}
+    economics:
+      capex_per_kw_yuan:             3200.0   # ¥/kW  — ≈450 USD/kW; utility PV China 2024
+      opex_fixed_per_kw_year_yuan:     80.0   # ¥/kW·yr — ≈11 USD/kW·yr
+      opex_var_per_mwh_yuan:            0.0   # ¥/MWh
+      lifetime_years:                  25.0   # yr
+      replacement_cost_fraction:        0.20  # —     — inverter replacement
+      residual_value_fraction:          0.02  # —
+      construction_months:             12.0   # months
+      decommissioning_cost_per_kw_yuan:  60.0 # ¥/kW
 
   # ---- Battery ----
   catl-lmp-300mwh:
@@ -39,7 +57,19 @@ models:
       soc_max:              0.9     # —   — max SOC fraction (D4, non-overridable)
       capacity_mwh_per_unit: 300.0  # MWh — nameplate energy per unit
       power_mw_per_unit:    100.0   # MW  — nameplate charge/discharge power per unit
-    economics: {}
+    economics:
+      capex_energy_per_kwh_yuan:      1000.0  # ¥/kWh — ≈140 USD/kWh; LFP grid-scale China 2024
+      capex_power_per_kw_yuan:           0.0  # ¥/kW  — bundled into energy CAPEX for LFP
+      opex_fixed_per_kwh_year_yuan:     20.0  # ¥/kWh·yr — ≈2.8 USD/kWh·yr
+      opex_var_per_mwh_yuan:             0.0  # ¥/MWh
+      lifetime_years:                   12.0  # yr    — LFP calendar life at ≥80% SOH
+      cycle_life_full_equiv:          6000.0  # cycles — LFP at 0.8 EOL; 1 cycle/day × 12yr ≈ 4380; 6k gives head-room
+      eol_soh_threshold:                 0.80 # —     — 80% remaining capacity triggers replacement
+                                              #         schema bound: (0,1); Gansu default in plausible LFP range (0.7–0.9)
+      replacement_cost_fraction:         0.70 # —     — cell+BMS replacement; learning-curve reduction vs original
+      residual_value_fraction:           0.05 # —
+      construction_months:               6.0  # months
+      decommissioning_cost_per_kwh_yuan: 30.0 # ¥/kWh
 
   # ---- Grid connection ----
   pcc-substation-945mw:
@@ -47,4 +77,9 @@ models:
     physics:
       max_export_mw: 945.0  # MW — PCC export limit (D5); site-overridable
       max_import_mw: 400.0  # MW — grid import limit (D12); site-overridable
-    economics: {}
+    economics:
+      capex_lump_sum_yuan:          0.0     # ¥ — site-specific; sunk cost at Gansu; operators override per-site
+      opex_fixed_per_mw_year_yuan:  5000.0  # ¥/MW·yr — ≈700 USD/MW·yr; transmission service fee
+      lifetime_years:               40.0    # yr
+      residual_value_fraction:       0.10   # —
+      decommissioning_cost_yuan:     0.0    # ¥
