@@ -127,12 +127,15 @@ class TestYamlSchema:
         )
 
     def test_schema_version_present(self):
-        """schema_version: '1.0.0' must be present."""
+        """schema_version field must be present.  The specific version string is
+        asserted by the versioned tests (e.g. test_schema_version_is_1_1_0); this
+        stays version-agnostic so it survives §11-sanctioned minor bumps (1.x.y)
+        without breaking.  Option-A fix: backend-reviewer approved, rl-architect
+        confirmed (2026-06-12 — PR #86 CI failure, stale == '1.0.0' assertion).
+        """
         with open(_DEVICE_MODELS_PATH) as f:
             doc = yaml.safe_load(f)
-        assert doc.get("schema_version") == "1.0.0", (
-            f"Expected schema_version '1.0.0'; got {doc.get('schema_version')!r}"
-        )
+        assert doc.get("schema_version") is not None, "schema_version field missing"
 
     def test_all_gansu_model_ids_present(self):
         """All 4 LOCKED registry IDs must appear in device_models.yaml."""
