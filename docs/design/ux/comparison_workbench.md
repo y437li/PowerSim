@@ -1,11 +1,13 @@
 # Comparison Workbench — UX Design
 
 > **Owner:** ui-designer · **Task:** #67
-> **Status:** DRAFT v0.1 — initial design (2026-06-12)
+> **Status:** DRAFT v0.2 — incorporates rl-architect v1.1 spine ruling (2026-06-12)
 > **Gate:** USER reviews aesthetic direction before frontend contracts are written against this.
 > **Inputs:** wizard_flow.md (sibling doc), master_plan_geo_finance.md §5, REBUILD_SPEC §3–§5
 > **USER directive:** "有个地方可以多选,然后跑simulation根据算法看finance projection"
-> **USER ruling (headless):** Workbench does NOT connect to the 3D simulator or live dashboard. No streaming, no 3D scene. Runs use the headless batch-eval path. Results are tables + charts. Think "analysis report", not "mission control."
+> **USER ruling (headless):** Workbench does NOT connect to the 3D simulator or live dashboard. No streaming, no 3D scene. Results are tables + charts. Think "analysis report", not "mission control."
+> **rl-architect ruling (v1.1 spine amendment):** VARIANT-TIERING = stage-invalidation DAG applied to a variant set: (a) finance-assumption or cost-only-device-swap variants → re-slice cached cash flows, INSTANT; (b) dispatch-relevant diffs → vmapped batch eval; (c) no-compatible-policy → retrain required. UNIFIES `/api/finance/compare` (policy) + View II (battery-incremental) into one any-variant-vs-baseline DELTA framework. finance-expert OWNS delta-accounting correctness (baseline designation + NO-DOUBLE-COUNT). TWO EVAL MODES: observed (wizard ④/dashboard: telemetry + D24 pacing + 3D) vs batch (workbench: vmapped, OFF-WIRE #82 accumulators, no telemetry/pacing). Same env + accumulators, different surfaces. Workbench = batch mode only.
+> **Area owners:** frontend (workbench UI) · serving (orchestration contract — name the 2 modes) · finance-expert (delta math) · rl-architect (variant-set tiering in v1.1 spine amendment)
 
 ---
 
@@ -52,6 +54,10 @@ variant = {
 
 **Baseline designation.** One variant (default: the first added) is the baseline. All other variants' metric columns show delta values against the baseline: `+2.1 pp IRR` (green), `−¥42M NPV` (red), `+0.8 yr payback` (amber). The baseline column shows absolute values only.
 
+**DELTA framework — unified any-variant-vs-baseline** *(rl-architect v1.1 spine ruling)*. The workbench unifies the existing `/api/finance/compare` (policy-vs-policy) and View II (battery-incremental vs no-battery baseline) into one any-variant-vs-baseline delta framework. Every workbench result column is a delta against the designated baseline — not an isolated absolute projection. This removes two separate "compare" surfaces (the old policy compare endpoint and the View I/II toggle) and replaces them with a single general mechanism: pick a baseline, pick variants, delta everything.
+
+**NO-DOUBLE-COUNT constraint** *(owned by finance-expert)*. When two or more variants share the same dispatch results (same policy + same eval result, differing only in CAPEX/OPEX or finance assumptions), the delta applies only to the cost/revenue side — the operational cash flows are re-used from the cached eval, not re-run. The finance expert must ensure that variants sharing a dispatch are delta-projected consistently: no variant's operating revenue is counted twice, and the baseline's operational contribution is not subtracted more than once across the variant set. The `POST /api/compare/plan` response will indicate which variants share a dispatch root so the UI can label shared-dispatch variant groups.
+
 **Shared vs. per-variant assumptions.** The workbench has two modes:
 
 | Mode | When to use | Behaviour |
@@ -67,29 +73,37 @@ Switching from Shared → Per-variant seeds each variant's snapshot from the cur
 
 When the user clicks **[Run missing]**, the workbench determines what each variant needs. This is determined server-side: `POST /api/compare/plan` takes the variant list and returns an execution plan with a tier label per variant.
 
-### The four tiers
+### The four tiers *(rl-architect v1.1 spine: (a)/(b)/(c) canonical labels)*
 
 ```
 ┌──────────┬────────────────────────────────────┬──────────────────┬───────────┐
 │ Tier     │ What differs                       │ Duration         │ Visual    │
 ├──────────┼────────────────────────────────────┼──────────────────┼───────────┤
-│ 0 Instant│ Finance assumptions only            │ < 1 s            │ ⚡        │
-│          │ (same policy + same eval result)    │ client-side      │           │
+│ (a) 0    │ Finance assumptions only, OR        │ < 1 s            │ ⚡        │
+│ Instant  │ cost-only device swap (e.g. SST     │ client-side      │           │
+│          │ grid connection = CAPEX diff only)  │ re-slices cached │           │
+│          │ — same policy + same eval result    │ cash flows       │           │
 ├──────────┼────────────────────────────────────┼──────────────────┼───────────┤
-│ 1 Fast   │ CAPEX/OPEX or tax/debt structure    │ ~1–5 s           │ ⚡        │
-│          │ (same eval result, different costs) │ server-side      │           │
+│ (a) 1    │ CAPEX/OPEX or tax/debt structure    │ ~1–5 s           │ ⚡        │
+│ Fast     │ change (same eval result, different │ server-side      │           │
+│          │ cost structure) — F1 dividend path  │ finance recalc   │           │
 ├──────────┼────────────────────────────────────┼──────────────────┼───────────┤
-│ 2 Eval   │ Dispatch-relevant config diff       │ seconds–minutes  │ ▶         │
-│          │ (compatible policy exists)          │ headless batch   │           │
+│ (b) 2    │ Dispatch-relevant config diff;      │ seconds–minutes  │ ▶         │
+│ Eval     │ compatible policy exists →          │ vmapped batch    │           │
+│          │ vmapped batch eval, batch mode only │ eval (batch mode)│           │
 ├──────────┼────────────────────────────────────┼──────────────────┼───────────┤
-│ 3 Retrain│ No compatible policy for this       │ N/A (manual)     │ ⚠         │
-│          │ config — must train first           │                  │           │
+│ (c) 3    │ No compatible policy for this       │ N/A (manual)     │ ⚠         │
+│ Retrain  │ config — §2.2 compat check fails   │                  │           │
 └──────────┴────────────────────────────────────┴──────────────────┴───────────┘
 ```
 
-**Dispatch-relevant config diff** means: any change that alters the observation space, action space, or physics parameters that affect optimal dispatch — e.g. different device count (changes obs_dim), different battery size or C-rate, different PCC limit, adding/removing a load type. A CAPEX-only change that doesn't affect physics is Tier 0/1.
+**SST-vs-traditional = showcase path for (a).** The company demo (grid-SST vs traditional substation) is a cost-only-device-swap when the SST's physics parameters are identical (only CAPEX differs). This is deliberately the ⚡ Tier 0/1 instant path — the demo must snap to results without queuing an eval run. If the SST changes dispatch-relevant physics (e.g. different loss coefficients or PCC power limit), it becomes Tier (b) — batch eval queued.
+
+**Dispatch-relevant config diff** means: any change that alters the observation space, action space, or physics parameters that affect optimal dispatch — e.g. different device count (changes obs_dim), different battery size or C-rate, different PCC limit, adding/removing a load type. A CAPEX-only change that doesn't affect physics is Tier (a) 0/1.
 
 **Compatible policy** = the existing policy's `obs_dim` and `action_dim` match the new config's resolved dimensions (same check as Stage ④ compatibility check: `GET /api/eval/check-compat`).
+
+**Tier (b) batch eval** uses the vmapped batch eval path from PR #82 (OFF-WIRE accumulators, no telemetry/pacing). The workbench never uses observed mode (telemetry + D24 pacing + 3D animation). See §7.
 
 ### Visual treatment per tier
 
@@ -370,17 +384,30 @@ The workbench is reachable from three points in the wizard. In each case, clicki
 
 ---
 
-## 7. Headless batch-eval — design constraints
+## 7. Two eval modes — design constraint (rl-architect v1.1 ruling)
 
-**No streaming.** Headless evals return a single result when complete. The workbench polls `GET /api/compare/run/{run_id}/status` at a reasonable interval (every 5 s) until `status == "complete"`. No WebSocket needed for the workbench.
+The rl-architect v1.1 spine amendment defines two canonical eval modes that share the same env + accumulators but target different surfaces:
+
+| Mode | Where | Surface | Pacing | 3D | Output |
+|------|-------|---------|--------|----|--------|
+| **Observed** | Wizard ④ · Live dashboard | Telemetry WS stream | D24 real-time pacing | ✓ 3D scene animation | Live metrics + replay |
+| **Batch** | Workbench (this doc) | OFF-WIRE (#82 accumulators) | vmapped, no pacing | ✗ never | Static accumulator results |
+
+Batch mode = same env + same accumulators as observed mode, different surface. PR #82 (OFF-WIRE accumulators) enables this split — no new env mechanism needed. The workbench **exclusively** uses batch mode.
+
+**No streaming.** Batch evals return a single result when complete. The workbench polls `GET /api/compare/run/{run_id}/status` every 5 s until `status == "complete"`. No WebSocket needed for the workbench.
 
 **No 3D.** The workbench route never mounts `SceneMountPoint`. No telemetry store, no animation loop.
+
+**No D24 pacing.** Batch eval runs at full vmapped speed — not gated to real-time display. Duration is determined by compute, not wall-clock step pacing.
 
 **Duration estimates.** The execution plan endpoint returns an estimated duration per variant. The [Run missing] button label shows: `▶ Run 2 evals (~4 min total)`. During runs, a compact progress bar appears inside the variant row (not a full-screen modal).
 
 **Partial results.** If the workbench has N variants and only M < N are ready, the results tab shows the M ready variants' data with "─ (running)" or "─ (retrain required)" cells for the rest. The user does not wait for all variants before seeing any results.
 
-**Concurrent runs.** The backend may run multiple headless evals concurrently (vmap-based). The workbench does not need to model this — it submits a run batch via `POST /api/compare/run` and polls for completion.
+**Concurrent runs.** The backend runs multiple headless evals concurrently (vmap-based). The workbench submits a run batch via `POST /api/compare/run` and polls for completion — it does not model backend parallelism.
+
+**Serving-engineer contract note.** The orchestration contract (`contracts/serving/`) must name both modes and specify how the API surfaces them. The workbench calls the batch-mode path; the wizard ④ / dashboard calls the observed-mode path. Naming is serving-engineer's decision; this doc uses "batch" and "observed" as working terms.
 
 ---
 
@@ -432,12 +459,14 @@ These endpoints are needed for the workbench. They are design-level notes; the a
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `POST /api/compare/plan` | POST | Takes variant list; returns execution plan (tier per variant, duration estimates) |
-| `POST /api/compare/run` | POST | Submits batch headless eval for Tier 2 variants; returns `run_id` |
+| `POST /api/compare/plan` | POST | Takes variant list; returns execution plan (tier per variant, duration estimates, shared-dispatch groups) |
+| `POST /api/compare/run` | POST | Submits Tier (b) variants for batch-mode eval; returns `run_id`; batch mode = vmapped, OFF-WIRE |
 | `GET /api/compare/run/{run_id}/status` | GET | Poll for batch eval completion; returns `{status, results_by_variant_id}` |
-| `POST /api/compare/finance` | POST | Server-side finance projection for Tier 1 variants (CAPEX/OPEX/tax/debt); same logic as serving_engineer's existing finance endpoint |
+| `POST /api/compare/finance` | POST | Server-side finance Δ-projection for Tier (a) 1 variants (CAPEX/OPEX/tax/debt); re-slices cached cash flows; NO-DOUBLE-COUNT logic enforced here |
 
-Tier 0 (instant finance re-projection from same cash-flow series) is handled client-side, same as Finance Stage ⑤ Class B parameters.
+Tier (a) 0 (instant finance re-slice from same cash-flow series) is handled client-side, same as Finance Stage ⑤ Class B parameters.
+
+**Contract ownership:** serving-engineer owns the orchestration contract for `compare/run` (must formally distinguish observed-mode vs batch-mode eval in the contract). finance-expert owns the delta-accounting logic in `compare/finance` (NO-DOUBLE-COUNT correctness).
 
 ---
 
@@ -474,4 +503,4 @@ Neutral (±0)          — #94a3b8 (slate)
 
 ---
 
-*docs/design/ux/comparison_workbench.md — ui-designer, task #67 — v0.1 2026-06-12 (initial design: variant model, execution tiers, layout, wireframes, component inventory)*
+*docs/design/ux/comparison_workbench.md — ui-designer, task #67 — v0.1 2026-06-12 (initial design: variant model, execution tiers, layout, wireframes, component inventory) · v0.2 2026-06-12 (rl-architect v1.1 ruling: DELTA framework, NO-DOUBLE-COUNT, two-mode terminology observed/batch, (a)/(b)/(c) canonical tier labels, SST showcase path, vmapped batch eval for Tier (b), serving-/finance-expert ownership notes)*
