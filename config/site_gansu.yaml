@@ -29,9 +29,15 @@ assets:
     # max_export_mw and max_import_mw not overridden — use model defaults (945 / 400 MW)
 
 tariff:
-  # Gansu TOU tariff — 24 entries, index = hour 0–23 (D8)
-  # Valley=250, Mid=450, Peak=620, Critical-peak=780 ¥/MWh
+  # Gansu TOU tariff — flat 24-entry vector, index = hour 0–23 (D8).
+  # Valley=250, Mid=450, Peak=620, Critical-peak=780 ¥/MWh.
   # At Δt=1h all steps land on :00; the (24,) table is exact for hourly dispatch.
+  # resolver.py inline-tariff path reads this as (24,) and replicates ×12 → (12,24)
+  # internally (backward-compat; resolver.py lines 228-229).
+  # NOTE: config_validation.py with device_model_schema v2.0.0 requires (12,24) in
+  # the site dict passed to validate() — that's the request-body convention for the
+  # POST /api/site/validate endpoint; the disk YAML stays (24,) for the resolver.
+  # The inconsistency is tracked (see jax-env-engineer flag).
   price_table_yuan_per_mwh:
     [250, 250, 250, 250, 250, 250, 250,   # h=0–6   Valley  (23:00–07:00)
      450,                                  # h=7     Mid

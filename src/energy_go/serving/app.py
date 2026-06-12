@@ -13,10 +13,11 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from energy_go.serving import rest_api, inference_stream, training_proxy
+from energy_go.serving import rest_api, inference_stream, training_proxy, geo_site_api
 
 log = logging.getLogger(__name__)
 
@@ -73,6 +74,7 @@ app.add_middleware(
 app.include_router(rest_api.router)
 app.include_router(inference_stream.router)
 app.include_router(training_proxy.router)
+app.include_router(geo_site_api.router)
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +102,33 @@ async def validation_error_handler(request: Request, exc) -> JSONResponse:
         status_code=422,
         content={"error": "validation error", "detail": str(detail) if detail else None},
     )
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Convert Pydantic request-body validation errors to HTTP 400 for geo routes.
+
+    Contract (geo_site_api.md §2): malformed body, missing required field,
+    or out-of-range parameter → 400 for /api/site/, /api/tariff/, /api/devices/.
+
+    All other routes (training_proxy, rest_api, inference_stream) use FastAPI's
+    default 422 so their approved contracts are not affected.
+    """
+    _GEO_PREFIXES = ("/api/site/", "/api/tariff/", "/api/devices/")
+    if any(request.url.path.startswith(p) for p in _GEO_PREFIXES):
+        errors = exc.errors()
+        first_msg = errors[0]["msg"] if errors else "invalid request"
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": first_msg,
+                "code": "REQUEST_VALIDATION_ERROR",
+            },
+        )
+    # Non-geo routes: preserve original FastAPI 422 behaviour
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
 if __name__ == "__main__":
