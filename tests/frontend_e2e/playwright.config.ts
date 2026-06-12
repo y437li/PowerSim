@@ -6,12 +6,12 @@ import { defineConfig, devices } from '@playwright/test';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-// ESM polyfill for __dirname: `"type": "module"` in package.json means CJS globals
-// (__dirname, __filename) are not defined. Node.js loads this config natively in ESM
-// mode (no CJS polyfill). path.dirname(fileURLToPath(import.meta.url)) is the
-// standard Node.js ESM equivalent.
+// configDir: directory of this config file (tests/frontend_e2e/).
+// "type": "module" in package.json means Node.js loads Playwright configs in
+// ESM mode; CJS globals are not available. fileURLToPath(import.meta.url)
+// gives the current file path; path.dirname() extracts its directory.
 // Contract: contracts/frontend/root_config_consolidation.md §3.4
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const configDir = path.dirname(fileURLToPath(import.meta.url));
 
 // ENERGY_GO_FRONTEND_PORT: port Vite dev server binds to (default 5173).
 // When unset the value is identical to the previous hardcoded constant.
@@ -46,7 +46,7 @@ export default defineConfig({
     // Without this, `npm run dev` would launch Vite from tests/frontend_e2e/ and
     // fail to find vite.config.ts / index.html (both at repo root).
     // Contract: contracts/frontend/root_config_consolidation.md §3.4
-    cwd: path.resolve(__dirname, '../..'),
+    cwd: path.resolve(configDir, '../..'),
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,
   },
