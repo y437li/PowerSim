@@ -1286,12 +1286,18 @@ class TestEconomicsFieldTypes:
         ])
 
     def test_battery_economics_types(self):
+        # reviewer: backend-reviewer — added eol_soh_threshold and
+        # decommissioning_cost_per_kwh_yuan: both are presence-checked in
+        # TestEconomicsFieldPresence but were omitted from the numeric/≥0
+        # type sweep (all 9 other battery fields + every wind/pv/grid field
+        # get it). Without this a string/null/negative in either slips through.
         self._check_float_fields("catl-lmp-300mwh", [
             "capex_energy_per_kwh_yuan", "capex_power_per_kw_yuan",
             "opex_fixed_per_kwh_year_yuan", "opex_var_per_mwh_yuan",
             "lifetime_years", "cycle_life_full_equiv",
+            "eol_soh_threshold",
             "replacement_cost_fraction", "residual_value_fraction",
-            "construction_months",
+            "construction_months", "decommissioning_cost_per_kwh_yuan",
         ])
 
     def test_grid_economics_types(self):
@@ -1338,11 +1344,19 @@ class TestEconomicsValueRanges:
             f"cycle_life_full_equiv={val} outside [1000, 15000]"
         )
 
-    def test_battery_eol_soh_threshold_is_fraction(self):
-        # EOL SOH typically 0.7–0.9 for LFP
+    def test_battery_eol_soh_threshold_plausible_for_gansu_default(self):
+        # reviewer: backend-reviewer — reframed from a schema-bound check to a
+        # Gansu-DEFAULTS plausibility guard (rl-architect lock ruling, PR #86).
+        # The SCHEMA validity bound for eol_soh_threshold is (0, 1) per contract
+        # §1.3 — a config author MAY set e.g. 0.45. This test runs only on the
+        # shipped Gansu YAML, so it asserts the tighter band the shipped default
+        # should fall in (LFP EOL SOH ≈ 0.7–0.9). It is INTENTIONALLY stricter
+        # than the schema bound; it guards the default, not the schema. Do not
+        # cite this band as the schema constraint.
         val = self._econ("catl-lmp-300mwh")["eol_soh_threshold"]
         assert 0.5 < val < 1.0, (
-            f"eol_soh_threshold={val} must be ∈ (0.5, 1.0)"
+            f"Gansu default eol_soh_threshold={val} outside plausible (0.5, 1.0) "
+            f"— schema bound is the wider (0,1); see contract §1.3/§1.4"
         )
 
     def test_all_replacement_cost_fractions_in_range(self):
@@ -1452,6 +1466,41 @@ class TestResolverIgnoresEconomics:
             else:
                 assert v_pop == pytest.approx(v_str, rel=1e-9), (
                     f"EnvParams.{field} = {v_pop} (populated) vs {v_str} (stripped)"
+                )
+
+    def test_resolver_succeeds_with_economics_key_absent(self, tmp_path):
+        # reviewer: backend-reviewer — gate-completeness (rl-architect required, PR #86).
+        # Contract §1.3 GUARANTEES the resolver succeeds "whether or not [economics]
+        # is present; missing = unavailable to C/D, not an error." The whole
+        # no-re-LOCK rationale rests on absent ≡ present for resolution. The
+        # sibling test above covers economics: {} (empty dict); this covers the
+        # KEY-ABSENT path, which is a DISTINCT code path — a resolver doing
+        # entry["economics"] would KeyError on absence while tolerating {}.
+        # Bit-parity vs the populated YAML proves the absent block is truly ignored.
+        with open(_DM_PATH) as f:
+            dm_absent = yaml.safe_load(f)
+        for entry in dm_absent["models"].values():
+            entry.pop("economics", None)            # remove the key entirely
+        absent_path = tmp_path / "device_models_no_economics.yaml"
+        with open(absent_path, "w") as f:
+            yaml.dump(dm_absent, f)
+
+        params_populated, obs_dim, action_dim = resolve_gansu(str(_DM_PATH))
+        params_absent, obs_dim2, action_dim2 = resolve_gansu(absent_path)
+
+        assert obs_dim == obs_dim2 == 107
+        assert action_dim == action_dim2 == 6
+        for field in EnvParams._fields:
+            v_pop = getattr(params_populated, field)
+            v_abs = getattr(params_absent, field)
+            import jax.numpy as jnp
+            if hasattr(v_pop, "__len__"):
+                assert jnp.allclose(jnp.array(v_pop), jnp.array(v_abs), rtol=1e-9), (
+                    f"EnvParams.{field} differs between populated and key-absent economics"
+                )
+            else:
+                assert v_pop == pytest.approx(v_abs, rel=1e-9), (
+                    f"EnvParams.{field} = {v_pop} (populated) vs {v_abs} (key-absent)"
                 )
 
 
