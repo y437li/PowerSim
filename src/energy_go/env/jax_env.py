@@ -101,6 +101,9 @@ class EnvParams(NamedTuple):
     forecast_sigma_max:          float = 0.10
     # Episode
     episode_len:                 int   = 168
+    # Tariff — was module-level PRICE_TABLE_YPW (§7 purity; PR #79 device_model_schema)
+    # Default preserves Gansu backward-compatibility: EnvParams() still Gansu-correct.
+    price_table:                 jax.Array = PRICE_TABLE_YPW  # shape (24,) float32 ¥/MWh
 
 
 class EnvInfo(NamedTuple):
@@ -188,7 +191,7 @@ def get_obs(
         data[t, 2],                                                   # obs[2] temp °C
         data[t, 3],                                                   # obs[3] load MW
         state.soc,                                                    # obs[4] SOC fraction
-        PRICE_TABLE_YPW[h],                                           # obs[5] price ¥/MWh
+        params.price_table[h],                                        # obs[5] price ¥/MWh
         state.month_peak / 500.0,                                     # obs[6] peak/500
         jnp.sin(2.0 * jnp.pi * h / 24.0),                           # obs[7]
         jnp.cos(2.0 * jnp.pi * h / 24.0),                           # obs[8]
@@ -211,7 +214,7 @@ def get_obs(
         wind_true  = data[t_fc, 0]
         irr_true   = data[t_fc, 1]
         load_true  = data[t_fc, 3]
-        price_true = PRICE_TABLE_YPW[t_fc % 24]
+        price_true = params.price_table[t_fc % 24]
 
         fc_wind  = jnp.clip(wind_true  * (1.0 + eps[0]), 0.0, 25.0) / 20.0
         fc_irr   = jnp.clip(irr_true   * (1.0 + eps[1]), 0.0) / 1000.0
@@ -446,7 +449,7 @@ def step(
     # STEP 8 — Price lookup (D7, D8)
     # ------------------------------------------------------------------
     hour = (t % 24).astype(jnp.int32)
-    price_buy = PRICE_TABLE_YPW[hour]
+    price_buy = params.price_table[hour]
 
     # 3-way RNG split: price-spread, forecast-noise, new state key
     rng_spread, rng_fc_init, new_rng = jax.random.split(state.rng, 3)
