@@ -16,9 +16,11 @@ This is THE product. Power-composite v1 ships the **whole spine end-to-end first
 |---|---|---|---|
 | ① **config** | frontend A (UI) · jax-env resolver | geo/devices/tariff/scenario **+ fleet sizing** | a validated scenario config |
 | ② **select algorithm** | training / harness | `algorithm_id` | a **policy producer** |
-| ③ **train** | harness (control) · training | config + producer | a **policy artifact** (checkpoint, or baseline-policy spec) |
-| ④ **eval** | env-harness / serving | policy artifact | per-`(year,stream)` accumulators (#82) + eval-vs-baseline |
-| ⑤ **finance sim** | finance-expert (E) | eval accumulators | IRR/NPV/LCOE + P50/P90/P99 + sensitivity |
+| ③ **train** | harness (control) · training | config + producer | an **immutable policy artifact → the policy library** (checkpoint / baseline spec + provenance) |
+| ④ **eval** (select × run) | env-harness / serving | **(policy from library) × (env config)** | per-`(year,stream)` accumulators (#82) + eval-vs-baseline + cross-eval provenance |
+| ⑤ **finance sim** | finance-expert (E) | a **selected** eval result | IRR/NPV/LCOE + P50/P90/P99 + sensitivity |
+
+> **Train and eval decouple via the policy library (USER revision).** The spine is *not* a strict linear chain. Stage ③ deposits **immutable** policy artifacts into a library; stage ④ is a **selection** stage — pick `(policy from library) × (env config)`, run, and **multiple eval results coexist**; stage ⑤ consumes a *selected* eval result. A config edit therefore never "stales" a *training run* (runs are immutable, tied to **their** config) — see §2.2 and the refined DAG in §5.
 
 ## 2. The single-config invariant (binding C/D/E acceptance criterion)
 
@@ -36,6 +38,15 @@ So **reward streams ≡ eval-accumulator streams ≡ finance streams** — a sin
 `algorithm_id` is a stage-② config field resolved through a **code registry** → a *policy producer*:
 - **SAC** (trains a checkpoint), **NoBattery / TOU / DP-oracle** (the §11 baselines — produce a policy **without** training), future **PPO/TD3**.
 - Every producer's output is a **policy artifact** with a uniform interface; **stages ④⑤ consume it algorithm-agnostically** (eval already compares RL-vs-baselines; finance prices any policy). The registry adds a stage *without changing the downstream interface*.
+
+### 2.2 The policy library — the artifact store that makes ③/④ decouple (USER revision)
+
+Stage ③'s artifacts live in a **policy library** (RL checkpoints + baseline specs), each carrying **provenance**: `config hash · algorithm_id · train date · global_step`. This makes the policy-producer/artifact abstraction **load-bearing**: eval selects *any* compatible library policy against *any* env config, so the eval-vs-baseline comparison generalizes to an N-policy × env-config selection.
+
+Two things this pins:
+
+- **Policy↔env compatibility check (backend-owned, single source).** A selected policy's `(obs_dim, action_dim)` — read from its checkpoint metadata (the LOCKED `checkpoint_format`) — **must match** the selected env config's **resolver-derived** dims. The check has **one implementation** (the resolver/serving boundary, never duplicated in TS) and is **surfaced in the picker** (incompatible policies greyed out **with the reason**, e.g. *"trained action_dim 7 ≠ this scenario's 6"*). This is what keeps a power-scenario policy from being run on a hydrogen env, and vice-versa.
+- **Cross-eval provenance (a feature, not a bug).** Evaluating a policy on a *different* weather year / sizing / season than it trained on is a **legitimate robustness test**. Eval results therefore record **both** `trained-on` and `evaluated-on` provenance; when they differ, the result is **machine-visibly flagged** (the `dispatch_fidelity` guard family extends here — a cross-eval result is honest about being off-train-distribution). Concretely this is why the seasonal-data step (`device_model_schema` v2.0.0 / §3) doesn't *force* a retrain to get *an* eval: a flat-trained policy can be cross-evaluated on the seasonal env (dims match, 107/6) as a flagged robustness check; the *best* seasonal policy is a fresh train, but the cross-eval is valid and labelled.
 
 ## 3. Scenario activation — scheduled, sequenced, gated
 
@@ -61,10 +72,12 @@ D13 **extends**, doesn't break: `reward_basis = Σ(active real-money streams, ca
 **Sizing is a stage-① config field**, not a schema change (`device_model_schema` already carries `fleet_*` / `unit_count`, v1.0.0). The UI exposes capacities per device category alongside model selection; the resolver derives the rest. Scenario devices inherit the **same shape** (model-ID + fleet-size + optional unit_count) — the dialect stays uniform. Finance **CAPEX = units × unit-price** from the benchmark library (#63), so a sizing edit **reprices the project automatically** (E-contract linkage).
 
 **The stage-invalidation DAG.** Each stage's output is a pure function of its inputs; an edit invalidates that stage + all downstream. **Two classes of edit** — and the distinction is the F1 dividend realized as UX:
-- **Physical config** (sizing · device · tariff-shape · **algorithm**) → changes `EnvParams` or the policy → **invalidate ③④⑤** (retrain).
-- **Finance-only config** (discount rate · escalation · currency) → **invalidate ⑤ only**, *no re-dispatch* (re-arithmetic on the cached per-`(year,stream)` accumulators). So rate/sensitivity controls are **interactive sliders**; a sizing edit visibly invalidates downstream.
+**Training runs are immutable** (USER revision) — a config edit **never stales a run**; runs are tied to *their* config and live in the library (§2.2). Invalidation applies to the **eval→finance** edge and the **config→(new evals)** edge, not to `config→training-runs`:
 
-A stale downstream stage is **machine-visible** (same provenance-guard family as `dispatch_fidelity`): the wizard refuses to present stage-⑤ numbers computed from an invalidated stage-③ policy.
+- **Physical config** (sizing · device · tariff-shape) edit → existing **eval *results*** (computed against the old config) go stale → a **new eval** is needed = select a **compatible** policy from the library × the new config. A fresh **train** is required only if no suitable compatible policy exists for the new config (the `algorithm_id` picks the producer). The old run is untouched and still valid for *its* config.
+- **Finance-only config** (discount rate · escalation · currency) → **re-run ⑤ only**, *no re-dispatch* (re-arithmetic on the cached per-`(year,stream)` accumulators). Rate/sensitivity controls are **interactive sliders**.
+
+A stale edge is **machine-visible** (same provenance-guard family as `dispatch_fidelity`): the wizard refuses to present a stage-⑤ number whose underlying eval's `evaluated-on` provenance ≠ the current config — and *flags* (does not block) a deliberate **cross-eval** (a library policy run against a config it wasn't trained on, §2.2).
 
 ## 6. Config validation — two-tier, single source (sibling `config_validation` contract)
 
@@ -87,4 +100,4 @@ API: `validate(config) → { errors: [Issue], warnings: [Issue] }`, `Issue = { r
 
 ### One-line summary
 
-> One config threads five stages through one stream-economics primitive; sizing and algorithm are first-class config; physical edits retrain, finance edits re-slice instantly; scenarios activate on a gated schedule; nothing reaches the step kernel except through a named gate.
+> One config threads the stages through one stream-economics primitive; train and eval decouple via an immutable policy library (select policy × env config, with a compatibility check and cross-eval provenance); sizing and algorithm are first-class config; physical edits need a new eval, finance edits re-slice instantly; scenarios activate on a gated schedule; nothing reaches the step kernel except through a named gate.
