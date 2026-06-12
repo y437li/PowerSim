@@ -517,3 +517,77 @@ describe("TOKEN catalogue completeness — no undocumented extra keys (§3)", ()
     expect(extra, `Extra TOKEN keys not in contract §3: ${extra.join(", ")}`).toHaveLength(0);
   });
 });
+
+// ===========================================================================
+// reviewer: added cases — frontend-reviewer (PR #98 contract+tests gate)
+// ===========================================================================
+
+// reviewer: The §7 "Computed approx" column and several suite-4 inline comments
+// are inaccurate. c1286f4 corrected the faint comment to ~3.44, but the true
+// value is 3.227 (the surface luminance used was 0.0142; correct is ~0.0184),
+// and the §7 contract table is still off (e.g. body-on-surface ~9.1 vs true
+// 12.46). Pin the EXACT WCAG-2.1 ratios so documented values cannot drift.
+describe("reviewer: exact contrast ratios pin section 7 to reality", () => {
+  it("reviewer: all 8 documented pairs match the exact WCAG-2.1 ratio (+/-0.05)", () => {
+    expect(contrast("#e2e8f0", "#0f1117")).toBeCloseTo(15.31, 1); // body-on-app (doc ~12.0)
+    expect(contrast("#e2e8f0", "#1e2533")).toBeCloseTo(12.46, 1); // body-on-surface (doc ~9.1)
+    expect(contrast("#94a3b8", "#0f1117")).toBeCloseTo(7.36, 1);  // muted-on-app (doc ~5.6)
+    expect(contrast("#94a3b8", "#1a1f2e")).toBeCloseTo(6.40, 1);  // muted-on-nav (doc ~5.1)
+    expect(contrast("#64748b", "#1e2533")).toBeCloseTo(3.23, 1);  // faint-on-surface (comment ~3.44)
+    expect(contrast("#60a5fa", "#1a1f2e")).toBeCloseTo(6.46, 1);  // active-link-on-nav (doc ~5.0)
+    expect(contrast("#fca5a5", "#2d1515")).toBeCloseTo(9.00, 1);  // error-text-on-error-bg
+    expect(contrast("#f87171", "#2d1515")).toBeCloseTo(6.17, 1);  // error-border-on-error-bg
+  });
+
+  // reviewer: The card-title pair is NORMAL text (.card__title = 0.75rem = 12px,
+  // weight 600), NOT WCAG "large" (large = >=24px, or >=18.66px bold). The
+  // current suite-4 comment "meets 3:1 for large/uppercase" relies on a
+  // large-text exemption that does not apply: as normal text the pair must meet
+  // 4.5:1, but it computes 3.23:1 -> meets 3:1 yet FAILS AA-normal. Existing
+  // limitation carried forward by the centralization; documented here so the
+  // contract's blanket "meets WCAG AA" claim is not masking it.
+  it("reviewer: card-title (faint #64748b on surface #1e2533) is sub-AA-normal: >=3:1 but <4.5:1", () => {
+    const r = contrast("#64748b", "#1e2533");
+    expect(r).toBeGreaterThanOrEqual(3.0); // meets large-text 3:1
+    expect(r).toBeLessThan(4.5);           // FAILS AA-normal 4.5:1 (12px/600 = normal text)
+  });
+});
+
+// reviewer: Source-coverage regression — every hex literal present in the four
+// pre-refactor source files MUST survive as a TOKEN value, so centralization
+// provably drops/alters no existing color. Hex set extracted + verified by
+// frontend-reviewer against origin/main.
+describe("reviewer: every pre-refactor source hex is represented in TOKEN", () => {
+  const PRE_REFACTOR_HEX = [
+    "#0f1117", "#e2e8f0", "#1a1f2e", "#2d3748", "#94a3b8", "#60a5fa",
+    "#1e2533", "#64748b", "#2d1515", "#f87171", "#fca5a5",
+    "#fee2e2", "#991b1b", "#fef3c7", "#92400e", "#fcd34d", "#dbeafe",
+    "#1e40af", "#93c5fd", "#dcfce7", "#166534", "#86efac",
+    "#22c55e", "#3b82f6",
+    "#6366f1", "#f59e0b", "#10b981", "#ef4444", "#e5e7eb", "#9ca3af", "#6b7280",
+  ];
+  it("reviewer: each pre-refactor color exists as a TOKEN value", async () => {
+    const { TOKEN } = await import("../../src/styles/tokenValues");
+    const vals = new Set(Object.values(TOKEN as Record<string, string>).map((v) => v.toLowerCase()));
+    for (const hex of PRE_REFACTOR_HEX) {
+      expect(
+        vals.has(hex.toLowerCase()),
+        "pre-refactor color " + hex + " missing from TOKEN - centralization dropped/changed it"
+      ).toBe(true);
+    }
+  });
+});
+
+// reviewer: Harden the style.css no-bare-hex invariant. Suite 5's style.css case
+// strips only the first (@import) line, NOT CSS block comments, so a hex inside
+// a "/* ... */" comment in style.css would false-fail (the .ts cases strip
+// comments). Assert the real invariant after stripping block comments + imports.
+describe("reviewer: style.css no-bare-hex ignores CSS comments", () => {
+  it("reviewer: style.css has zero hex in active CSS once block comments stripped", () => {
+    const raw = readSrc("src/style.css");
+    const noComments = raw.replace(/\/\*[\s\S]*?\*\//g, "");
+    const noImports = noComments.split("\n").filter((l) => !/@import/.test(l)).join("\n");
+    const hits = noImports.match(/#[0-9a-fA-F]{3,6}\b/g) ?? [];
+    expect(hits).toHaveLength(0);
+  });
+});
