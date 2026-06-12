@@ -462,6 +462,34 @@ to the tariff schema validator.
 - Cross-site consistency (e.g., two sites with conflicting grid IDs) — future.
 - YAML syntax errors — callers handle YAML parse failures before calling `validate()`.
 
+### 11.1 Coordination note: passing-state confirmations (frontend-reviewer advisory)
+
+`validate()` emits only errors and warnings — **a passing rule emits nothing**.
+The wizard's per-field OK badges ("0.33 C — OK (limit 0.33 C)") therefore require a
+second data source: `POST /api/site/resolve` returning derived diagnostics (fleet
+C-rate, storage duration, PCC coverage ratio, unit counts, etc.) alongside `EnvParams`.
+This contract does NOT provide those positives; the serving `resolve` endpoint owns them.
+
+**Contract boundary:** `validate()` is the rejection oracle; `resolve()` is the
+positive-state oracle.  The UI calls both — `validate` for red/amber, `resolve` for
+green badges.  The serving contract for `POST /api/site/resolve` MUST include these
+derived diagnostics (see `contracts/serving/site_resolve.md`, to be authored by
+serving-engineer after this contract locks).
+
+### 11.2 (rule_id, field) uniqueness within a ValidationResult
+
+Within a single `ValidationResult`, the pair `(rule_id, field)` is **not** guaranteed
+unique — the same rule may fire on multiple fields (e.g., `E-CAP-POS` firing on both
+`assets.battery.fleet_capacity_mwh` and `assets.wind.fleet_rated_mw`).  The UI keys
+per-warning acknowledgement on `rule_id` alone (one ack dismisses all issues with that
+`rule_id`).  For field-level highlighting, the UI iterates `errors`/`warnings` and
+highlights every dot-path in `field`.
+
+**For v1** (one device model per type): `(rule_id, field)` is unique within a rule's
+firing for a given field path.  When the site schema gains device lists (§8 composition
+panel), `field` must encode the device index or ID (e.g.,
+`"assets.batteries[0].fleet_power_mw"`) — noted as a forward-compat constraint.
+
 ---
 
 ## 12. Implementation checklist (for QA)
