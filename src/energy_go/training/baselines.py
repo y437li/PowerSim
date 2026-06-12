@@ -609,17 +609,26 @@ class DpOraclePolicy:
         # Clip to the SOC-feasible window using the actual env_state.soc.
         # The DP was solved on a discretized float64 SOC grid; the JAX env uses
         # float32 — trajectories diverge over 8760 steps, causing SOC bound
-        # violations. Clipping to the live feasible window prevents this.
-        a_ch_max = jnp.minimum(
-            1.0,
+        # violations.
+        #
+        # Formula: a * bat_power → env receives a * bat_power MW.
+        # Naive a_ch_max = P_ch / bat_power leads to round-trip float32 error:
+        # (P_ch / bat_power) * bat_power can be 1 ULP above P_ch (≈3.5e-6 MWh
+        # violation per step).  Applying a (1-1e-5) relative margin (≈250 W on
+        # 50 MW, 80× float32 epsilon) absorbs all such rounding without affecting
+        # DP optimality.
+        _max_P_ch  = jnp.maximum(
+            0.0,
             (params.soc_max - env_state.soc) * params.bat_capacity_mwh
-            / (params.bat_eta_ch * params.bat_power_mw),
+            / params.bat_eta_ch,
         )
-        a_dis_max = jnp.minimum(
-            1.0,
+        _max_P_dis = jnp.maximum(
+            0.0,
             (env_state.soc - params.soc_min) * params.bat_capacity_mwh
-            * params.bat_eta_dis / params.bat_power_mw,
+            * params.bat_eta_dis,
         )
+        a_ch_max  = jnp.minimum(1.0, _max_P_ch  * (1.0 - 1e-5) / params.bat_power_mw)
+        a_dis_max = jnp.minimum(1.0, _max_P_dis * (1.0 - 1e-5) / params.bat_power_mw)
         a_bat = jnp.clip(a_bat, -a_dis_max, a_ch_max)
 
         # Use greedy renewable routing fractions; override only a_bat with DP value
