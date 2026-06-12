@@ -1,7 +1,7 @@
 # Stage ⑤ — Finance: Per-Screen Layout
 
 > **Owner:** ui-designer · **Task:** #65
-> **Status:** DRAFT v0.3 (2026-06-12) — Downside Risk panel is the centerpiece; Price-path selector + curve editor; scenario = (price path × eval); all path edits instant (re-multiply cached cash flows); AssumptionsStrip carries price-path name; workbench worst-case columns
+> **Status:** DRAFT v0.4 (2026-06-12) — M=1 honesty: suppress P(NPV<0)/CVaR/P90 at v1 default (single scenario), show M=1 banner; price-path Class B parity bound to wizard_flow §8 test vector
 > **Gate:** frontend-reviewer verdict before frontend contract is authored.
 > **Parent doc:** wizard_flow.md v0.6 (§8, §10) — this document deepens Stage ⑤ only.
 > **§13 alignment pending:** finance-expert is drafting §13 (project-finance spec); field names in this doc should be reconciled with §13 before the frontend contract is written.
@@ -149,6 +149,8 @@ PRICE PATH — EDIT  [starting from: declining-real]
 When expanded, shows one price-path selector per revenue stream (wind tariff, battery dispatch, ancillary). Default: all streams use the same path. Per-stream mode is for projects with differently structured revenue contracts. This is an advanced disclosure — it should not be prominent. See §Q8 below.
 
 **Response class:** Price-path changes are always **instant client-side** (re-multiply cached M cash-flow series). No server call, no re-dispatch. This applies to preset selection, drag-release, and table-edit. The assumption is that dispatched energy quantities are fixed; the price path changes only what those quantities are worth year-over-year.
+
+**Class B parity requirement (extends wizard_flow.md §8):** Price-path re-multiplication recomputes the full distributional result set client-side — NPV × M draws → P50/P90/CVaR-5%/Downside Risk panel; IRR × M draws → P50/P90/P(IRR < hurdle). This is an extension of the existing Class B compute surface (WACC slider, discount-rate overrides). The **same parity constraint applies**: client-side IRR, MIRR, and NPV time-series implementations must match the server engine within **≤ 0.01 pp** (IRR / MIRR) and **≤ ¥1k** (NPV) per draw. A **shared test vector** covering at least M = 5 draws × 20-year cash-flow series at **two distinct price-path multiplier vectors** (e.g. flat 1.0 and declining 0.98 per year) is required before the frontend contract is written. The finance contract (§Q5 / §13 alignment gate) must specify the test-vector format and field names. Price-path re-multiply uses the **same client-side financial library** as the WACC slider — one library, one test surface, one parity check.
 
 ---
 
@@ -336,12 +338,28 @@ The Downside Risk panel is the **first and largest result element** on the right
 
 **Hurdle rate:** sourced from the WACC field in §4 DISCOUNT RATE (unless explicitly overridden by a separate hurdle rate field — see §Q9 below). The hurdle rate used is shown inline: `P(IRR < 7.0%)`.
 
-**M = 1 graceful fallback:** when M = 1 (single point-estimate scenario), the metrics degrade:
-- Worst-case NPV = the single NPV value (no "worst" distinction)
-- P(NPV < 0) and P(IRR < hurdle) = either 0% or 100% (binary)
-- CVaR-5% = the single NPV value
-- Worst single-year cash flow = the minimum year's cash flow
-All values are shown without percentile labels. No error state — M = 1 is valid.
+**M = 1 state (v1 launch default — single scenario):** M = 1 is the v1 default (LINEAGE finance decision). At M = 1 the probabilistic and distributional metrics **must be suppressed entirely** — they cannot be shown as proxies, collapsed values, or "degraded" numbers:
+
+- **P(NPV < 0)** and **P(IRR < hurdle)** would collapse to binary 0 % or 100 % from one draw. Showing "P(NPV<0): 0 %" reads as "no chance of loss" on an investment-committee panel — affirmatively misleading.
+- **CVaR-5%** = the single draw NPV. Showing it as a "conditional tail loss" label is false.
+- **"Worst-case NPV"** = the single scenario. It is not a worst case across an ensemble; it is the only case.
+
+**What IS shown at M = 1 (well-defined from one trajectory):**
+- Single-scenario NPV — labelled `"NPV (single scenario)"`, not `"Worst-case NPV"` or `"P50"`
+- Max cumulative drawdown + year — computed from one cash-flow series; valid
+- Worst single-year cash flow — computed from one cash-flow series; valid
+
+**M = 1 banner (prominent, non-dismissable in the panel, reproduced on export):**
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  ⚠  M = 1 — single scenario  ·  Risk distribution requires ensemble (M > 1) │
+│     P(NPV<0), CVaR-5%, and P90 metrics are suppressed.                      │
+│     Run with M ≥ 50 for bankability-grade risk metrics.                     │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+The banner is not an error state — M = 1 is valid for speed iteration. But it must be honest: the panel shows only what one trajectory can support.
 
 **Price-path context:** the active price path name (`declining-real`, `custom — from escalation`, etc.) is shown at the bottom of the panel so the operator knows which scenario the downside numbers reflect.
 
@@ -352,6 +370,8 @@ All values are shown without percentile labels. No error state — M = 1 is vali
 ## 11. Results panel — Headline metrics (P50/P90 bankability pair)
 
 Finance results are distributions over the M-scenario weather ensemble. The headline shows the P50 (median) as the primary value with the P90 immediately beneath — the "bankability pair" that lenders and investors use. Detailed percentile breakdown and histogram are one click away.
+
+**M = 1 state:** At M = 1 the "bankability pair" framing is **suppressed entirely**. Showing P90 = P50 = the single draw and labelling it a "bankability floor" would be misleading — it is not a stress-tested downside; it is the one scenario relabelled. At M = 1 this section shows only `IRR (single scenario)` and `NPV (single scenario)` as plain values with no percentile labels, no P90 sub-value, no `[▾ distribution]` expand (hidden), and no CI line. The same M = 1 banner shown in §10 Downside Risk appears here as well.
 
 ```
 ┌─ HEADLINE METRICS ──────────────────────────────────────────────────────────┐
@@ -394,7 +414,7 @@ Clicking the expand control on any headline metric opens an inline panel:
   [▲ Collapse]
 ```
 
-**Ensemble-size indicator:** `M = 50` appears in the headline area, always visible. If M = 1 (point-estimate, no ensemble), P90 / CI / histogram are hidden gracefully; the single-scenario value is shown without a percentile label. No error state — M = 1 is valid for quick iteration.
+**Ensemble-size indicator:** `M = 50` appears in the headline area, always visible. At M = 1 the P90 value, CI line, and `[▾ distribution]` expand are **suppressed** (not shown as collapsed or placeholder) — showing P90 = single-draw value and labelling it a "bankability floor" would be misleading (see M = 1 note at top of this section). The M = 1 banner (§10) replaces the CI line. No error state — M = 1 is valid for quick iteration, but only the plain single-scenario IRR/NPV values appear.
 
 **Convergence hint:** if the 90% CI width exceeds a threshold (suggested: ≥ 2 pp for IRR, ≥ 20% of NPV magnitude), a subtle inline notice appears: "↑ Wide IRR range — add more weather scenarios for tighter confidence bounds." Dismissable. Threshold values to be locked in the finance contract (§Q5 below).
 
@@ -661,4 +681,4 @@ The assumptions panel is shown but all results are blank/pending. Once an eval r
 
 ---
 
-*docs/design/ux/stage_5_finance.md — ui-designer, task #65 — v0.1 2026-06-12 (initial per-screen layout: two-column assumptions+results, all six assumption sections, AssumptionsStrip, headline metrics, CashFlowChart, NpvCurveChart, TornadoChart, eval basis picker, loading states, export, a11y notes, component checklist, 4 open questions) · v0.2 2026-06-12 (USER directive: distribution-aware results — P50/P90 bankability pair headline, expandable percentile table + histogram, NpvCurveChart → NpvFanChart (median + P25-P75 + P10-P90 bands), CashFlowChart + percentile selector + P25-P75 range overlay, ensemble-size M= indicator, convergence-hint affordance, instant M-series client-side re-discount clarified, AssumptionsStrip shows M=N, 3 new open questions, §13 alignment gate) · v0.3 2026-06-12 (USER directive: Downside Risk panel as centerpiece §10 — worst NPV, max drawdown+year, P(NPV<0), P(IRR<hurdle), CVaR-5%, worst yr; price-path selector §3.3 — preset cards + drag/table curve editor + per-stream override (advanced); scenario = (price path × eval basis); all path edits instant re-multiply; AssumptionsStrip carries price-path name; section renumbering §10-§22; 3 new open questions Q8-Q10)*
+*docs/design/ux/stage_5_finance.md — ui-designer, task #65 — v0.1 2026-06-12 (initial per-screen layout: two-column assumptions+results, all six assumption sections, AssumptionsStrip, headline metrics, CashFlowChart, NpvCurveChart, TornadoChart, eval basis picker, loading states, export, a11y notes, component checklist, 4 open questions) · v0.2 2026-06-12 (USER directive: distribution-aware results — P50/P90 bankability pair headline, expandable percentile table + histogram, NpvCurveChart → NpvFanChart (median + P25-P75 + P10-P90 bands), CashFlowChart + percentile selector + P25-P75 range overlay, ensemble-size M= indicator, convergence-hint affordance, instant M-series client-side re-discount clarified, AssumptionsStrip shows M=N, 3 new open questions, §13 alignment gate) · v0.3 2026-06-12 (USER directive: Downside Risk panel as centerpiece §10 — worst NPV, max drawdown+year, P(NPV<0), P(IRR<hurdle), CVaR-5%, worst yr; price-path selector §3.3 — preset cards + drag/table curve editor + per-stream override (advanced); scenario = (price path × eval basis); all path edits instant re-multiply; AssumptionsStrip carries price-path name; section renumbering §10-§22; 3 new open questions Q8-Q10) · v0.4 2026-06-12 (frontend-reviewer REQUEST_CHANGES: M=1 honesty — §10 suppress P(NPV<0)/P(IRR<hurdle)/CVaR-5%/Worst-case NPV labels at M=1; show only single-trajectory well-defined metrics (single NPV, max drawdown, worst yr); prominent non-dismissable M=1 banner; §11 suppress P90/"bankability pair"/CI/distribution expand at M=1; §3.3 Class B parity requirement — price-path re-multiply bound to wizard_flow §8 test-vector gate, same ≤0.01pp/≤¥1k tolerance, shared client library)*
