@@ -68,12 +68,12 @@ for this contract and must land in a separate PR with USER review.
 
 | CSS custom property | Value | Usage |
 |---|---|---|
-| `--accent-blue` | `#60a5fa` | Active nav links, PENDING wizard state, SOC line |
+| `--accent-blue` | `#60a5fa` | Active nav links, PENDING wizard state |
 | `--accent-green` | `#22c55e` | COMPLETE wizard state, SOC bounds lines |
 | `--accent-amber` | `#f59e0b` | STALE/IN_PROGRESS wizard state, warnings, critic-loss chart line |
 | `--accent-red` | `#f87171` | Hard errors — border; also error boundary border |
 | `--accent-error-text` | `#fca5a5` | Error boundary text, error message color |
-| `--accent-grey` | `#4b5563` | LOCKED wizard state |
+| `--accent-grey` | `#4b5563` | Forward-looking — no current source usage; reserved for LOCKED wizard state (wizard_flow §10) |
 
 ### 3.5 TOU tier tokens
 
@@ -271,24 +271,62 @@ export type TokenKey = keyof typeof TOKEN;
   independent hex strings in `touColors.ts` after the refactor.
 - Recharts `stroke=` / `fill=` props in `MetricCurves.tsx` and `SocTimeline.tsx` must reference
   `TOKEN.chartXxx` — no bare hex.
-- `tokenValues.ts` and `tokens.css` must be kept in sync (enforced by the token-sync test — see §7).
+- `tokenValues.ts` and `tokens.css` must be kept in sync (enforced by the token-sync test — see §8).
+
+**Required component exports (needed by test suites 6 and 7):**
+
+`src/components/training/MetricCurves.tsx` **must export** a `PANELS` array:
+
+```typescript
+export const PANELS: {
+  key: keyof TrainMetricsPayload;
+  label: string;
+  color: string;
+  allowNegative?: boolean;
+}[] = [ /* ... */ ];
+```
+
+Each entry's `color` must be a `TOKEN.*` value, not a bare hex literal.
+
+`src/components/live/SocTimeline.tsx` **must export** three color constants:
+
+```typescript
+export const SOC_LINE_COLOR   = TOKEN.chartSoc;     // #3b82f6
+export const SOC_BOUNDS_COLOR = TOKEN.accentGreen;  // #22c55e
+export const SOC_BAND_BG      = TOKEN.touValleyBg;  // #dcfce7
+```
+
+These named exports allow the test suite to assert token correctness without file-parsing.
 
 ---
 
 ## 7. Contrast minimums
 
-All text-on-background pairs must meet WCAG AA (4.5:1 for normal text, 3:1 for large text).
-The following are the critical pairs; the test suite asserts the computed ratios.
+All text-on-background pairs must meet WCAG 2.1 AA (4.5:1 for normal text ≥ 14pt, 3:1 for large
+text ≥ 18pt or ≥ 14pt bold). Ratios are exact WCAG-2.1 values; the test suite pins them
+to ±0.05 via `toBeCloseTo`.
 
-| Foreground | Background | Pair name | Min ratio | Computed approx |
+| Foreground | Background | Pair name | Min ratio | Exact WCAG-2.1 |
 |---|---|---|---|---|
-| `--text-primary` `#e2e8f0` | `--bg-app` `#0f1117` | body-on-app | 4.5:1 | ~12.0:1 |
-| `--text-primary` `#e2e8f0` | `--bg-surface` `#1e2533` | body-on-surface | 4.5:1 | ~9.1:1 |
-| `--text-muted` `#94a3b8` | `--bg-app` `#0f1117` | muted-on-app | 4.5:1 | ~5.6:1 |
-| `--text-muted` `#94a3b8` | `--bg-nav` `#1a1f2e` | muted-on-nav | 4.5:1 | ~5.1:1 |
-| `--text-faint` `#64748b` | `--bg-surface` `#1e2533` | faint-on-surface | 3:1 (large) | ~3.4:1 |
-| `--accent-blue` `#60a5fa` | `--bg-nav` `#1a1f2e` | active-link-on-nav | 3:1 (large) | ~5.0:1 |
-| `--accent-red` `#f87171` | `--bg-error` `#2d1515` | error-on-error-bg | 3:1 (large) | ~4.8:1 |
+| `--text-primary` `#e2e8f0` | `--bg-app` `#0f1117` | body-on-app | 4.5:1 | **15.31:1** ✓ |
+| `--text-primary` `#e2e8f0` | `--bg-surface` `#1e2533` | body-on-surface | 4.5:1 | **12.46:1** ✓ |
+| `--text-muted` `#94a3b8` | `--bg-app` `#0f1117` | muted-on-app | 4.5:1 | **7.36:1** ✓ |
+| `--text-muted` `#94a3b8` | `--bg-nav` `#1a1f2e` | muted-on-nav | 4.5:1 | **6.40:1** ✓ |
+| `--accent-blue` `#60a5fa` | `--bg-nav` `#1a1f2e` | active-link-on-nav | 3:1 (large) | **6.46:1** ✓ |
+| `--accent-error-text` `#fca5a5` | `--bg-error` `#2d1515` | error-text-on-error-bg | 4.5:1 | **9.00:1** ✓ |
+| `--accent-red` `#f87171` | `--bg-error` `#2d1515` | error-border-on-error-bg | 3:1 | **6.17:1** ✓ |
+
+> **⚠ Known a11y gap — `faint-on-surface` (3.23:1, sub-AA-normal)**
+>
+> `--text-faint #64748b` on `--bg-surface #1e2533` computes **3.23:1**.
+>
+> `.card__title` uses this pair at `0.75rem` / `weight 600`. At 12px, this is **NORMAL text**
+> under WCAG 2.1 (large text threshold is ≥ 18.66px bold or ≥ 24px). AA-normal requires 4.5:1.
+> This pair passes 3:1 but **fails AA-normal 4.5:1**.
+>
+> The value is carried forward unchanged (no-redesign PR). A future dedicated a11y pass must
+> either increase the foreground lightness or reduce `.card__title` reliance on `--text-faint`.
+> The test suite asserts `r ≥ 3.0 && r < 4.5` to document the gap explicitly.
 
 ---
 
@@ -300,8 +338,14 @@ Components that exist and MUST be updated to use tokens (no new components creat
 |---|---|---|
 | `src/style.css` | All layout/structural tokens | Replace hex with `var()` |
 | `src/utils/touColors.ts` | `--tou-*` tokens via `TOKEN.*` | Import from `tokenValues.ts` |
-| `src/components/live/SocTimeline.tsx` | `--chart-soc`, `--accent-green`, `--tou-valley-bg` | Replace inline hex |
-| `src/components/training/MetricCurves.tsx` | `--chart-*` | Replace inline hex |
+| `src/components/live/SocTimeline.tsx` | `TOKEN.chartSoc`, `TOKEN.accentGreen`, `TOKEN.touValleyBg` | Replace inline hex; **export `SOC_LINE_COLOR`, `SOC_BOUNDS_COLOR`, `SOC_BAND_BG`** (see §6) |
+| `src/components/training/MetricCurves.tsx` | `TOKEN.chart*` | Replace inline hex; **export `PANELS` array** (see §6) |
+
+**Why the exports are required:** The test suite (suites 6 and 7) imports `PANELS` from
+`MetricCurves` and `SOC_*` from `SocTimeline` to verify that the color values reference
+`TOKEN.*` rather than independent hex. Without these named exports the tests cannot make
+that assertion without parsing the source file. These exports are also useful for any future
+code that needs to enumerate chart series or query the SOC color programmatically.
 
 ---
 
