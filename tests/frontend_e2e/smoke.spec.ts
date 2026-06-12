@@ -12,9 +12,10 @@
  * App.tsx calls telemetryWsClient.connect() + trainingWsClient.connect() on mount
  * (useEffect, added in task #27). With no backend running, the browser emits a native
  * "WebSocket connection to … failed" console.error per client — informational, not a crash.
- *  - S1–S4 filter that known WS-refused noise from consoleErrors and assert the remainder
- *    is 0. This catches real errors (e.g. a design_system token import regression that emits
- *    console.error without crashing) while tolerating expected WS connection noise.
+ *  - S1/S2/S4 filter WS-refused noise; S3 (/training) also filters API proxy 500s
+ *    (TrainingPanel fetches /api/runs on mount — Vite proxies to nothing → HTTP 500 →
+ *    console.error whose .text = "Failed to load resource..." and .location contains /api/).
+ *    After filtering, remainder === 0 catches real bugs (token import errors, etc.).
  *    pageErrors === 0 (no unhandled JS exceptions) is the crash-safety invariant.
  *  - S5 explicitly drives a raw WS connection via page.evaluate(). Only pageErrors is
  *    asserted — consoleErrors intentionally not asserted (WS noise dominates; only crashes
@@ -30,6 +31,16 @@ import { test, expect } from "./helpers/errorCapture";
 // The browser emits "WebSocket connection to 'ws://…' failed" per refused client;
 // filter on .text so only that known noise is excluded.
 const WS_REFUSED = /WebSocket connection to .* failed/i;
+
+// API proxy console.error filter (S3 only — TrainingPanel fetches /api/runs on mount).
+// With no backend, Vite's proxy returns HTTP 500. This generates a console.error where:
+//   .text     = "Failed to load resource: the server responded with a status of 500"
+//   .location = "http://localhost:5173/api/runs:0:0"
+// The URL is in .location, NOT .text — so we match the failure phrase in .text AND
+// the /api/ path in .location to keep the filter scoped to proxy failures only.
+const API_RESOURCE_FAIL = /Failed to load resource/i;
+const isApiProxyFail = (e: { text: string; location: string }) =>
+  API_RESOURCE_FAIL.test(e.text) && /\/api\//i.test(e.location);
 
 // ---------------------------------------------------------------------------
 // S1 — App boots with HTTP 200 and the correct page title
@@ -84,10 +95,14 @@ test("S3: /training (TrainingPanel) renders without errors", async ({
   // Route must render — TrainingPanel component is mounted
   await expect(page.locator("body")).not.toBeEmpty();
 
-  // App auto-connects WS on mount (task #27); filter the known WS-refused noise and
-  // assert NO OTHER console.error — catches real bugs (token import errors, etc.)
-  // while tolerating expected connection-refused output. See file-level design note.
-  const unexpected = errorCapture.consoleErrors.filter((e) => !WS_REFUSED.test(e.text));
+  // S3 filters TWO known noise sources (see file-level design note):
+  //   1. WS-refused: browser emits console.error when WS clients can't connect on mount.
+  //   2. API proxy 500: TrainingPanel fetches /api/runs on mount; Vite returns 500.
+  //      The URL is in .location ("…/api/runs:0:0"), NOT in .text — isApiProxyFail checks both.
+  // Anything else (token import errors, runtime crashes surfaced as console.error) still fails.
+  const unexpected = errorCapture.consoleErrors.filter(
+    (e) => !WS_REFUSED.test(e.text) && !isApiProxyFail(e)
+  );
   expect(unexpected, `unexpected console errors: ${JSON.stringify(unexpected)}`).toHaveLength(0);
 
   // No unhandled JS exceptions
