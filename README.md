@@ -14,7 +14,7 @@ minimize  Σ_t [ Energy_Cost + Demand_Charge + Battery_Degradation + Penalties ]
 
 This repository is a **ground-up rebuild** specified in [`REBUILD_SPEC.md`](REBUILD_SPEC.md). Units are explicit at every interface (MW, MWh, ¥/MWh) and the physics/cost formulas are fixed in [`docs/spec/section_03_physics_costs.md`](docs/spec/section_03_physics_costs.md).
 
-> **Project status (accurate to `main`).** The reference simulator, SAC training pipeline, FastAPI serving layer, telemetry contract, React/3D frontend, **pure-JAX environment core** (`energy_go.env`), and **synthetic-year generators** (`energy_go.generators`) are all merged. The **training/eval harness** (`energy_go.harness`) is still in review (PR #43) and is **not yet on `main`** — see [Component status](#component-status) before relying on it.
+> **Project status (accurate to `main`).** The full backend + frontend stack is on `main`: reference simulator, pure-JAX env core (PR #33), SAC training pipeline (PR #40), training/eval harness (PR #43), FastAPI serving layer, React/3D frontend, and `config/site_gansu.yaml` (PR #79). End-to-end training is runnable. See [Component status](#component-status) for the full table.
 
 ---
 
@@ -47,10 +47,10 @@ The full per-area stack registry (with the PR/decision that bound each choice) i
 | 3D asset registry + Gansu GLB models | ✅ on `main` | PR #24 (lock), #38, #49 |
 | Launch / install scripts (§9) | ✅ on `main` | PR #10, #61 |
 | **Pure-JAX env core + generators** | ✅ on `main` | PR #33 |
-| **Training/eval harness** (`energy_go.harness`) | 🚧 in review | PR #43 |
-| `config/site_gansu.yaml` at repo root | ⛔ not present yet | — |
+| **Training/eval harness** (`energy_go.harness`) | ✅ on `main` | PR #43 |
+| `config/site_gansu.yaml` at repo root | ✅ on `main` | PR #79 ([D2](LINEAGE.md)) |
 
-> The JAX env core and generators are now on `main` (PR #33). The training library integrates with the env core and its 17 integration tests are green. An **end-to-end training run is runnable from `main`** once the training/eval harness (PR #43) merges — the launch scripts' training launch path targets `energy_go.harness.train`.
+> The full backend stack is now on `main`: JAX env core (PR #33), training pipeline (PR #40), training/eval harness (PR #43), and `config/site_gansu.yaml` (PR #79). **End-to-end training is runnable from `main`** — install with `--server-type training` or `full` and the harness starts immediately.
 
 ---
 
