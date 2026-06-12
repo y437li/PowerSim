@@ -398,8 +398,8 @@ callers must explicitly handle the new tier).
 
 The serving layer exposes:
 ```
-POST /config/validate
-Body:  { site_config: <YAML text or dict>, device_models_path?: str }
+POST /api/site/validate
+Body:  { site_config: <dict>, device_models?: <dict> }
 Response: { errors: [ValidationIssue], warnings: [ValidationIssue] }
 ```
 
@@ -450,7 +450,7 @@ to the tariff schema validator.
    This contract mandates **exhaustive collection** — all errors reported before raise.
 
 3. No TypeScript/serving rule duplication: the frontend currently has no validation
-   logic, so this is not a breaking change.  Serving's `/config/validate` endpoint
+   logic, so this is not a breaking change.  Serving's `POST /api/site/validate` endpoint
    is a NEW endpoint (additive).
 
 ---
