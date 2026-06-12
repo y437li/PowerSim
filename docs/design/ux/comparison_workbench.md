@@ -1,7 +1,7 @@
 # Comparison Workbench — UX Design
 
 > **Owner:** ui-designer · **Task:** #67
-> **Status:** DRAFT v0.3 — distribution-aware comparison table (P50 + P90 columns per variant), delta-of-P50s with seed-pairing footnote slot, NpvFanChart multi-variant, per-variant detail updated (2026-06-12)
+> **Status:** DRAFT v0.4 — scenario = (price path × variant); price_path in variant model; worst-case columns (Worst NPV, P(NPV<0)) in comparison table; DownsideRiskPanel in per-variant detail; PricePathSelector in variant editor; §9 + §11 updated (2026-06-12)
 > **Gate:** USER reviews aesthetic direction before frontend contracts are written against this.
 > **Inputs:** wizard_flow.md (sibling doc), master_plan_geo_finance.md §5, REBUILD_SPEC §3–§5
 > **USER directive:** "有个地方可以多选,然后跑simulation根据算法看finance projection"
@@ -47,10 +47,17 @@ variant = {
                                              //   agent name, OR null = "needs training"
   eval_result:       eval_result_id | null   // a completed eval result from Stage ④ Eval Library,
                                              //   or null = "needs eval run"
+  price_path:        price_path_name | null  // revenue-price trajectory to apply (e.g.
+                                             //   "declining-real", "stress", "custom-2026-06");
+                                             //   null = use workbench shared path (default).
+                                             //   A scenario is identified by (variant × price_path).
+                                             //   Per-variant override is set in the Variant Editor.
   finance_overrides: FinanceSnapshot         // a full snapshot of finance assumptions for this
                                              //   variant; can be shared or per-variant
 }
 ```
+
+**Scenario framing.** A **scenario** in the workbench is identified by the pair `(variant × price_path)`. Two variants running under different price paths are distinct scenarios — "Baseline × declining-real" and "Baseline × stress" are separate entries in the comparison. By default all variants share a single workbench-level price path (set in the shared controls); per-variant override is available in the Variant Editor for deliberate cross-path comparisons. Price-path changes are always instant client-side (re-multiply cached M cash-flow series, same as Finance Stage ⑤ §3.3).
 
 **Baseline designation.** One variant (default: the first added) is the baseline. All other variants' metric columns show delta values against the baseline: `+2.1 pp IRR` (green), `−¥42M NPV` (red), `+0.8 yr payback` (amber). The baseline column shows absolute values only.
 
@@ -154,7 +161,8 @@ When the user clicks **[Run missing]**, the workbench determines what each varia
 │  │  (new     policy yet)                     20 yr          required       │ │
 │  │   config) [edit] [dup] [remove]                          [→ Train ↗]    │ │
 │  │                                                                         │ │
-│  │  [+ Add variant]  ·  Shared assumptions: WACC 7.0% · 20yr · [✎ Edit]   │ │
+│  │  [+ Add variant]  ·  Shared: WACC 7.0% · 20yr [✎]  ·                    │ │
+│  │  Price path: declining-real [✎ Edit path]                               │ │
 │  │  [Run missing ▶  1 eval needed]                                         │ │
 │  └─────────────────────────────────────────────────────────────────────────┘ │
 │                                                                              │
@@ -180,47 +188,62 @@ Key layout decisions:
 │  [Table ●]  [NPV vs Rate]  [Per-variant detail]                              │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  ASSUMPTIONS SUMMARY                                                        │
-│  WACC 7.0% · 20yr horizon · View I (absolute) · Merchant · Synthetic M=50  │
-│  (or: "⚠ Assumptions differ across variants — see per-variant detail")      │
+│  SCENARIO SUMMARY  (scenario = price path × variant)                        │
+│  WACC 7.0% · 20yr · View I · Merchant · M=50 · Price: declining-real        │
+│  (or: "⚠ Price paths differ · Assumptions differ — see per-variant detail") │
 │                                                                              │
-│  ┌────────────┬─────────────────┬───────────────────────┬──────────────────┐ │
-│  │ Metric     │ ★ Baseline      │ A (SST)               │ B (new config)   │ │
-│  │            │ Gansu-v1        │ Gansu-v1 +SST         │ Gansu-SST        │ │
-│  │            │  P50    P90     │  P50       P90  ΔP50  │                  │ │
-│  ├────────────┼─────────────────┼───────────────────────┼──────────────────┤ │
-│  │ IRR        │  8.2%   7.6%    │  8.7%  8.1%  +0.5pp  │ ─ (retrain req.) │ │
-│  │ NPV ¥M     │  ¥142   ¥118    │  ¥156  ¥130   +¥14M  │ ─                │ │
-│  │ MIRR       │  7.1%   6.7%    │  7.4%  6.9%  +0.3pp  │ ─                │ │
-│  │ LCOE ¥/MWh │   312    319    │   311    318    −1    │ ─                │ │
-│  │ Payback yr │   8.3    9.0    │   7.9    8.5   −0.4   │ ─                │ │
-│  ├────────────┼─────────────────┼───────────────────────┼──────────────────┤ │
-│  │ CAPEX ¥M   │ ¥1 800 M        │ ¥1 920 M       +6.7%  │ ─                │ │
-│  │ OPEX ¥M/yr │  ¥28 M          │  ¥30 M          +7%   │ ─                │ │
-│  │ Export MWh │ 1 234 567       │ 1 234 567         0    │ ─                │ │
-│  └────────────┴─────────────────┴───────────────────────┴──────────────────┘ │
+│  ── UPSIDE ─────────────────────────────────────────────────────────────── │
+│  ┌────────────┬─────────────────┬──────────────────────────────────────────┐ │
+│  │ Metric     │ ★ Baseline      │ A (SST)                                  │ │
+│  │            │ Gansu-v1        │ Gansu-v1 +SST                            │ │
+│  │            │  P50    P90     │  P50    P90     ΔP50                     │ │
+│  ├────────────┼─────────────────┼──────────────────────────────────────────┤ │
+│  │ IRR        │  8.2%   7.6%    │  8.7%   8.1%   +0.5 pp                  │ │
+│  │ NPV ¥M     │  ¥142   ¥118    │  ¥156   ¥130   +¥14M                    │ │
+│  │ MIRR       │  7.1%   6.7%    │  7.4%   6.9%   +0.3 pp                  │ │
+│  │ LCOE ¥/MWh │   312    319    │   311    318    −1                       │ │
+│  │ Payback yr │   8.3    9.0    │   7.9    8.5   −0.4                      │ │
+│  └────────────┴─────────────────┴──────────────────────────────────────────┘ │
+│                                                                              │
+│  ── DOWNSIDE RISK ──────────────────────────────────────────────────────── │
+│  ┌────────────┬─────────────────┬──────────────────────────────────────────┐ │
+│  │ Metric     │ ★ Baseline      │ A (SST)          Δ vs baseline           │ │
+│  ├────────────┼─────────────────┼──────────────────────────────────────────┤ │
+│  │ Worst NPV  │  −¥38 M         │  −¥22 M          +¥16M (less exposed)   │ │
+│  │ P(NPV<0)   │   18 %          │   12 %           −6 pp                  │ │
+│  │ P(IRR<7%)  │   24 %          │   16 %           −8 pp                  │ │
+│  │ CVaR-5%    │  −¥76 M         │  −¥54 M          +¥22M                  │ │
+│  └────────────┴─────────────────┴──────────────────────────────────────────┘ │
+│                                                                              │
+│  ── OPERATIONAL ────────────────────────────────────────────────────────── │
+│  ┌────────────┬─────────────────┬──────────────────────────────────────────┐ │
+│  │ CAPEX ¥M   │ ¥1 800 M        │ ¥1 920 M         +6.7%                  │ │
+│  │ OPEX ¥M/yr │  ¥28 M          │  ¥30 M           +7%                    │ │
+│  │ Export MWh │ 1 234 567       │ 1 234 567          0                     │ │
+│  └────────────┴─────────────────┴──────────────────────────────────────────┘ │
 │                                                                              │
 │  † ΔP50 = baseline P50 vs variant P50 (independent ensembles). If runs are  │
-│    seed-paired, seed-paired Δ (per-draw mean) is available — see finance-    │
+│    seed-paired, seed-paired Δ (per-draw mean) is available — see finance-   │
 │    expert §13 ruling.                                                        │
-│                                                                              │
-│  Delta coloring: green = better than baseline; red = worse; amber = neutral  │
-│  Best value per metric highlighted with subtle green tint (across variants)  │
+│  B (new config): all cells show ─ (retrain required)                        │
+│  Delta coloring: green = better than baseline (lower risk, higher return);  │
+│    red = worse; amber = neutral. Best value per metric: subtle green tint.  │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Delta display rules:**
-- Baseline column: P50 + P90 absolute values, no delta.
-- Other variant columns: P50 + P90 absolute values + `ΔP50` (delta of P50s). Delta colored green/red/amber: for IRR/NPV/MIRR — higher is better (green); for CAPEX/LCOE/Payback — lower is better (green).
+- Baseline column: P50 + P90 absolute values (upside section); absolute worst-case values (downside section). No delta on baseline.
+- Other variant columns: P50 + P90 absolute values + `ΔP50` (delta of P50s) in the upside section; absolute worst-case values + delta in the downside section.
 - **Delta is delta of P50s, not P50 of deltas.** This is the default because variants run independent weather ensembles (different random seeds). If the ensembles are seed-paired (same seeds across variants), finance-expert will supply a per-draw delta in `POST /api/compare/finance`; the UI then swaps to show it automatically, and the footnote `†` updates to reflect the seed-pairing.
+- **Downside delta direction:** for Worst NPV / CVaR-5%, positive delta (less negative) = green (better). For P(NPV<0) / P(IRR<hurdle), negative delta (lower probability) = green (better).
 - Tier 3 variants (retrain required): cells show `—` with a tooltip.
 - Tier 2 variants currently running: cells show a shimmer placeholder.
 
 **P90 direction:** for IRR/NPV/MIRR, P90 represents the downside (90% of scenarios achieve *at least* this value) — it is shown *beneath* P50. For LCOE/Payback, P90 represents the upside (90% of scenarios have costs *no worse* than this value). Column header suffix clarifies direction for each row type.
 
 **Metric groups:**
-The table has two sections: **Finance metrics** (IRR, NPV, MIRR, LCOE, Payback) with P50 + P90 columns, and **Operational summary** (CAPEX, levelized OPEX, annual export, battery cycles/yr) with deterministic values only (CAPEX is not a distribution). A `[▾ Show all]` toggle expands to show P75/P99 rows and year-by-year cash-flow breakdown.
+The table has three sections: **Upside** (IRR, NPV, MIRR, LCOE, Payback) with P50 + P90 + ΔP50 columns; **Downside Risk** (Worst NPV, P(NPV<0), P(IRR<hurdle), CVaR-5%) with absolute + delta columns; and **Operational summary** (CAPEX, levelized OPEX, annual export) with deterministic values. A `[▾ Show all]` toggle expands to show P75/P99 rows and year-by-year cash-flow breakdown.
 
 ### 4.3 Results tab — NPV vs Discount Rate (NpvFanChart, multi-variant)
 
@@ -271,11 +294,15 @@ With M > 1 weather draws the chart shows **one fan per variant**: each variant c
 │  Select variant: [★ Baseline ▼]                                              │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  ★ BASELINE — Gansu-v1 · SAC run-a1b2c3                                     │
-│  Assumptions: WACC 7.0% · 20yr · View I · Merchant · Synthetic M=1          │
+│  ★ BASELINE — Gansu-v1 · SAC run-a1b2c3 · Price: declining-real             │
+│  Assumptions: WACC 7.0% · 20yr · View I · Merchant · Synthetic M=50        │
 │  Config: #a1b2c3  ·  Eval: run-a1b2c3 / best_ckpt  ·  2026-06-10           │
 │                                                                              │
-│  HEADLINE METRICS                                                            │
+│  DOWNSIDE RISK                                                               │
+│  Worst NPV −¥38M  Max ddwn ¥842M (yr 5)  P(NPV<0) 18%  P(IRR<7%) 24%      │
+│  CVaR-5% −¥76M   Worst yr cash flow −¥12M                                  │
+│                                                                              │
+│  HEADLINE METRICS (upside context)                                          │
 │  IRR  8.2%  P50  ·  7.6% P90       NPV  ¥142M P50  ·  ¥118M P90            │
 │  MIRR  7.1% P50  ·  LCOE ¥312/MWh  ·  Payback 8.3yr P50                   │
 │  [▾ full distribution: P50/P75/P90/P99 + histogram]  M=50                  │
@@ -289,6 +316,7 @@ With M > 1 weather draws the chart shows **one fan per variant**: each variant c
 │  ASSUMPTIONS (collapsible)                                                  │
 │  ▾ Discount Rate  WACC 7.0% (= r_f 2.85% + β 0.75 × ERP 5.50%)            │
 │  ▾ Capital Structure  ...                                                   │
+│  Price path: declining-real                                                  │
 │  [full FinanceAssumptionsPanel displayed read-only; ✎ Edit to switch to     │
 │   per-variant mode and unlock editing]                                       │
 │                                                                              │
@@ -296,7 +324,7 @@ With M > 1 weather draws the chart shows **one fan per variant**: each variant c
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Per-variant detail** is a drill-down: same content as Stage ⑤ Finance's results panel but in read-only mode. It shows the single-variant cashflow bar chart, sensitivity tornado, and full assumptions. Left/right arrows navigate between variants. This lets the operator review each variant's numbers in full before comparing.
+**Per-variant detail** is a drill-down: same content as Stage ⑤ Finance's results panel but in read-only mode. It shows the **Downside Risk panel first** (same six metrics as Finance §10: worst NPV, max drawdown + year, P(NPV<0), P(IRR<hurdle), CVaR-5%, worst yr), followed by the headline P50/P90 upside context, cashflow bar chart, sensitivity tornado, and full assumptions. The active price path is shown in both the variant header and the assumptions block. Left/right arrows navigate between variants.
 
 ---
 
@@ -327,6 +355,11 @@ When the user clicks `[+ New variant]`, `[edit]` on an existing variant, or `[Du
 │  EXECUTION PLAN (auto-computed on change):                                  │
 │  ⚡ Instant — CAPEX differs from baseline, same policy + eval result.       │
 │     Finance projection runs in <1 s on save.                                │
+│                                                                              │
+│  PRICE PATH                                                                  │
+│  [● Shared path (declining-real)  ○ Per-variant override]                  │
+│  (Per-variant: [declining-real ▼]  [✎ Edit curve] — reuses PricePathSelector│
+│   from Finance §3.3; change is instant client-side re-multiply)             │
 │                                                                              │
 │  FINANCE ASSUMPTIONS                                                         │
 │  [● Shared assumptions  ○ Per-variant]                                      │
@@ -452,16 +485,21 @@ Reuses from wizard_flow.md §10:
 - `CashFlowChart` — per-variant detail tab
 - `TornadoChart` — per-variant sensitivity
 
+Shared with Finance Stage ⑤ (reused):
+- `PricePathSelector` — (from Finance §3.3) preset cards with 20yr sparklines; also used for shared workbench-level price path control and per-variant override in VariantEditor
+- `CurveEditor` — (from Finance §3.3) drag + table mode curve editor; reused for any custom-path editing in workbench
+- `DownsideRiskPanel` — (from Finance §10) worst-case NPV, max drawdown + year, P(NPV<0), P(IRR<hurdle), CVaR-5%, worst yr; reused in per-variant detail
+
 New components needed (to be specced in frontend contracts):
-- `VariantList` — top section; rows of variants with status chips, edit/duplicate/remove actions; shared-assumptions bar; [Run missing] button; [+ Add variant] action
-- `VariantRow` — single variant row; label, config/policy summary, finance summary, status chip, action buttons
-- `VariantEditor` — inline or side-panel form; config selector, CAPEX/policy/assumptions fields; live execution-plan display
+- `VariantList` — top section; rows of variants with status chips, edit/duplicate/remove actions; shared-assumptions bar + shared price-path control; [Run missing] button; [+ Add variant] action
+- `VariantRow` — single variant row; label, config/policy/price-path summary, finance summary, status chip, action buttons
+- `VariantEditor` — inline or side-panel form; config selector, CAPEX/policy/price-path/assumptions fields; live execution-plan display
 - `ExecutionPlanBadge` — tier indicator chip: ⚡ Instant / ▶ Eval needed / ⚠ Retrain req. / ⏳ Running
-- `ComparisonTable` — results table; variant columns, metric rows; delta coloring; shimmer placeholders for running variants; "—" for retrain-required variants
+- `ComparisonTable` — results table; three-section layout (Upside / Downside Risk / Operational); variant columns, metric rows; delta coloring; shimmer placeholders for running variants; "—" for retrain-required variants
 - `ComparisonResultsTabs` — [Table] / [NPV vs Rate] / [Per-variant detail] tab bar with result panels
-- `PerVariantDetail` — single-variant drill-down; cash flow, tornado, assumptions (read-only); prev/next nav
+- `PerVariantDetail` — single-variant drill-down; DownsideRiskPanel first, then headline P50/P90, cash flow, tornado, assumptions (read-only); prev/next nav
 - `AddToComparisonModal` — lightweight modal for entry-point flows (from Config/Eval/Finance stages)
-- `SharedAssumptionsBar` — one-liner strip showing shared WACC/horizon; [✎ Edit] opens a stripped-down `FinanceAssumptionsPanel` covering only Class B params (WACC/horizon/view/currency)
+- `SharedAssumptionsBar` — one-liner strip showing shared WACC/horizon + price-path name; [✎ Edit] opens stripped-down `FinanceAssumptionsPanel` for Class B params + PricePathSelector for shared path
 
 ---
 
@@ -496,6 +534,10 @@ Tier (a) 0 (instant finance re-slice from same cash-flow series) is handled clie
 
 **Q4 — Export format:** For the company demo, the primary output is likely a one-page PDF comparing two variants side-by-side. v1 will produce CSV + a raw-data dump. A formatted PDF report is v2.
 
+**Q7 — Scenario (price path × variant) identifier:** When two variants run different price paths, how does the comparison table label them? Proposed: the variant header row shows `A (SST) · declining-real` and `A (SST) · stress` as separate columns (or separate scenario rows). This needs a decision: are multiple price-path × variant combos separate COLUMNS or separate ROWS in the table? Suggested: if variants differ only by price path, they appear as rows in a "price path comparison" sub-mode, with the variant header fixed and a price-path row label. If variants differ by both config and price path, they appear as separate columns. **This framing decision gates the ComparisonTable schema in the frontend contract** — table schema needs to be decided before the contract is written. Flag for USER review.
+
+**Q8 — Shared vs per-variant downside risk in NpvFanChart tab:** The §4.3 NpvFanChart multi-variant chart shows upside fans per variant. Should it also show a "downside zone" (P(NPV<0) region, i.e. the proportion of paths where NPV is negative) visually? This would require a horizontal shaded band below the x-axis for each variant's downside probability. v1: omit (separate Downside Risk section in Table tab is sufficient). Revisit if USER requests it.
+
 ---
 
 ## 12. Visual language (extends wizard_flow.md §10)
@@ -519,4 +561,4 @@ Neutral (±0)          — #94a3b8 (slate)
 
 ---
 
-*docs/design/ux/comparison_workbench.md — ui-designer, task #67 — v0.1 2026-06-12 (initial design: variant model, execution tiers, layout, wireframes, component inventory) · v0.2 2026-06-12 (rl-architect v1.1 ruling: DELTA framework, NO-DOUBLE-COUNT, two-mode terminology observed/batch, (a)/(b)/(c) canonical tier labels, SST showcase path, vmapped batch eval for Tier (b), serving-/finance-expert ownership notes) · v0.3 2026-06-12 (USER directive: distribution-aware comparison — §4.2 table with P50+P90 columns per variant + delta-of-P50s default + seed-pairing footnote slot; §4.3 NpvFanChart multi-variant with per-variant bands + IRR P50/P90 markers + band-toggle control; §4.4 headline updated to P50/P90 pair; AssumptionsStrip M=50; §9 NpvCurveChart → NpvFanChart; Q5 delta-method gate on finance contract + Q6 band-toggle memory)*
+*docs/design/ux/comparison_workbench.md — ui-designer, task #67 — v0.1 2026-06-12 (initial design: variant model, execution tiers, layout, wireframes, component inventory) · v0.2 2026-06-12 (rl-architect v1.1 ruling: DELTA framework, NO-DOUBLE-COUNT, two-mode terminology observed/batch, (a)/(b)/(c) canonical tier labels, SST showcase path, vmapped batch eval for Tier (b), serving-/finance-expert ownership notes) · v0.3 2026-06-12 (USER directive: distribution-aware comparison — §4.2 table with P50+P90 columns per variant + delta-of-P50s default + seed-pairing footnote slot; §4.3 NpvFanChart multi-variant with per-variant bands + IRR P50/P90 markers + band-toggle control; §4.4 headline updated to P50/P90 pair; AssumptionsStrip M=50; §9 NpvCurveChart → NpvFanChart; Q5 delta-method gate on finance contract + Q6 band-toggle memory) · v0.4 2026-06-12 (USER directive: scenario = price path × variant — price_path field in variant model; §4.1 shared price-path control in VariantList; §4.2 table restructured into Upside / Downside Risk / Operational sections, worst-case columns (Worst NPV, P(NPV<0), P(IRR<hurdle), CVaR-5%) with deltas; §4.4 DownsideRiskPanel first in per-variant detail, price-path name in variant header; §5 PRICE PATH control in VariantEditor; §9 PricePathSelector + CurveEditor + DownsideRiskPanel as shared components; Q7 scenario-column framing gate; Q8 NpvFanChart downside-zone deferred)*

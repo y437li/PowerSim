@@ -1,7 +1,7 @@
 # Stage ⑤ — Finance: Per-Screen Layout
 
 > **Owner:** ui-designer · **Task:** #65
-> **Status:** DRAFT v0.2 (2026-06-12) — distribution-aware results: P50/P90 bankability pair headline, NpvFanChart, percentile-selector cash-flow chart, ensemble-size indicator, CI convergence hint; M-series instant client-side re-discount; workbench delta footnote
+> **Status:** DRAFT v0.3 (2026-06-12) — Downside Risk panel is the centerpiece; Price-path selector + curve editor; scenario = (price path × eval); all path edits instant (re-multiply cached cash flows); AssumptionsStrip carries price-path name; workbench worst-case columns
 > **Gate:** frontend-reviewer verdict before frontend contract is authored.
 > **Parent doc:** wizard_flow.md v0.6 (§8, §10) — this document deepens Stage ⑤ only.
 > **§13 alignment pending:** finance-expert is drafting §13 (project-finance spec); field names in this doc should be reconciled with §13 before the frontend contract is written.
@@ -12,9 +12,11 @@
 
 ## 1. Purpose and scope
 
-Stage ⑤ runs a project finance simulation over a 10–20 year horizon: IRR, NPV, MIRR, LCOE, payback period, and year-by-year cash flows. The full assumptions panel is always visible and editable, with CAPM decomposition, provenance badges, and per-field ↺ resets. Results update immediately or within a beat depending on which parameters changed (see §9).
+Stage ⑤ runs a project finance simulation over a 10–20 year horizon. The **primary purpose** is to show the project's biggest loss and downside risk under different price scenarios — this is the number the USER wants to show to investors and lenders. The upside (IRR P50/P90) is context; the downside (worst-case NPV, P(NPV<0), CVaR-5%, max drawdown) is the centerpiece.
 
-This document covers the complete layout, all six assumptions sections, the results panel, chart specs, export, and the `[+ Add to Comparison]` entry point.
+Two primary scenario controls drive the results: the **eval basis** (which dispatch simulation) and the **price path** (which 20-year revenue-price trajectory). All other parameters (WACC, CAPEX, depreciation) live in the collapsible assumptions panel.
+
+This document covers the complete layout, scenario controls, price-path selector and curve editor, Downside Risk panel, upside metrics, charts, export, and the `[+ Add to Comparison]` entry point.
 
 ---
 
@@ -42,40 +44,111 @@ WizardBar badge: LOCKED → 🔒, PENDING → empty circle, COMPLETE → green �
 │  ①Config ✓  →  ②Algorithm ✓  →  ③Train ✓  →  ④Eval ✓  →  ⑤Finance ●        │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  ┌─ LEFT: ASSUMPTIONS (40%) ──────────────┐  ┌─ RIGHT: RESULTS (60%) ─────┐ │
-│  │  (scrollable; sticky header)           │  │  (scrollable; AssumpStrip  │ │
-│  │                                        │  │   sticky at top)           │ │
-│  │  ┌─ EVAL BASIS ───────────────────┐    │  │                            │ │
-│  │  │ SAC run-a1b2c3 · #a1b2c3  [▼] │    │  │  [AssumptionsStrip — §8]   │ │
-│  │  │ ℹ Config match ✓              │    │  │  ─────────────────────────  │ │
-│  │  └────────────────────────────────┘    │  │                            │ │
-│  │                                        │  │  [Headline Metrics — §10]  │ │
-│  │  ┌─ ASSUMPTIONS PANEL ────────────┐    │  │                            │ │
-│  │  │ ▾ DISCOUNT RATE          [§4]  │    │  │  [CashFlowChart — §11]     │ │
-│  │  │ ▸ CAPITAL STRUCTURE      [§5]  │    │  │                            │ │
-│  │  │ ▸ ESCALATION / CURRENCY  [§6]  │    │  │  [NpvCurveChart — §12]     │ │
-│  │  │ ▸ LIFECYCLE COSTS        [§7]  │    │  │                            │ │
-│  │  │ ▸ CAPEX / OPEX           [§8]  │    │  │  [TornadoChart — §13]      │ │
-│  │  │ ▸ ACCOUNTING             [§9]  │    │  │                            │ │
-│  │  │                                │    │  │                            │ │
-│  │  │ [↺ Reset all to defaults]      │    │  │                            │ │
-│  │  └────────────────────────────────┘    │  │                            │ │
-│  │                                        │  │                            │ │
-│  └────────────────────────────────────────┘  └────────────────────────────┘ │
-│                                                                              │
+│  ┌─ LEFT: SCENARIO + ASSUMPTIONS (40%) ──┐  ┌─ RIGHT: RESULTS (60%) ─────┐ │
+│  │  (scrollable; sticky header)          │  │  (scrollable; AssumpStrip  │ │
+│  │                                       │  │   sticky at top)           │ │
+│  │  ┌─ SCENARIO CONTROLS ─────────────┐  │  │                            │ │
+│  │  │  EVAL BASIS                     │  │  │  [AssumptionsStrip — §12]  │ │
+│  │  │  SAC run-a1b2 · #a1b2c3 [▼]    │  │  │  ─────────────────────────  │ │
+│  │  │  ℹ Config match ✓               │  │  │                            │ │
+│  │  │                                 │  │  │  ┌─ DOWNSIDE RISK ──────┐  │ │
+│  │  │  PRICE PATH           [§3.3]    │  │  │  │  (centerpiece §10)   │  │ │
+│  │  │  ● declining-real [▼] [✎ Edit]  │  │  │  │  Worst NPV  −¥38M    │  │ │
+│  │  │  ╲___ (20yr sparkline)          │  │  │  │  Max ddwn  ¥842M/Y5  │  │ │
+│  │  └─────────────────────────────────┘  │  │  │  P(NPV<0)    18%     │  │ │
+│  │                                       │  │  │  P(IRR<7%)   24%     │  │ │
+│  │  ┌─ ASSUMPTIONS PANEL ─────────────┐  │  │  │  CVaR-5%   −¥76M    │  │ │
+│  │  │ ▾ DISCOUNT RATE         [§4]    │  │  │  │  Worst yr  −¥12M    │  │ │
+│  │  │ ▸ CAPITAL STRUCTURE     [§5]    │  │  │  └─────────────────────┘  │ │
+│  │  │ ▸ ESCALATION/CURRENCY   [§6]    │  │  │                            │ │
+│  │  │ ▸ LIFECYCLE COSTS       [§7]    │  │  │  [Headline P50/P90 — §11] │ │
+│  │  │ ▸ CAPEX / OPEX          [§8]    │  │  │                            │ │
+│  │  │ ▸ ACCOUNTING            [§9]    │  │  │  [CashFlowChart — §13]     │ │
+│  │  │ [↺ Reset all to defaults]       │  │  │                            │ │
+│  │  └─────────────────────────────────┘  │  │  [NpvFanChart — §14]       │ │
+│  │                                       │  │                            │ │
+│  └───────────────────────────────────────┘  │  [TornadoChart — §15]      │ │
+│                                             └────────────────────────────┘ │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │  [← Back to Eval]                 [+ Add to Comparison]  [Export results ▾] │
 ��───────────────────────��──────────────────────────────────────────────────────┘
 ```
 
 **Column behaviour:**
-- Left column has a sticky section header so the user always sees which assumptions section they are in as they scroll.
-- Right column has the `AssumptionsStrip` sticky at the top — always visible while scrolling through charts.
+- Left column: **SCENARIO CONTROLS** (eval basis + price path — always visible, not collapsible) sits above the collapsible ASSUMPTIONS PANEL accordion. The scenario controls section has no accordion — both EVAL BASIS and PRICE PATH are always expanded.
+- Right column: `AssumptionsStrip` sticky at the top; **DOWNSIDE RISK panel** is the first and largest result element — the operator sees worst-case before upside. Right column extends below left column when the Downside Risk + all charts stack taller.
 - On screens 1024–1279 px: both columns remain but left collapses to 36%, right expands to 64%.
 
 ### 3.2 Tablet / mobile — stacked
 
 Left column (assumptions) appears as a collapsible `▾ Assumptions` section above the results. Right column fills full width. On mobile, charts are 100% width with horizontal scroll disabled (charts reflow to a single-series view).
+
+### 3.3 Price-path selector and curve editor
+
+The PRICE PATH control sits inside SCENARIO CONTROLS on the left column. It is always visible (not inside the assumptions accordion).
+
+**Preset cards (default view):**
+
+```
+PRICE PATH
+┌────────────────────────────────────────────────────────────────┐
+│  ● constant-real    /─────────────────\  (flat 20yr sparkline) │
+│  ○ escalation       /──────────────────/ (rising 20yr)         │
+│  ○ declining-real   \──────────────────  (falling 20yr)        │
+│  ○ step-change      ────\──────────────  (step down yr 8)      │
+│  ○ stress           \─────────────────   (sharp fall yr 1–3)   │
+│  ○ custom           [user-edited path]                         │
+└────────────────────────────────────────────────────────────────┘
+[✎ Edit curve]                               [Custom: "from declining-real"]
+```
+
+- Each card shows: radio selector, label, 20-year sparkline of the price multiplier trajectory (normalised to 1.0 = current tariff).
+- Selecting a preset: instantly applies the new multiplier vector by re-multiplying cached cash-flow series. No server call, no re-dispatch. Results update within 50 ms.
+- Active path name appears in the AssumptionsStrip.
+
+**Edit mode (curve editor):**
+
+Clicking `[✎ Edit curve]` opens an inline panel replacing the preset cards:
+
+```
+PRICE PATH — EDIT  [starting from: declining-real]
+┌────────────────────────────────────────────────────────────────────────┐
+│  [● Drag mode  ○ Table mode]                                           │
+│                                                                        │
+│  Drag mode:                                                            │
+│    1.10 │·   ·                                                         │
+│    1.00 │      ·   ·                                                   │
+│    0.90 │            ·   ·                                             │
+│    0.80 │                  ·   ·   ·   ·   ·   ·   ·   ·   ·   ·      │
+│         └──────────────────────────────────────────────────────── yr  │
+│           0    2    4    6    8   10   12   14   16   18   20          │
+│  (drag any year-point up/down; handles snap to 0.01 increments)       │
+│                                                                        │
+│  Table mode (toggle):                                                  │
+│  Yr  1: [1.00] Yr  2: [0.98] Yr  3: [0.96] ... Yr 20: [0.82]         │
+│                                                                        │
+│  Path name:  [custom, from declining-real          ]                  │
+└────────────────────────────────────────────────────────────────────────┘
+[Apply]  [Reset to preset]  [Cancel]
+```
+
+- **Drag mode**: interactive spline with year-point handles. Results re-multiply on drag-release (not on every drag frame — re-multiply is triggered on `mouseup`/`touchend`).
+- **Table mode**: editable numeric table of the 20-year multiplier vector. Each cell is a number input with 2 decimal places. Results re-multiply on blur.
+- **Both modes**: changing one immediately syncs the other. Table gives precision; drag gives intuition.
+- **Path name field**: pre-populated with `"custom, from <source-preset>"`. The operator can rename it. The custom name appears in the AssumptionsStrip and on every export.
+- **Apply**: closes the editor, sets the active path.
+- **Reset to preset**: reverts to the source preset's multiplier vector. Does not close the editor.
+- **Cancel**: closes the editor without applying any changes.
+
+**Per-stream override (advanced, hidden by default):**
+
+```
+[▸ Per-stream overrides (advanced)]
+```
+
+When expanded, shows one price-path selector per revenue stream (wind tariff, battery dispatch, ancillary). Default: all streams use the same path. Per-stream mode is for projects with differently structured revenue contracts. This is an advanced disclosure — it should not be prominent. See §Q8 below.
+
+**Response class:** Price-path changes are always **instant client-side** (re-multiply cached M cash-flow series). No server call, no re-dispatch. This applies to preset selection, drag-release, and table-edit. The assumption is that dispatched energy quantities are fixed; the price path changes only what those quantities are worth year-over-year.
 
 ---
 
@@ -223,7 +296,60 @@ Left column (assumptions) appears as a collapsible `▾ Assumptions` section abo
 
 ---
 
-## 10. Results panel — Headline metrics (distribution-aware)
+## 10. Downside Risk panel (centerpiece)
+
+The Downside Risk panel is the **first and largest result element** on the right column. It is not collapsible, not behind an expand button, and not de-emphasised. The operator should see the project's worst case before they see the upside headline. Numbers are large, colour-coded red when bad (CVaR negative, P(NPV<0) > 0, worst-year negative), and carry no optimistic framing.
+
+```
+┌─ DOWNSIDE RISK ─────────────────────────────────────────────────────────────┐
+│                                                                              │
+│  WORST-CASE NPV           MAX CUMULATIVE DRAWDOWN                           │
+│  − ¥ 38 M                 ¥ 842 M  (deepest at year 5)                      │
+│  (worst ensemble scenario, 3dp, red if < 0)                                 │
+│                                                                              │
+│  ─────────────────────────────────────────────────────────────────────────  │
+│                                                                              │
+│  P(NPV < 0)               P(IRR < hurdle)             CVaR-5%               │
+│   18%                      24%                        − ¥76 M               │
+│  (share of M draws        (share of M draws           (conditional expected  │
+│   with negative NPV)       below 7% hurdle)            loss in worst 5%)    │
+│                                                                              │
+│  ─────────────────────────────────────────────────────────────────────────  │
+│                                                                              │
+│  WORST SINGLE-YEAR CASH FLOW                                                │
+│  − ¥12 M  (year 3, excluding CAPEX year 0)                                  │
+│                                                                              │
+│  Price path: declining-real                                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Metrics defined:**
+
+| Metric | Definition | Red when |
+|--------|-----------|----------|
+| Worst-case NPV | NPV of the worst single ensemble draw (min across M) | < 0 |
+| Max cumulative drawdown | Maximum running shortfall below zero in cumulative cash flow (excluding CAPEX); reports the year at which the hole is deepest | > 0 (drawdown exists) |
+| P(NPV < 0) | Fraction of M ensemble draws with NPV < 0 | > 0% |
+| P(IRR < hurdle) | Fraction of M draws with IRR below the hurdle rate | > 0% |
+| CVaR-5% | Expected NPV over the worst 5% of ensemble draws (i.e., average of the bottom 5th percentile) | < 0 |
+| Worst single-year cash flow | Minimum annual net cash flow across all years 1–N and all M draws (CAPEX year 0 excluded — CAPEX is certain) | < 0 |
+
+**Hurdle rate:** sourced from the WACC field in §4 DISCOUNT RATE (unless explicitly overridden by a separate hurdle rate field — see §Q9 below). The hurdle rate used is shown inline: `P(IRR < 7.0%)`.
+
+**M = 1 graceful fallback:** when M = 1 (single point-estimate scenario), the metrics degrade:
+- Worst-case NPV = the single NPV value (no "worst" distinction)
+- P(NPV < 0) and P(IRR < hurdle) = either 0% or 100% (binary)
+- CVaR-5% = the single NPV value
+- Worst single-year cash flow = the minimum year's cash flow
+All values are shown without percentile labels. No error state — M = 1 is valid.
+
+**Price-path context:** the active price path name (`declining-real`, `custom — from escalation`, etc.) is shown at the bottom of the panel so the operator knows which scenario the downside numbers reflect.
+
+**Interaction:** no interactivity on the panel itself. All six numbers update whenever a Class B or Class C recalculation completes. Loading state: shimmer overlay on the panel while any recalculation is in flight.
+
+---
+
+## 11. Results panel — Headline metrics (P50/P90 bankability pair)
 
 Finance results are distributions over the M-scenario weather ensemble. The headline shows the P50 (median) as the primary value with the P90 immediately beneath — the "bankability pair" that lenders and investors use. Detailed percentile breakdown and histogram are one click away.
 
@@ -283,27 +409,29 @@ Clicking the expand control on any headline metric opens an inline panel:
 
 ---
 
-## 11. AssumptionsStrip (sticky header on results side)
+## 12. AssumptionsStrip (sticky header on results side)
 
 The AssumptionsStrip is always visible on the results panel — it does not scroll away.
 
 ```
 ┌─ ASSUMPTIONS ───────────────────────────────────────────────────────────────┐
 │  r_f 2.85% · β 0.75 · ERP 5.50% → WACC 7.0% · 20yr · View I · Merchant   │
-│  Pre-tax · Synthetic M=50 · Config #a1b2c3                                 │
+│  Pre-tax · Synthetic M=50 · Config #a1b2c3 · Price: declining-real         │
 │  Results: P50 IRR 8.2% · P90 7.6% · P50 NPV ¥142M                         │
 │  (or, when WACC is overridden:)                                              │
-│  WACC 8.0% (overridden; CAPM 7.0%) · 20yr · View I · Synthetic M=50 · ...  │
+│  WACC 8.0% (override) · declining-real · 20yr · View I · Synthetic M=50   │
 └────────────────────────────────���─────────────────────────────────────────────┘
 ```
 
 When any assumption differs from its tagged default (i.e. has `[USER-set]` badge), the strip shows the value with an `*` or with the override annotation inline: `WACC 8.0% (overridden)`.
 
+**Price-path name in the strip:** the active price path (`Price: declining-real`, `Price: custom — from escalation`, etc.) always appears in the strip. This ensures that every screenshotted or exported result carries its revenue-price assumption context unambiguously. If a custom-named path is active, the custom name is shown verbatim.
+
 This strip is the **investment-committee guard**: it is reproduced verbatim on every export. Finance results exported without their assumptions context are not valid deliverables.
 
 ---
 
-## 12. CashFlowChart (with percentile selector)
+## 13. CashFlowChart (with percentile selector)
 
 ```
 Year-by-year bar/waterfall chart, year 0 to 20.
@@ -339,7 +467,7 @@ Year-by-year bar/waterfall chart, year 0 to 20.
 
 ---
 
-## 13. NpvFanChart (replaces single-curve NpvCurveChart)
+## 14. NpvFanChart (replaces single-curve NpvCurveChart)
 
 With M > 1 weather draws, the NPV-vs-rate chart becomes a **fan chart**: a median line flanked by two shaded uncertainty bands. The fan chart shows at a glance both expected performance and downside risk across the full rate spectrum.
 
@@ -375,7 +503,7 @@ NPV vs Discount Rate — fan chart (M = 50 draws)
 
 ---
 
-## 14. TornadoChart
+## 15. TornadoChart
 
 ```
 Sensitivity: ±ΔNPV for ±10% change in each input.
@@ -395,7 +523,7 @@ Tornado chart shows top-8 sensitivity drivers by |ΔNPV|. `[Show all]` expands t
 
 ---
 
-## 15. Eval basis picker
+## 16. Eval basis picker
 
 At the very top of the left column (above the assumptions panel), a compact strip shows the selected eval result:
 
@@ -417,21 +545,21 @@ At the very top of the left column (above the assumptions panel), a compact stri
 
 ---
 
-## 16. Footer
+## 17. Footer
 
 ```
 [← Back to Eval]     [+ Add to Comparison]     [Export results + assumptions ▾]
 ```
 
-### 16.1 [← Back to Eval]
+### 17.1 [← Back to Eval]
 Always enabled. Navigates to Stage ④ without discarding assumptions (assumptions are persisted server-side as part of the finance config).
 
-### 16.2 [+ Add to Comparison]
+### 17.2 [+ Add to Comparison]
 Enabled always (Finance stage has results by definition at COMPLETE state). Opens `AddToComparisonModal` with the full `(eval_result_id, policy_id, config_hash, finance_snapshot)` tuple.
 
 If the user has unsaved assumption overrides (has edited something but the server call is in flight), the modal says: `"Computing results… Add to comparison after the current calculation completes?"` with a `[Wait & Add]` option that queues the add.
 
-### 16.3 [Export results + assumptions ▾]
+### 17.3 [Export results + assumptions ▾]
 Opens an export dropdown:
 ```
   Export as CSV (results + assumptions block)
@@ -442,13 +570,14 @@ CSV includes: headline metrics, year-by-year cash flows, NPV vs rate table (3%�
 
 ---
 
-## 17. Loading states and optimistic updates
+## 18. Loading states and optimistic updates
 
 | User action | Response behaviour |
 |-------------|-------------------|
+| Change price path (preset select or drag-release or table-edit) | **Instant** (<50 ms) — re-multiply M cached cash-flow series by new year-by-year multiplier vector. Downside Risk panel, headline metrics, fan chart, and cash-flow chart all update. No server call. No loading state. |
 | Change r_f / β / ERP / WACC override / View I⇔II / horizon / currency | Instant (<50 ms) — client-side re-discount of **M cached cash-flow series** (all M draws). Fan chart bands re-render live as slider moves. No loading state. |
 | Change D/E ratio → WACC recompute | Instant — WACC = (D/V)×Kd×(1−t) + (E/V)×Ke; client-side. |
-| Toggle tax shield / debt enable/disable | ~1–3 s — structural cash-flow change. Loading shimmer on headline metrics only. Assumptions panel remains interactive. |
+| Toggle tax shield / debt enable/disable | ~1–3 s — structural cash-flow change. Loading shimmer on Downside Risk panel + headline metrics. Assumptions panel remains interactive. |
 | Change CAPEX / OPEX / lifecycle costs | ~1–3 s — server-side cash-flow series change. Same shimmer. |
 | Change eval basis | ~2–5 s — full server-side recalculate from new operating data. Full-results shimmer. AssumptionsStrip updates immediately with new config hash. |
 
@@ -456,7 +585,7 @@ CSV includes: headline metrics, year-by-year cash flows, NPV vs rate table (3%�
 
 ---
 
-## 18. PENDING state (no eval basis selected)
+## 19. PENDING state (no eval basis selected)
 
 When the user arrives at Stage ⑤ for the first time with no pre-selected eval result:
 
@@ -471,7 +600,7 @@ The assumptions panel is shown but all results are blank/pending. Once an eval r
 
 ---
 
-## 19. Accessibility notes
+## 20. Accessibility notes
 
 - Assumptions panel sections: each section is a `<details>/<summary>` pattern (native expand/collapse with `aria-expanded`).
 - CAPM override slider: `role="slider"` with `aria-valuemin`, `aria-valuemax`, `aria-valuenow`, `aria-label="WACC override"`.
@@ -484,7 +613,7 @@ The assumptions panel is shown but all results are blank/pending. Once an eval r
 
 ---
 
-## 20. Component checklist
+## 21. Component checklist
 
 | Component | Role |
 |-----------|------|
@@ -493,7 +622,11 @@ The assumptions panel is shown but all results are blank/pending. Once an eval r
 | `FinanceAssumptionsPanel` | New: six collapsible sections, provenance badges, ↺ reset; the full assumptions editor |
 | `CAPMBuilder` | New (within DISCOUNT RATE section): r_f/β/ERP → WACC build-up, tenor picker, override slider, Restore CAPM |
 | `AssumptionField` | New primitive: editable control + provenance badge + ↺ reset; used throughout |
-| `AssumptionsStrip` | New: sticky one-liner summary on results side; reproduced on every export |
+| `ScenarioControlsBlock` | New: always-visible block containing EvalBasisPicker + PricePathSelector; sits above FinanceAssumptionsPanel |
+| `PricePathSelector` | New: preset cards with 20-yr sparklines + active indicator; triggers instant re-multiply on selection |
+| `CurveEditor` | New: inline curve editor — drag mode (interactive spline with year-point handles) + table mode (numeric vector); dual-mode synced; apply/reset/cancel; path-name field |
+| `DownsideRiskPanel` | New: centerpiece results panel — worst-case NPV, max drawdown + year, P(NPV<0), P(IRR<hurdle), CVaR-5%, worst single-year cash flow; shimmer on recalc |
+| `AssumptionsStrip` | New: sticky one-liner summary on results side; includes price-path name; reproduced on every export |
 | `CashFlowChart` | New: year-by-year bar/waterfall with replacement markers + percentile selector + P25-P75 range overlay |
 | `NpvFanChart` | New: NPV vs discount rate fan chart — median line + P25-P75 + P10-P90 bands + dual IRR markers (P50/P90); degrades to single-curve when M=1 |
 | `MetricDistributionPopover` | New: expandable percentile table (P50/P75/P90/P99) + histogram sparkline; used inside each headline metric card |
@@ -504,7 +637,7 @@ The assumptions panel is shown but all results are blank/pending. Once an eval r
 
 ---
 
-## 21. Open questions
+## 22. Open questions
 
 **Q1 — LCOS in View I:** Should LCOS (¥/MWh, battery specific) appear in View I results? It's a battery-specific metric; View II (battery-incremental) is the natural home. For v1: show LCOS in both views but label it clearly as "battery only" in View I. Flag in contract.
 
@@ -520,6 +653,12 @@ The assumptions panel is shown but all results are blank/pending. Once an eval r
 
 **Q7 — Client-side M-series memory:** With M = 50 weather draws, the client holds M full year-by-year cash-flow series for instant Class B re-discounting. At 20 years × 50 draws × ~6 metrics per year, this is ~6 000 floats ≈ trivial. At M = 500, still ≤ 60 000 floats. Document the upper bound in the serving contract response schema so the frontend can size its memory budget.
 
+**Q8 — Per-stream price-path override scope:** The advanced per-stream override (§3.3) shows one price-path selector per revenue stream (wind tariff / battery dispatch / ancillary). How many streams are supported in v1? The serving contract needs to enumerate the stream keys. Suggested: always show the three standard streams (wind, battery_dispatch, ancillary) but grey out streams with zero contribution in the selected eval result. finance-expert should confirm stream taxonomy.
+
+**Q9 — Hurdle rate source for P(IRR < hurdle):** In §10 Downside Risk, `P(IRR < hurdle)` uses the WACC as the hurdle rate by default. Should there be a separate hurdle rate field distinct from WACC? (e.g. equity IRR hurdle vs project WACC). For v1: use WACC. If a separate hurdle rate is needed, it would be a new field in the CAPITAL STRUCTURE or DISCOUNT RATE section — flag for finance-expert to decide.
+
+**Q10 — Price-path endpoint in the serving contract:** For instant price-path re-multiplication, the client needs the M raw cash-flow series (one per draw, before price-path application). The serving contract must specify whether the server returns `pre_price_path_cashflows` as a separate payload field, or whether the frontend always derives them by dividing by the server-applied path. Simplest: server always applies a flat (price multiplier = 1.0 for all years) baseline path when returning the M series, so the client can multiply by any path without dividing first. finance-expert or serving-engineer to confirm.
+
 ---
 
-*docs/design/ux/stage_5_finance.md — ui-designer, task #65 — v0.1 2026-06-12 (initial per-screen layout: two-column assumptions+results, all six assumption sections, AssumptionsStrip, headline metrics, CashFlowChart, NpvCurveChart, TornadoChart, eval basis picker, loading states, export, a11y notes, component checklist, 4 open questions) · v0.2 2026-06-12 (USER directive: distribution-aware results — P50/P90 bankability pair headline, expandable percentile table + histogram, NpvCurveChart → NpvFanChart (median + P25-P75 + P10-P90 bands), CashFlowChart + percentile selector + P25-P75 range overlay, ensemble-size M= indicator, convergence-hint affordance, instant M-series client-side re-discount clarified, AssumptionsStrip shows M=N, 3 new open questions, §13 alignment gate)*
+*docs/design/ux/stage_5_finance.md — ui-designer, task #65 — v0.1 2026-06-12 (initial per-screen layout: two-column assumptions+results, all six assumption sections, AssumptionsStrip, headline metrics, CashFlowChart, NpvCurveChart, TornadoChart, eval basis picker, loading states, export, a11y notes, component checklist, 4 open questions) · v0.2 2026-06-12 (USER directive: distribution-aware results — P50/P90 bankability pair headline, expandable percentile table + histogram, NpvCurveChart → NpvFanChart (median + P25-P75 + P10-P90 bands), CashFlowChart + percentile selector + P25-P75 range overlay, ensemble-size M= indicator, convergence-hint affordance, instant M-series client-side re-discount clarified, AssumptionsStrip shows M=N, 3 new open questions, §13 alignment gate) · v0.3 2026-06-12 (USER directive: Downside Risk panel as centerpiece §10 — worst NPV, max drawdown+year, P(NPV<0), P(IRR<hurdle), CVaR-5%, worst yr; price-path selector §3.3 — preset cards + drag/table curve editor + per-stream override (advanced); scenario = (price path × eval basis); all path edits instant re-multiply; AssumptionsStrip carries price-path name; section renumbering §10-§22; 3 new open questions Q8-Q10)*
