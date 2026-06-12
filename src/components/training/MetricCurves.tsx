@@ -12,24 +12,27 @@ import {
 import { Card } from "../Card";
 import { formatSteps, formatYuan } from "../../utils/units";
 import type { TrainMetricsPayload } from "../../types/telemetry";
+import { TOKEN } from "../../styles/tokenValues";
 
 interface MetricCurvesProps {
   history: TrainMetricsPayload[];
 }
 
-interface ChartPanel {
+export interface ChartPanel {
   key: keyof TrainMetricsPayload;
   label: string;
   color: string;
   allowNegative?: boolean;
 }
 
-const PANELS: ChartPanel[] = [
-  { key: "actor_loss",              label: "Actor Loss",      color: "#6366f1" },
-  { key: "critic_loss",             label: "Critic Loss",     color: "#f59e0b" },
-  { key: "ent_coef",                label: "Entropy Coeff",   color: "#10b981" },
-  { key: "reward_scaled_mean",      label: "Reward (scaled)", color: "#3b82f6" },
-  { key: "cost_total_real_mean_yuan", label: "Episode Cost",  color: "#ef4444", allowNegative: true },
+// Exported so the design_system test suite can assert that each color
+// references TOKEN.* rather than an independent hex literal.
+export const PANELS: ChartPanel[] = [
+  { key: "actor_loss",              label: "Actor Loss",      color: TOKEN.chartActor },
+  { key: "critic_loss",             label: "Critic Loss",     color: TOKEN.chartCritic },
+  { key: "ent_coef",                label: "Entropy Coeff",   color: TOKEN.chartEntropy },
+  { key: "reward_scaled_mean",      label: "Reward (scaled)", color: TOKEN.chartReward },
+  { key: "cost_total_real_mean_yuan", label: "Episode Cost",  color: TOKEN.chartCost, allowNegative: true },
 ];
 
 /** Truncate a checkpoint_id string to at most 10 chars for the marker label. */
@@ -83,7 +86,7 @@ export function MetricCurves({ history }: MetricCurvesProps): JSX.Element {
           <Card title={panel.label}>
             <ResponsiveContainer width="100%" height={160}>
               <LineChart data={chartData} margin={{ top: 8, right: 8, bottom: 4, left: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                <CartesianGrid strokeDasharray="3 3" stroke={TOKEN.chartGrid} />
                 <XAxis
                   dataKey="step"
                   tickFormatter={(v: number) => formatSteps(v)}
@@ -119,13 +122,13 @@ export function MetricCurves({ history }: MetricCurvesProps): JSX.Element {
                   <ReferenceLine
                     key={step}
                     x={step}
-                    stroke="#9ca3af"
+                    stroke={TOKEN.chartAxis}
                     strokeDasharray="4 2"
                     label={{
                       value: truncateId(id),
                       position: "top",
                       fontSize: 9,
-                      fill: "#6b7280",
+                      fill: TOKEN.chartAxisLabel,
                     }}
                   />
                 ))}

@@ -11,6 +11,13 @@ import {
 } from "recharts";
 import type { EnvStepPayload } from "../../types/telemetry";
 import { socToPercent } from "../../utils/units";
+import { TOKEN } from "../../styles/tokenValues";
+
+// Named color exports — imported by design_system tests (suites 6+7) and
+// any consumer that needs to programmatically query SOC chart colors.
+export const SOC_LINE_COLOR   = TOKEN.chartSoc;     // #3b82f6
+export const SOC_BOUNDS_COLOR = TOKEN.accentGreen;  // #22c55e
+export const SOC_BAND_BG      = TOKEN.touValleyBg;  // #dcfce7
 
 interface SocTimelineProps {
   history: EnvStepPayload[];
@@ -44,22 +51,22 @@ export function SocTimeline({ history }: SocTimelineProps): JSX.Element {
             <XAxis dataKey="step" />
             <YAxis domain={[0, 100]} unit="%" />
             {/* D4 bounds band shaded between 20–90% */}
-            <ReferenceArea y1={20} y2={90} fill="#dcfce7" fillOpacity={0.3} />
+            <ReferenceArea y1={20} y2={90} fill={SOC_BAND_BG} fillOpacity={0.3} />
             <ReferenceLine
               y={20}
-              stroke="#22c55e"
+              stroke={SOC_BOUNDS_COLOR}
               strokeDasharray="4 4"
               label={{ value: "Min 20%", position: "insideBottomLeft", fontSize: 10 }}
             />
             <ReferenceLine
               y={90}
-              stroke="#22c55e"
+              stroke={SOC_BOUNDS_COLOR}
               strokeDasharray="4 4"
               label={{ value: "Max 90%", position: "insideTopLeft", fontSize: 10 }}
             />
             {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
             <Tooltip formatter={(v: any) => v == null ? ['', ''] : [`${Number(v).toFixed(1)} %`, "SOC"]} />
-            <Line type="monotone" dataKey="soc" dot={false} stroke="#3b82f6" strokeWidth={1.5} />
+            <Line type="monotone" dataKey="soc" dot={false} stroke={SOC_LINE_COLOR} strokeWidth={1.5} />
           </LineChart>
         </ResponsiveContainer>
       </div>
