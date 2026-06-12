@@ -3,50 +3,64 @@
 **Contract:** `contracts/training/eval_result_extended.md`
 **Area:** training (env eval path)
 **Spec:** §5.5 (eval loop), §3 (physics / EnvInfo), master plan §5.3/§5.5/§8 (finance finding)
-**Decisions:** D3 (Δt=1h, 8760 eval steps), D10/D21 (demand charge booking), D13 (cost separation: real-money vs reward-basis), D17 (E1 deferred — no new physics)
+**Decisions:** D3 (Δt=1h, 8760 eval steps), D10/D21 (demand charge booking), D13 (cost separation), D17 (no new physics), D31/F1 (constant real-price escalation at finance layer)
 **Owners:** jax-env-engineer + training-engineer
 **Reviewer:** backend-reviewer
 **Prerequisite for:** workstream D (project finance — LCOE/LCOS/OPEX/replacement cost inputs)
 **Finance input:** §5.3 rev4 (stream list + quantity requirements, finance-expert advisory)
+**Architecture ruling:** rl-architect (stream-keyed structure; #82 gate)
 
 ---
 
 ## 1. Motivation and scope
 
-Today's `PolicyEvalResult` reports only 9 fields: 5 annual cost aggregates, 1 derived total, and 3 safety/penalty metrics. This is insufficient for workstream D finance:
-- LCOE needs total generation MWh (wind + solar)
-- LCOS needs battery discharge MWh + throughput MWh
-- OPEX needs grid-export/import volumes + revenue/cost
-- Demand-charge reconciliation needs Σ monthly-peak volume
+Today's `PolicyEvalResult` reports only 9 fields: 5 annual cost aggregates, 1 derived total, and 3 safety/penalty metrics. This is insufficient for workstream D finance (LCOE needs generation MWh; LCOS needs battery discharge/throughput; OPEX needs grid-export/import volumes + revenue/cost; demand-charge reconciliation needs the annual peak MW).
 
-All physical flows needed already exist in `EnvInfo` (per-step outputs of the JAX env core, PR #33). This contract adds **accumulation only** — no new physics, no new EnvInfo fields.
+All physical flows needed already exist in `EnvInfo` (PR #33). This contract adds **accumulation only** — zero new physics, zero new EnvInfo fields.
 
-### Stream structure (§5.3 rev4)
+### Stream structure (rl-architect ruling, #82 gate)
 
-Finance workstream D uses a **stream-keyed map** at the REST `/api/finance/compare` layer for forward-compat. `PolicyEvalResult` itself grows **additively** (flat fields) — each new future stream genuinely needs new EnvInfo accumulators, so minor-bump additions are correct. Do **NOT** add zero-placeholder fields for v1-inactive streams (h2_sale, avoided_cost, token_sale); they require physical quantities that don't exist in power-only dispatch.
+`PolicyEvalResult` carries a **stream-keyed dict** `streams: dict[str, StreamAccumulator]` with all **6 rev4 streams pre-declared**. The goal is that when a dormant stream activates (hydrogen, token market, avoided-cost), it transitions from `{0.0, 0.0}` to `{nonzero, nonzero}` with **no structural change** — D doesn't need an eval-contract change. Fixed string keys → valid JAX pytree; accumulates under `lax.scan` cleanly.
 
-**v1 wired streams (power-only dispatch):**
+### F1 / D31 note
 
-| Stream | Volume field | Value field |
-|---|---|---|
-| `grid_export` | `grid_export_mwh` (MWh) | `r_export_yuan` (¥ revenue) |
-| `grid_import` | `grid_import_mwh` (MWh) | `c_import_yuan` (¥ cost) |
-| `demand_charge` | `demand_billing_mw_month` (MW·month) | `demand_charge_yuan` (¥, **existing field**) |
+All `value_yuan` accumulators are **real year-1 ¥** (constant-real-price, D31/F1). The env/eval layer applies **no escalation** — finance layer applies escalation factors post-eval.
 
-**Reconciliation identity (demand_charge stream):**
-`demand_charge_yuan = demand_billing_mw_month × params.demand_rate_yuan_per_mw_month`
-i.e., `demand_billing_mw_month = demand_charge_yuan / params.demand_rate_yuan_per_mw_month`
+### Sign convention
 
-**Out-of-scope v1 streams:** `h2_sale`, `avoided_cost`, `token_sale` — no placeholder fields; these are additive minor-bump additions when their scenarios land (§5.3 v1 scope guard).
+All `StreamAccumulator.value_yuan` fields store **non-negative magnitudes**. Finance applies cash-flow signs by stream type:
+- **inflow (+):** `grid_export`, `h2_sale`, `token_sale`, `avoided_cost`
+- **outflow (−):** `grid_import`, `demand_charge`
 
-**Binding constraint (rl-architect, telemetry-lock owner):** the LOCKED `eval_compare` wire message does NOT gain any new fields. New fields live in `PolicyEvalResult` and `eval_results.json`; the REST `/eval` endpoint serves `eval_results.json` verbatim (pass-through already handles additive extension). Typed REST schema amendment is workstream D (serving-engineer follow-on, out of scope here).
+**Binding constraint (rl-architect, telemetry-lock owner):** the LOCKED `eval_compare` wire message does NOT gain any new fields. `_policy_dict()` in `telemetry.py` is NOT modified.
 
 ---
 
-## 2. Extended `PolicyEvalResult` dataclass
+## 2. `StreamAccumulator` NamedTuple
 
 Location: `src/energy_go/training/eval.py`
-Type: `@dataclass` (unchanged from today's pattern)
+
+```python
+from typing import NamedTuple
+
+class StreamAccumulator(NamedTuple):
+    """Per-stream annual accumulator for workstream D finance.
+
+    volume:     Physical volume. Units are stream-specific (see §4 stream table).
+                Always ≥ 0.
+    value_yuan: Real year-1 ¥ magnitude (D31/F1 constant-real-price).
+                Always ≥ 0. Sign applied by the finance layer, not here.
+    """
+    volume:     float
+    value_yuan: float
+```
+
+---
+
+## 3. Extended `PolicyEvalResult` dataclass
+
+Location: `src/energy_go/training/eval.py`
+Field count: **9 existing + 1 streams + 9 physical-qty + 13 per-source = 32 total**.
 
 ```python
 @dataclass
@@ -56,8 +70,8 @@ class PolicyEvalResult:
     # _policy_dict() in telemetry.py serialises ONLY these 9 to the wire.
     # DO NOT REMOVE or RENAME any of these.
     # -----------------------------------------------------------------------
-    energy_cost_yuan:     float   # Σ c_energy_yuan = c_import_yuan − r_export_yuan (D13)
-    demand_charge_yuan:   float   # Σ c_demand_charge_yuan (month-boundary, D10/D21)
+    energy_cost_yuan:     float   # Σ c_energy_yuan = c_import − r_export (D13 identity)
+    demand_charge_yuan:   float   # Σ c_demand_charge_yuan (D10/D21 monthly bookings)
     degradation_yuan:     float   # Σ c_degradation_yuan
     curtailment_yuan:     float   # Σ c_curtail_yuan
     voll_yuan:            float   # Σ c_voll_yuan
@@ -67,131 +81,117 @@ class PolicyEvalResult:
     penalty_yuan:         float   # Σ penalty_yuan (reward-shaping; NOT in total_cost_yuan)
 
     # -----------------------------------------------------------------------
-    # NEW: grid_export stream — volume + value (¥)
-    # D13 identity: energy_cost_yuan = c_import_yuan − r_export_yuan
+    # NEW: 6-stream keyed dict — all rev4 streams pre-declared (rl-architect ruling)
+    # Keys (verbatim from §5.3 rev4): grid_export, grid_import, demand_charge,
+    #                                  h2_sale, avoided_cost, token_sale
+    # v1 active streams: grid_export, grid_import, demand_charge
+    # v1 zero placeholders: h2_sale, avoided_cost, token_sale
     # -----------------------------------------------------------------------
-    grid_export_mwh:      float   # Σ info.p_export_mw × 1h  (stream volume, MWh; ≥ 0)
-    r_export_yuan:        float   # Σ info.r_export_yuan      (stream value, ¥ revenue; ≥ 0)
+    streams: dict  # dict[str, StreamAccumulator]
 
     # -----------------------------------------------------------------------
-    # NEW: grid_import stream — volume + value (¥)
+    # NEW: physical-quantity accumulators (MWh) — required by finance for
+    # LCOE/LCOS/OPEX/replacement. Δt=1h (D3) → Σ p_X_mw = MWh. All ≥ 0.
     # -----------------------------------------------------------------------
-    grid_import_mwh:      float   # Σ info.p_import_mw × 1h  (stream volume, MWh; ≥ 0)
-    c_import_yuan:        float   # Σ info.c_import_yuan      (stream value, ¥ cost; ≥ 0)
-
-    # -----------------------------------------------------------------------
-    # NEW: demand_charge stream — volume (demand_charge_yuan is the existing wire-locked value)
-    # demand_billing_mw_month = demand_charge_yuan / params.demand_rate_yuan_per_mw_month
-    # Reconciliation: demand_charge_yuan = demand_billing_mw_month × demand_rate
-    # -----------------------------------------------------------------------
-    demand_billing_mw_month: float  # Σ_m month_peak_m (MW·month; ≥ 0)
-
-    # -----------------------------------------------------------------------
-    # NEW: physical-quantity accumulators — required by finance for LCOE/LCOS/OPEX
-    # Δt = 1 h (D3); accumulation = Σ p_X_mw × 1 h = MWh.
-    # All ≥ 0.
-    # -----------------------------------------------------------------------
-    generation_mwh:       float   # Σ (info.p_wind_mw + info.p_pv_mw)  ← LCOE denominator
-    wind_generated_mwh:   float   # Σ info.p_wind_mw                    (component of generation)
-    pv_generated_mwh:     float   # Σ info.p_pv_mw                      (component of generation)
-    bat_charge_mwh:       float   # Σ info.p_bat_ch_mw
-    bat_discharge_mwh:    float   # Σ info.p_bat_dis_mw                  ← LCOS denominator
-    bat_throughput_mwh:   float   # Σ (info.p_bat_ch_mw + info.p_bat_dis_mw)  ← VarOM, cycle-life
-    load_served_mwh:      float   # Σ info.p_load_served_mw
-    load_unserved_mwh:    float   # Σ info.p_load_unserved_mw            ← reliability (INV-VOLL)
-    curtailed_mwh:        float   # Σ info.p_curtailed_mw                ← INV-CURT
+    generation_mwh:       float   # Σ (p_wind_mw + p_pv_mw)  ← LCOE denominator
+    wind_generated_mwh:   float   # Σ p_wind_mw
+    pv_generated_mwh:     float   # Σ p_pv_mw
+    bat_charge_mwh:       float   # Σ p_bat_ch_mw
+    bat_discharge_mwh:    float   # Σ p_bat_dis_mw            ← LCOS denominator
+    bat_throughput_mwh:   float   # Σ (p_bat_ch_mw + p_bat_dis_mw)  ← VarOM, cycle-life
+    load_served_mwh:      float   # Σ p_load_served_mw
+    load_unserved_mwh:    float   # Σ p_load_unserved_mw      ← INV-VOLL reliability
+    curtailed_mwh:        float   # Σ p_curtailed_mw          ← INV-CURT
 
     # -----------------------------------------------------------------------
     # NEW: per-source flow breakdown (13 fields, MWh = MW × 1h per step)
-    # Conservation identities (§3, physics-invariants):
+    # Conservation identities (§3):
     #   wind_generated_mwh = wind_to_load + wind_to_bat + wind_to_grid + wind_curtailed
     #   pv_generated_mwh   = pv_to_load   + pv_to_bat   + pv_to_grid   + pv_curtailed
     #   bat_discharge_mwh  = bat_to_load  + bat_to_grid  + bat_curtailed
+    # Additional (reviewer-required, §3.6 F-IMPORT):
+    #   streams["grid_import"].volume = grid_to_bat_mwh + grid_to_load_mwh
     # All ≥ 0.
     # -----------------------------------------------------------------------
-    wind_to_load_mwh:     float   # Σ info.p_wind_to_load_mw
-    wind_to_bat_mwh:      float   # Σ info.p_wind_to_bat_mw
-    wind_to_grid_mwh:     float   # Σ info.p_wind_to_grid_mw
-    wind_curtailed_mwh:   float   # Σ info.p_wind_curtailed_mw
-    pv_to_load_mwh:       float   # Σ info.p_sol_to_load_mw
-    pv_to_bat_mwh:        float   # Σ info.p_sol_to_bat_mw
-    pv_to_grid_mwh:       float   # Σ info.p_sol_to_grid_mw
-    pv_curtailed_mwh:     float   # Σ info.p_sol_curtailed_mw
-    bat_to_load_mwh:      float   # Σ info.p_bat_to_load_mw
-    bat_to_grid_mwh:      float   # Σ info.p_bat_to_grid_mw
-    bat_curtailed_mwh:    float   # Σ info.p_bat_curtailed_mw
-    grid_to_bat_mwh:      float   # Σ info.p_grid_to_bat_mw
-    grid_to_load_mwh:     float   # Σ info.p_grid_to_load_mw
+    wind_to_load_mwh:     float   # Σ p_wind_to_load_mw
+    wind_to_bat_mwh:      float   # Σ p_wind_to_bat_mw
+    wind_to_grid_mwh:     float   # Σ p_wind_to_grid_mw
+    wind_curtailed_mwh:   float   # Σ p_wind_curtailed_mw
+    pv_to_load_mwh:       float   # Σ p_sol_to_load_mw
+    pv_to_bat_mwh:        float   # Σ p_sol_to_bat_mw
+    pv_to_grid_mwh:       float   # Σ p_sol_to_grid_mw
+    pv_curtailed_mwh:     float   # Σ p_sol_curtailed_mw
+    bat_to_load_mwh:      float   # Σ p_bat_to_load_mw
+    bat_to_grid_mwh:      float   # Σ p_bat_to_grid_mw
+    bat_curtailed_mwh:    float   # Σ p_bat_curtailed_mw
+    grid_to_bat_mwh:      float   # Σ p_grid_to_bat_mw
+    grid_to_load_mwh:     float   # Σ p_grid_to_load_mw
 ```
-
-**Field count:** 9 existing + 27 new = **36 total fields**.
-
-New fields breakdown: 5 stream (grid_export×2 + grid_import×2 + demand_billing×1) + 9 physical-quantity + 13 per-source = 27.
 
 ---
 
-## 3. Accumulation formulas
+## 4. Stream table — v1 volumes and values
 
-### `_accumulate_physical_quantities(infos) → dict[str, float]`
+| stream_id | volume field | volume unit | value_yuan | value unit | v1 status |
+|---|---|---|---|---|---|
+| `grid_export` | Σ `p_export_mw` | MWh | Σ `r_export_yuan` | ¥ (real yr-1) | wired |
+| `grid_import` | Σ `p_import_mw` | MWh | Σ `c_import_yuan` | ¥ (real yr-1) | wired |
+| `demand_charge` | annual peak MW¹ | MW | Σ `c_demand_charge_yuan` | ¥ (real yr-1) | wired |
+| `h2_sale` | 0.0 | MWh (future) | 0.0 | ¥ | zero placeholder |
+| `avoided_cost` | 0.0 | MWh (future)² | 0.0 | ¥ | zero placeholder |
+| `token_sale` | 0.0 | MWh (future) | 0.0 | ¥ | zero placeholder |
 
-A standalone helper in `eval.py`, independently testable without running the full eval loop.
-Takes the stacked `EnvInfo` output of `jax.lax.scan` (each field shape `(N,)`) and returns a dict of the **26 directly-accumulated** new fields (all except `demand_billing_mw_month`).
+¹ `demand_charge.volume` = annual peak MW = `max(infos.c_demand_charge_yuan) / params.demand_rate_yuan_per_mw_month`. This is the **single largest monthly peak** (D31/F1 fidelity boundary: monthly granularity deferred to non-uniform escalation scenario). Reconciliation: `demand_charge.value_yuan = demand_charge.volume × demand_rate` is **not exact** (annual peak × rate ≠ Σ monthly bookings in general); the ¥ field is authoritative.
+
+² `avoided_cost.volume` (when activated): locally served industrial load MWh; `value_yuan = served_mwh × counterfactual_import_price`. Distinct from VOLL (`voll_yuan` is penalty for *unserved* energy). Finance-expert defines the exact price basis at activation.
+
+---
+
+## 5. Helper functions
+
+### `_build_streams(infos, params) → dict[str, StreamAccumulator]`
+
+Builds the 6-stream dict. Requires `params` for `demand_charge.volume` derivation.
 
 ```python
-def _accumulate_physical_quantities(infos) -> dict[str, float]:
-    """Accumulate per-step EnvInfo fields into physical-quantity totals (MWh, ¥).
+def _build_streams(infos, params) -> dict[str, StreamAccumulator]:
+    """Build the 6-key streams dict from per-step EnvInfo + EnvParams.
 
-    Args:
-        infos: stacked EnvInfo from lax.scan — each field has shape (N,).
-
-    Returns:
-        Dict of 26 new PolicyEvalResult fields (all except demand_billing_mw_month).
-        Pure accumulation of existing EnvInfo fields — ZERO new physics.
+    demand_charge.volume = annual peak MW = max(c_demand_charge_yuan) / demand_rate.
+    h2_sale / avoided_cost / token_sale = zero placeholders.
+    Pure accumulation — no new physics.
     """
 ```
 
-Since Δt = 1 h (D3), `Σ p_X_mw` in MW equals MWh directly — no explicit multiplication needed.
+### `_accumulate_physical_quantities(infos) → dict[str, float]`
 
-### `demand_billing_mw_month` (derived in `run_eval()`, not in helper)
+Accumulates the **22 flat physical-quantity fields** (9 aggregate + 13 per-source). Does NOT need `params`. Returns exactly 22 keys.
 
 ```python
-demand_charge_yuan = float(jnp.sum(infos.c_demand_charge_yuan))  # existing accumulation
-demand_billing_mw_month = (
-    demand_charge_yuan / params.demand_rate_yuan_per_mw_month
-    if params.demand_rate_yuan_per_mw_month != 0.0
-    else 0.0
-)
+def _accumulate_physical_quantities(infos) -> dict[str, float]:
+    """Accumulate (N,)-shaped EnvInfo into 22 physical-quantity totals.
+    Returns 22 keys: 9 aggregate (generation_mwh etc.) + 13 per-source.
+    Pure accumulation — no physics.
+    """
 ```
 
-Requires `params` (from `run_eval`'s argument), so it's computed in `run_eval()` after the helper call.
-Reconciliation identity: `demand_charge_yuan = demand_billing_mw_month × demand_rate` (exact, float32 division).
-
-### Summary of accumulations
+### `run_eval()` flow (post-scan)
 
 ```python
-# Δt = 1h (D3)
-grid_export_mwh      = float(jnp.sum(infos.p_export_mw))
-r_export_yuan        = float(jnp.sum(infos.r_export_yuan))
-grid_import_mwh      = float(jnp.sum(infos.p_import_mw))
-c_import_yuan        = float(jnp.sum(infos.c_import_yuan))
-# demand_billing_mw_month: see above (derived in run_eval)
-generation_mwh       = float(jnp.sum(infos.p_wind_mw + infos.p_pv_mw))
-wind_generated_mwh   = float(jnp.sum(infos.p_wind_mw))
-pv_generated_mwh     = float(jnp.sum(infos.p_pv_mw))
-bat_charge_mwh       = float(jnp.sum(infos.p_bat_ch_mw))
-bat_discharge_mwh    = float(jnp.sum(infos.p_bat_dis_mw))
-bat_throughput_mwh   = float(jnp.sum(infos.p_bat_ch_mw + infos.p_bat_dis_mw))
-load_served_mwh      = float(jnp.sum(infos.p_load_served_mw))
-load_unserved_mwh    = float(jnp.sum(infos.p_load_unserved_mw))
-curtailed_mwh        = float(jnp.sum(infos.p_curtailed_mw))
-# per-source (13 fields, same pattern)
-wind_to_load_mwh     = float(jnp.sum(infos.p_wind_to_load_mw))
-# ... etc.
+# After jax.lax.scan:
+acc = _accumulate_physical_quantities(infos)     # 22 flat fields
+streams = _build_streams(infos, env_params)      # 6-stream dict
+# ...build existing 9 fields (unchanged)...
+return PolicyEvalResult(
+    # existing 9...
+    streams=streams,
+    **acc,
+)
 ```
 
 ---
 
-## 4. Conservation and reconciliation identities (must hold)
+## 6. Conservation and reconciliation identities (must hold)
 
 1. **Wind source conservation:**
    `wind_generated_mwh == wind_to_load_mwh + wind_to_bat_mwh + wind_to_grid_mwh + wind_curtailed_mwh`
@@ -203,112 +203,103 @@ wind_to_load_mwh     = float(jnp.sum(infos.p_wind_to_load_mw))
    `bat_discharge_mwh == bat_to_load_mwh + bat_to_grid_mwh + bat_curtailed_mwh`
 
 4. **D13 cost identity:**
-   `energy_cost_yuan == c_import_yuan - r_export_yuan` (exact, float32 precision)
+   `energy_cost_yuan == streams["grid_import"].value_yuan - streams["grid_export"].value_yuan`
 
 5. **generation decomposition:**
-   `generation_mwh == wind_generated_mwh + pv_generated_mwh` (exact — computed from same arrays)
+   `generation_mwh == wind_generated_mwh + pv_generated_mwh` (exact)
 
 6. **bat_throughput decomposition:**
    `bat_throughput_mwh == bat_charge_mwh + bat_discharge_mwh` (exact)
 
-7. **demand_charge reconciliation:**
-   `demand_charge_yuan == demand_billing_mw_month × params.demand_rate_yuan_per_mw_month`
-   (holds to float32 round-trip precision of division + multiplication)
+7. **Aggregate curtailed = Σ per-source (reviewer-required):**
+   `curtailed_mwh == wind_curtailed_mwh + pv_curtailed_mwh + bat_curtailed_mwh`
 
-Tolerance for identities 1–3: `atol = max(1e-3, 1e-5 × sum_mwh)` (float32 accumulation over 8760 steps).
-Identities 4–6: exact (computed from same JAX arrays in the same scan).
-Identity 7: to float32 division precision (~1e-5 relative).
+8. **Grid import = to_bat + to_load (§3.6 row 9, F-IMPORT; reviewer-required):**
+   `streams["grid_import"].volume == grid_to_bat_mwh + grid_to_load_mwh`
+
+Tolerance for identities 1–3, 7–8: `atol = max(1e-3, 1e-5 × max_operand)` (float32 accumulation error over 8760 steps).
+Identities 4–6: computed from the same JAX arrays — exact to float32 round-trip.
 
 ---
 
-## 5. Wire isolation — LOCKED eval_compare unchanged
+## 7. Wire isolation — LOCKED eval_compare unchanged
 
 **`_policy_dict()` in `src/energy_go/training/telemetry.py` is NOT modified.**
-It explicitly constructs a dict with exactly the 9 LOCKED keys — new dataclass fields are invisible to the wire by construction.
+New fields (including `streams`) are NOT serialised to the eval_compare wire.
 
-Contract test: given an extended `PolicyEvalResult` with all 36 fields populated, `_policy_dict(result)` must return a dict with **exactly** the 9 LOCKED keys.
+Contract test: given a fully-populated 32-field `PolicyEvalResult`, `_policy_dict(result)` must return a dict with **exactly the 9 LOCKED keys** — no `streams` key, no MWh keys.
 
 ---
 
-## 6. Storage — `eval_results.json` extension
+## 8. Storage — `eval_results.json` extension
 
 ```jsonc
 {
-  // existing eval_compare payload (unchanged — fed to eval_compare wire)
+  // existing eval_compare payload (LOCKED, unchanged)
   "eval_horizon_steps": 8760,
   "checkpoint_id": "...",
   "cost_basis": "real_money",
   "policies": { "rl": { /* 9 LOCKED fields */ }, ... },
 
-  // NEW: physical quantities + stream volumes (NOT part of eval_compare wire)
+  // NEW: physical quantities + streams (NOT part of eval_compare wire)
   "physical_quantities": {
     "units": {
-      "*_mwh":              "MWh (Δt=1h × MW accumulated over eval horizon)",
-      "demand_billing_mw_month": "MW·month (Σ monthly peaks)",
-      "r_export_yuan":      "¥ revenue from grid export",
-      "c_import_yuan":      "¥ cost of grid import"
+      "*.volume (grid_export|grid_import)": "MWh",
+      "*.volume (demand_charge)": "MW (annual peak)",
+      "*.value_yuan": "¥ real year-1 magnitude (D31/F1)",
+      "*_mwh": "MWh (Δt=1h × MW accumulated over 8760 steps)"
     },
-    "rl":          { /* 27 new fields */ },
-    "no_battery":  { /* 27 new fields */ },
-    "rule_based_tou": { /* 27 new fields */ }
+    "rl": {
+      "streams": {
+        "grid_export":   {"volume": 500.0, "value_yuan": 40.0},
+        "grid_import":   {"volume": 300.0, "value_yuan": 140.0},
+        "demand_charge": {"volume": 100.0, "value_yuan": 3200000.0},
+        "h2_sale":       {"volume": 0.0,   "value_yuan": 0.0},
+        "avoided_cost":  {"volume": 0.0,   "value_yuan": 0.0},
+        "token_sale":    {"volume": 0.0,   "value_yuan": 0.0}
+      },
+      "generation_mwh": 9050.0,
+      "bat_throughput_mwh": 1630.0,
+      /* ... 20 more flat physical-qty + per-source fields */
+    },
+    "no_battery":     { /* same shape */ },
+    "rule_based_tou": { /* same shape */ }
   }
 }
 ```
 
-The `GET /runs/{run_id}/eval` REST endpoint serves `eval_results.json` verbatim — the `physical_quantities` key is passed through automatically. No serving-layer code change required. Explicit typed REST schema amendment is workstream D (serving-engineer follow-on).
+---
+
+## 9. Out of scope
+
+1. Any changes to `EnvInfo` — ZERO new physics.
+2. `eval_compare` wire format — LOCKED, NO additions, NO version bump.
+3. REST `/eval` typed response schema amendment — workstream D, serving-engineer follow-on.
+4. Hourly time series (8760-length arrays) — only annual totals.
+5. Monthly peak granularity for `demand_charge.volume` — D31/F1 fidelity boundary; annual peak MW is the v1 volume.
+6. `h2_sale`, `avoided_cost`, `token_sale` non-zero values — additive minor-bump when their scenarios land; zero placeholders now.
+7. §10 E1 battery aging — deferred per D17 (task #57).
 
 ---
 
-## 7. API summary
-
-```python
-# src/energy_go/training/eval.py
-
-def _accumulate_physical_quantities(infos) -> dict[str, float]:
-    """Accumulate (N,)-shaped EnvInfo into 26 physical-quantity totals.
-    Returns dict with 26 keys — all new fields except demand_billing_mw_month.
-    Pure accumulation — no physics.
-    """
-
-def run_eval(
-    checkpoint: "CheckpointData",
-    data: object,
-    params=None,
-) -> PolicyEvalResult:
-    """Deterministic policy rollout over 8760 steps.
-    Returns extended PolicyEvalResult with 36 total fields (9 existing + 27 new).
-    eval_compare wire serialization unchanged (telemetry._policy_dict uses 9 LOCKED keys).
-    """
-```
-
----
-
-## 8. Out of scope
-
-1. **Any changes to `EnvInfo`** — ZERO new physics, zero new env fields.
-2. **eval_compare wire format** — LOCKED, NO field additions, NO version bump.
-3. **REST `/eval` typed response schema amendment** — workstream D, serving-engineer follow-on.
-4. **Hourly time series (8760-length arrays)** — only annual totals (scalar MWh/¥/MW·month).
-5. **h2_sale, avoided_cost, token_sale streams** — v1 scope guard; additive minor-bump when their scenarios land. No zero-placeholder fields.
-6. **`avoided_cost` stream** — a View-II comparison (`baseline_grid_cost − project_grid_cost`) computed from two dispatch runs in the finance engine; NOT a single EnvInfo accumulator. Out of scope.
-7. **§10 E1 battery aging** — deferred per D17; wear/lifetime fields are task #57.
-
----
-
-## 9. Deliberate deviations from current code
+## 10. Deliberate deviations from current code
 
 None — purely additive. The 9 LOCKED fields are computed identically to today.
 
 ---
 
-## 10. Implementation checklist (for QA)
+## 11. Implementation checklist (for QA)
 
-- [ ] `PolicyEvalResult` has exactly **36 fields** (9 existing + 27 new)
-- [ ] `_accumulate_physical_quantities()` returns exactly **26 keys** (27 new − 1 derived)
-- [ ] `demand_billing_mw_month` computed in `run_eval()` as `demand_charge_yuan / demand_rate`
-- [ ] `run_eval()` returns extended result; the 9 existing fields are numerically unchanged
-- [ ] `_policy_dict()` in `telemetry.py` is unmodified (still 9 keys, no MWh fields)
-- [ ] `eval_results.json` gains `physical_quantities` top-level key with 27 fields per policy
-- [ ] All 7 conservation/reconciliation identities hold in tests
-- [ ] `@pytest.mark.slow` on any test that runs the full 8760-step JAX scan (D30)
-- [ ] Zero placeholder fields for h2_sale/avoided_cost/token_sale
+- [ ] `StreamAccumulator` NamedTuple with `volume: float`, `value_yuan: float` in `eval.py`
+- [ ] `PolicyEvalResult` has exactly **32 fields** (9 existing + 1 `streams` + 9 physical-qty + 13 per-source)
+- [ ] `streams` dict has exactly the 6 rev4 keys; all 3 v1-zero placeholders present
+- [ ] `demand_charge.volume` = `max(infos.c_demand_charge_yuan) / demand_rate` (annual peak MW)
+- [ ] `_build_streams(infos, params)` helper: 6 keys, requires params
+- [ ] `_accumulate_physical_quantities(infos)` helper: returns exactly 22 keys, no params needed
+- [ ] `run_eval()` returns extended result; 9 existing fields numerically unchanged
+- [ ] `_policy_dict()` in `telemetry.py` is unmodified (still 9 keys, no streams)
+- [ ] `eval_results.json` gains `physical_quantities` key with `streams` sub-dict + 22 flat fields per policy
+- [ ] All 8 conservation/reconciliation identities hold
+- [ ] `@pytest.mark.slow` on full 8760-step JAX scan tests (D30)
+- [ ] Branch rebased on main after PR #79 squash-merges
+- [ ] No hardcoded Gansu constants — works for any resolved-site EnvParams
