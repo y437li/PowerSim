@@ -1798,3 +1798,76 @@ class TestMonthIndexedLookupParity:
         # Cost must be finite and non-negative
         assert total_cost >= 0.0, f"total import cost = {total_cost} must be ≥ 0"
         assert not jnp.isnan(jnp.array(total_cost)), "total cost must be finite"
+
+
+# ---------------------------------------------------------------------------
+# Month-selection mechanism — the identical-rows parity suite is STRUCTURALLY
+# BLIND to a month-index bug (all 12 Gansu rows equal, so MONTH_OF_STEP[t]
+# could be off-by-one or constant and every parity test still passes). These
+# two classes verify the month-selection mechanism the seasonal/tariff path
+# will depend on.  (backend-reviewer, PR #87)
+# ---------------------------------------------------------------------------
+
+class TestMonthOfStepCalendar:
+    """# reviewer: backend-reviewer — MONTH_OF_STEP calendar boundaries (PR #87).
+
+    Pins the non-leap 8760-hour calendar so a transposition/leap-year slip in
+    _DAYS_PER_MONTH is caught — which the identical-rows price parity suite cannot.
+    Hand-derived (_DAYS_PER_MONTH = [31,28,31,30,31,30,31,31,30,31,30,31]):
+      Jan = 31*24 = 744 h  -> indices 0..743 are month 0; index 744 = Feb 1 -> month 1.
+      Jan+Feb = (31+28)*24 = 1416 h -> indices ..1415 month 1; 1416 = Mar 1 -> month 2.
+      last real step 8759 = Dec 31 23:00 -> month 11; sentinel [8760] = 11 (safe t+1).
+    """
+
+    def test_month_of_step_boundaries(self):
+        from energy_go.env.jax_env import MONTH_OF_STEP
+        m = np.asarray(MONTH_OF_STEP)
+        assert m.shape == (8761,), f"expected (8761,) incl. t+1 sentinel; got {m.shape}"
+        assert m[0]    == 0,  f"t=0 (Jan 1 00:00) must be month 0; got {m[0]}"
+        assert m[743]  == 0,  f"t=743 (Jan 31 23:00) must be month 0; got {m[743]}"
+        assert m[744]  == 1,  f"t=744 (Feb 1 00:00) must be month 1; got {m[744]}"
+        assert m[1415] == 1,  f"t=1415 (Feb 28 23:00) must be month 1; got {m[1415]}"
+        assert m[1416] == 2,  f"t=1416 (Mar 1 00:00) must be month 2; got {m[1416]}"
+        assert m[8759] == 11, f"t=8759 (Dec 31 23:00) must be month 11; got {m[8759]}"
+        assert m[8760] == 11, f"sentinel [8760] must be 11 (Dec); got {m[8760]}"
+
+
+class TestMonthSelectionDistinctTable:
+    """# reviewer: backend-reviewer — get_obs selects the RIGHT month (PR #87).
+
+    Injects a synthetic price_table where every (month, hour) cell is DISTINCT
+    (synthetic[m, h] = m*24 + h) so a month off-by-one in the obs[5] lookup is
+    observable — the exact failure the identical-rows Gansu parity suite cannot
+    detect (there, price_table[wrong_month, h] == price_table[right_month, h]).
+
+    obs[5] = params.price_table[MONTH_OF_STEP[t], t % 24].  Hand-derived expecteds:
+      t=0    -> (month 0,  hour 0)  -> 0*24 + 0  = 0.0
+      t=744  -> (month 1,  hour 0)  -> 1*24 + 0  = 24.0
+      t=8759 -> (month 11, hour 23) -> 11*24 + 23 = 287.0
+    All exactly representable in float32 (integers ≤ 287), so assert == exactly.
+    """
+
+    def test_get_obs_price_uses_correct_month(self):
+        import jax
+        import jax.numpy as jnp
+        from energy_go.env.jax_env import EnvParams, EnvState, get_obs, MONTH_OF_STEP
+
+        synthetic = jnp.arange(12 * 24, dtype=jnp.float32).reshape(12, 24)  # [m,h]=m*24+h
+        params = EnvParams(price_table=synthetic)
+        data = jnp.zeros((8760, 4), dtype=jnp.float32)  # obs[5] is independent of data
+
+        expected = {0: 0.0, 744: 24.0, 8759: 287.0}
+        for t, exp in expected.items():
+            st = EnvState(
+                soc=jnp.float32(0.5),
+                month_peak=jnp.float32(0.0),
+                t=jnp.int32(t),
+                rng=jax.random.PRNGKey(0),
+            )
+            obs = get_obs(st, params, data)
+            month, hour = int(MONTH_OF_STEP[t]), t % 24
+            assert float(obs[5]) == exp, (
+                f"t={t}: obs[5]={float(obs[5])} but expected {exp} "
+                f"(MONTH_OF_STEP[{t}]={month}, hour={hour}, synthetic[{month},{hour}]={month*24+hour}) "
+                f"— month-index lookup is wrong"
+            )
