@@ -22,15 +22,18 @@
 
 **Reviewer-added test cases (@ `c06f951`, `tests/shared/test_shared_config_validation.py`):**
 
+> Corrected by backend-reviewer @ review-record re-confirm: function/class names below now
+> match the actual approved test file verbatim (the initial draft paraphrased them).
+
 | Test function | Class | Rationale |
 |---|---|---|
-| `test_zero_capacity_division_guard_no_crash` | `TestNonRaising` | E-BAT-CRATE skip when cap=0 — denominator guard |
-| `test_zero_power_division_guard_no_crash` | `TestNonRaising` | W-BAT-DUR-10H skip when power=0 — denominator guard |
-| `test_nan_capacity_fires_e_cap_pos` | `TestErrors` | NaN capacity: `not (x > 0)` guard catches NaN |
-| `test_w_bat_crate_2c_fires_independently` | `TestWarnings` | W-BAT-CRATE-2C when fleet>2C regardless of E-BAT-CRATE state |
-| `test_e_bat_crate_boundary_strict` | `TestErrors` | fleet_crate == device_crate → no error (strict <, not ≤) |
-| `test_e_cap_pos_resolved_grid_max_export_zero` | `TestErrors` | E-CAP-POS fires for max_export=0 (resolved grid limits) |
-| `test_e_cap_pos_resolved_grid_max_import_zero` | `TestErrors` | E-CAP-POS fires for max_import=0 (resolved grid limits) |
+| `test_zero_capacity_with_models_no_crash_crate_skips` | `TestReviewerDivisionGuard` | cap=0 + device_models → no crash; E-CAP-POS fires; E-BAT-CRATE skips (§3.2 division guard) |
+| `test_zero_power_with_models_no_crash_duration_skips` | `TestReviewerDivisionGuard` | power=0 + device_models → no crash; E-CAP-POS fires; W-BAT-DUR-10H skips (§3.2 division guard) |
+| `test_nan_capacity_fires_e_cap_pos` | `TestReviewerDivisionGuard` | NaN capacity → E-CAP-POS via `not (x > 0)` (IEEE-754: nan>0 is False) |
+| `test_2c_warning_fires_while_crate_error_passes` | `TestReviewerCrateIndependenceAndBoundary` | device 700/300=2.333C, fleet 650/294.5=2.207C → W-BAT-CRATE-2C fires, E-BAT-CRATE passes (independence) |
+| `test_crate_exactly_equal_device_no_error` | `TestReviewerCrateIndependenceAndBoundary` | fleet_crate == device_crate (0.333C) → no error (strict `>`, no tolerance — equality is not "greater than") |
+| `test_grid_export_zero_fires_e_cap_pos` | `TestReviewerGridCapPos` | resolved `max_export_mw`=0 → E-CAP-POS (§4 lists grid limits) |
+| `test_grid_import_zero_fires_e_cap_pos` | `TestReviewerGridCapPos` | resolved `max_import_mw`=0 → E-CAP-POS (§4 lists grid limits) |
 
 ### rl-architect (LOCK)
 **Verdict:** VERDICT: APPROVE — LOCK `contracts/shared/config_validation.md` v1.0.0  
