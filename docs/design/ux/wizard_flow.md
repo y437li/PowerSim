@@ -1,7 +1,7 @@
 # Five-Stage Pipeline Wizard — UX Flow & Interaction Design
 
 > **Owner:** ui-designer · **Task:** #65
-> **Status:** DRAFT v0.3 — incorporates USER revision: eval decoupled (policy×env picker, policy library), scenario multi-select composable, finance residency split confirmed, unactivated scenarios hidden (2026-06-12)
+> **Status:** DRAFT v0.4 — adds full finance assumptions panel (all params front-loaded, CAPM decomposition, provenance badges, assumptions strip); closes Q1 stale-preserve + Q6 raw routes; all 6 questions resolved (2026-06-12)
 > **Gate:** USER reviews aesthetic direction before frontend contracts are written against this.
 > **Inputs:** master_plan_geo_finance.md (workstreams A/E), REBUILD_SPEC §3–§5, existing app at http://localhost:15174
 > **Pending reference:** D32 product-spine amendment (task #64) — once landed in `docs/design/`, supersedes any conflicts here
@@ -484,90 +484,133 @@ POLICY LIBRARY
 ### Purpose
 Interactive project finance simulation: IRR/NPV/MIRR/LCOE over 10–20 year horizon, with live sensitivity controls.
 
-### Layout — dual-panel with instant recompute
+### Design principle — full transparency of assumptions (USER directive)
+
+**Every finance parameter is displayed and editable in the Finance panel — nothing is buried in config files or a settings page.** The compute-residency split (client-side vs server-side) is invisible plumbing; the user-facing rule is: adjust any assumption and the results update (some instantly, some after a brief compute). Each field shows its current value, its editable control, the default it came from (with a provenance badge), and a one-click ↺ reset. Grouped collapsible sections prevent overwhelm — but nothing is hidden, only collapsed.
+
+Provenance badge system:
+- `[USER-set]` — user explicitly typed or dragged this value
+- `[benchmark-cited]` — default from the task #63 benchmark library (Chinese-market 2024/25 CAPEX/OPEX)
+- `[CAPM-derived]` — computed from other parameters (e.g. WACC = r_f + β × ERP)
+- `[tariff-default]` — derived from the site's tariff library entry
+- `↺` — one-click reset to the tagged default; resets only that field
+
+### Layout — full assumptions panel + results (dual-column)
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│  STAGE 5: FINANCE                                    [✓ Complete]   │
-│  EVAL BASIS: Eval #1 — SAC run-abc-123 · Gansu-v1 syn · Jun 11     │
-│  [Change eval basis ▼]                                              │
-├──────────────────────────────────────────────────────────────────────┤
-│  ASSUMPTIONS                  │  RESULTS                            │
-│  ─────────────────────────    │  ──────────────────────────────────  │
-│  View:  [● I — Absolute]      │  HEADLINE METRICS  (View I, P50)    │
-│         [○ II — Incremental]  │                                     │
-│                               │  IRR          11.2 %                │
-│  Horizon: [● 20 yr  ○ 10 yr] │  MIRR          9.8 %                │
-│                               │  NPV (r=7%)  ¥ 142 M               │
-│  Discount rate (WACC):        │  LCOE          ¥ 312 /MWh           │
-│  3% ──────●────────── 12%    │  LCOS          ¥ 840 /MWh           │
-│           7.0%                │  Payback       8.3 yr               │
-│                               │  (Discounted)  11.4 yr              │
-│  Entity boundary:             │                                     │
-│  [● Merchant exporter]        │  ── CASH FLOW (¥M, years 0–20) ──  │
-│  [○ Self-supply w/ load]      │                                     │
-│                               │  [Bar/waterfall chart               │
-│  Tax:   [☐ Enable 25%]       │   Year 0: −¥1.2B (CAPEX)           │
-│  Debt:  [☐ Enable]            │   Years 1–9: +¥140–180M/yr         │
-│                               │   Year 10: −¥290M (bat replace)    │
-│  CAPEX SUMMARY (read-only)    │   Years 11–20: +¥150–190M/yr]      │
-│  Wind:   ¥ 924 M              │                                     │
-│  Solar:  ¥ 495 M              │  ── NPV vs DISCOUNT RATE ────────   │
-│  Battery:¥ 294 M (×2 repl.)  │                                     │
-│  Grid:   ¥  85 M              │  [Line chart: RL SAC, TOU, NoBat   │
-│  ──────────────────           │   x=3–12%, y=NPV ¥M                │
-│  Total:  ¥ 1.80 B             │   IRR = x-intercept markers]       │
-│  Soft costs (8%): ¥ 144 M     │                                     │
-│  ─────────────────────────    │  ── SENSITIVITY TORNADO ─────────   │
-│  [↺ Reset assumptions]        │  [Horizontal bars ±ΔNPV:           │
-│                               │   CAPEX ±20%, tariff ±2pp,         │
-│                               │   bat lifetime, discount ±2pp,     │
-│                               │   O&M ±20%, weather P50↔P90]       │
-├──────────────────────────────────────────────────────────────────────┤
-│  [← Back to Eval]                                     [Export PDF]  │
-└──────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  STAGE 5: FINANCE                                           [✓ Complete]   │
+│  EVAL BASIS: Eval #1 — SAC run-abc-123 · Gansu-v1 syn · Jun 11            │
+│  [Change eval basis ▼]                                                     │
+├──────────────────────────────┬──────────────────────────────────────────────┤
+│  ASSUMPTIONS  [↺ Reset all] │  RESULTS                                    │
+│  ─────────────────────────  │  ─────────────────────────────────────────  │
+│                              │  HEADLINE METRICS (View I · 20yr · 7% WACC)│
+│  ▾ DISCOUNT RATE (CAPM)     │  IRR           11.2 %                       │
+│  ┌────────────────────────┐  │  MIRR           9.8 %                       │
+│  │r_f  [10yr CNY ▼][2.85%]│  │  NPV @ 7%     ¥ 142 M                     │
+│  │     [tariff-default] ↺ │  │  LCOE          ¥ 312 /MWh                  │
+│  │β    [0.75] [bm-cited]↺ │  │  LCOS          ¥ 840 /MWh                  │
+│  │ERP  [5.50%][CAPM-der.] │  │  Payback        8.3 yr  (disc.: 11.4 yr)   │
+│  │─────────────────────── │  │                                             │
+│  │WACC [8.96%][CAPM-der.] │  │  ── CURRENT ASSUMPTIONS ─────────────────  │
+│  │Override WACC:           │  │  r_f 2.85% · β 0.75 · ERP 5.50%          │
+│  │  3% ──●──── 12%  7.0%  │  │  → WACC 8.96%  (override: none)           │
+│  │  (live drag, instant)   │  │  Horizon 20yr · View I · Merchant          │
+│  └────────────────────────┘  │  Pre-tax · Synthetic weather · M=1         │
+│                              │  Config #a1b2c3d4 · run-abc-123 · Jun 11   │
+│  ▾ CAPITAL STRUCTURE        │  [Export assumptions sheet]                  │
+│  ┌────────────────────────┐  │                                             │
+│  │Tax [☐ Enable]          │  │  ── CASH FLOW (¥M, years 0–20) ──────────  │
+│  │  (on: rate 25%, depr.) │  │  [Year 0: −¥1.80B CAPEX                    │
+│  │Debt [☐ Enable]         │  │   Yrs 1–9: +¥140–180M/yr                   │
+│  │  (on: D/E%, cost, term)│  │   Yr 10: −¥290M bat.replacement            │
+│  └────────────────────────┘  │   Yrs 11–20: +¥150–190M/yr]                │
+│                              │                                             │
+│  ▾ ESCALATION / CURRENCY    │  ── NPV vs DISCOUNT RATE ──────────────────  │
+│  ┌────────────────────────┐  │  [Overlaid lines: SAC · TOU · NoBat        │
+│  │Tariff  [2.0 %/yr][U]↺ │  │   x=3–12%, IRR = x-intercept markers]     │
+│  │OPEX    [3.0 %/yr][B]↺ │  │                                             │
+│  │Currency[¥ nominal][B]↺ │  │  ── SENSITIVITY TORNADO ──────────────────  │
+│  └────────────────────────┘  │  [±ΔNPV bars: CAPEX±20%, tariff±2pp,       │
+│                              │   bat.lifetime, discount±2pp,              │
+│  ▾ LIFECYCLE COSTS          │   O&M±20%, weather P50↔P90]                │
+│  ┌────────────────────────┐  │                                             │
+│  │Bat.repl. yr:[10][B] ↺  │  │                                             │
+│  │Bat.repl. cost:          │  │                                             │
+│  │  [¥ 294 M][B] ↺        │  │                                             │
+│  │Overhaul [per device ▾] │  │                                             │
+│  └────────────────────────┘  │                                             │
+│                              │                                             │
+│  ▾ CAPEX / OPEX OVERRIDES   │                                             │
+│  ┌────────────────────────┐  │                                             │
+│  │Wind    [9 240 ¥/kW][B]↺│  │                                             │
+│  │Solar   [5 000 ¥/kW][B]↺│  │                                             │
+│  │Battery [5 678¥/kWh][B]↺│  │                                             │
+│  │Grid    [¥ 85 M ][B] ↺  │  │                                             │
+│  │FixedOM [1.5 %/yr][B] ↺ │  │                                             │
+│  │Soft c. [8.0 %  ][B] ↺  │  │                                             │
+│  └────────────────────────┘  │                                             │
+│                              │                                             │
+│  ▾ ACCOUNTING               │                                             │
+│  ┌────────────────────────┐  │                                             │
+│  │View  [●I Abs.○II Incr.]│  │                                             │
+│  │Horiz.[● 20yr  ○ 10yr]  │  │                                             │
+│  │Bndry.[●Merch.○Self-sup]│  │                                             │
+│  └────────────────────────┘  │                                             │
+├──────────────────────────────┴──────────────────────────────────────────────┤
+│  [← Back to Eval]                            [Export results + assumptions] │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
+Provenance badge key in wireframe: `[U]`=USER-set · `[B]`=benchmark-cited · `[C]`=CAPM-derived · `[T]`=tariff-default · `↺`=one-click reset
 
 ### Key interaction rules
 
+#### Full assumptions transparency (USER directive, supersedes any prior design)
+- **Every parameter is visible and editable in this panel** — no parameter lives only in a config file or a server-only settings page. CAPEX defaults come from the benchmark library (task #63); they are surfaced here with `[benchmark-cited]` badges and are fully overridable.
+- **Provenance badge + reset on every field**: each editable control shows which default it came from, and a `↺` icon resets that single field to its tagged default. A global `[↺ Reset all]` button at the top restores all fields to their tagged defaults.
+- **Grouped collapsible sections** (`▾ /▸` toggle): sections collapse to their header + key summary value. On first open, DISCOUNT RATE and ACCOUNTING are expanded; others collapsed. User can expand any section.
+
 #### Eval basis picker
-- Finance begins by selecting which eval result from Stage ④ to use. A compact "EVAL BASIS" banner at the top of Stage ⑤ shows the selected eval (policy, env, date). A `[Change eval basis ▼]` dropdown lists all results from the Eval Library. Switching recalculates the full finance model from the new eval result.
-- **Provenance guard** — if the selected eval result was run against a different config than the current Config stage, a blue `ℹ` notice appears: "This eval was run against Gansu-v1 config #a1b2c3, which differs from your current config. Finance reflects that eval's operating results." Not a blocking error — the eval is a valid result for its recorded config.
+- Finance begins by selecting which eval result from Stage ④ to use (pre-selected if user clicked `[→ Finance]` from the Eval library). A compact "EVAL BASIS" strip at the top shows the selected eval + `[Change ▼]` dropdown. Switching triggers a full server-side recalculation of the finance model from the new eval result's operating data.
+- **Provenance guard** — if the eval result was run against a different config than the current Config stage, a blue `ℹ` shows: "Eval was run against config #a1b2c3; your current config is #e5f6a7. Finance reflects that eval's results." Not blocking — the eval is a valid record.
 
-#### Rate slider — instant recompute (Class B, client-side)
-- **Confirmed** (USER answer to Q4): discount-rate slider and escalation/sensitivity controls → **instant client-side recompute** on the loaded cash-flow series from `GET /api/finance/compare`
-- No server roundtrip on drag; IRR/MIRR are precomputed (not rate-dependent); LCOE/LCOS precomputed
-- The NPV-vs-rate chart redraws live as the slider moves; the vertical "current r" marker tracks the slider
-- **No modal** for slider moves — Class B, zero friction
+#### Response behaviour per parameter (invisible plumbing — user sees instant vs "a beat")
+| Parameter group | Response | Why |
+|---|---|---|
+| WACC override slider, escalation %, View I/II, horizon toggle, entity boundary | **Instant** (client-side) | Only discount arithmetic on loaded cash-flow series changes |
+| r_f, β, ERP (→ WACC recompute), currency basis | **Instant** (WACC recomputed client-side, same series) | Derived discount-rate change |
+| Tax enable/disable, debt enable/disable | **~1–3 s** (server-side) | Structural cash-flow change |
+| CAPEX/OPEX overrides, lifecycle costs | **~1–3 s** (server-side) | Changes the cash-flow series itself |
+| Eval basis switch | **~2–5 s** (server-side) | Full finance recompute from new operating data |
 
-#### Tax/debt toggles — server-side recompute (Class C)
-- **Confirmed** (USER answer to Q4): tax/debt structure changes → **server-side recompute** (structural change to the cash-flow model, not just discount arithmetic)
-- Toggle shows a loading indicator in the results panel (~1–3 s); assumptions panel remains interactive
-- Result replaces the current finance result for this eval basis
+The panel never disables controls during computation — the loading state appears in the results panel only.
 
-#### View I / View II toggle
-- **View I (Absolute)** — CAPEX basis = full plant (¥1.80 B); benefit = total annual operating net revenue
-- **View II (Incremental storage)** — CAPEX basis = battery only (¥294 M + replacement); benefit = Δ(operating result) vs No-Battery baseline; headline becomes "Does the battery pay?"
-- Toggle switches the CAPEX summary, headline metrics, and cash-flow chart instantly
+#### CAPM decomposition — WACC build-up visible to the user
+- `r_f` (risk-free rate): selectable treasury tenor (1yr/5yr/10yr/30yr CNY, date-anchored); current value shown
+- `β` (equity beta): editable; default from benchmark library for China utility-scale renewable
+- `ERP` (equity risk premium): editable; benchmark default; auto-recomputes when `r_f` changes
+- `WACC` readout: `= r_f + β × ERP`, shown with formula tooltip; not directly editable while CAPM is active
+- **Override WACC** slider: when user drags it, the CAPM fields dim (shown as "overridden") and a `[↺ Restore CAPM]` button appears to re-derive WACC from r_f/β/ERP
+- The user always sees exactly what discount rate is driving the NPV — no opaque single-number
 
-#### Entity boundary toggle
-- **Merchant exporter** — revenue = export MWh × tariff; cost = import MWh × tariff + demand charge
-- **Self-supply w/ load** — revenue includes avoided grid cost for factory load (50–100 MW); changes OPEX/revenue decomposition but not total (a reconciliation aid)
+#### Current assumptions strip — the investment-committee guard
+- Always visible on the results side, above the headline metrics
+- One-liner format: `r_f 2.85% · β 0.75 · ERP 5.50% → WACC 8.96% · 20yr · View I · Merchant · Pre-tax · Synthetic M=1 · Config #a1b2c3`
+- **This strip appears on every exported result** (PDF, CSV) — finance results without visible assumptions are how mistakes get presented to investment committees
+- If any field has been overridden from default, the strip shows the override: `WACC 7.0% (overridden, CAPM would give 8.96%)`
 
-#### Provenance banner
-- Always visible: checkpoint_id · weather_mode · scenario · M · discount-rate assumption · horizon
-- **Comparison guard** — if two policies were evaluated under different weather modes or scenarios, the results panel shows a hard warning: "⚠ Mismatched assumptions — these results are not directly comparable" (per master_plan §5.11 correctness guard)
+#### Comparison-assumptions guard (from master_plan §5.11)
+- If two policies' finance results are shown side-by-side and their assumptions differ (different WACC, horizon, or eval basis weather-mode), a hard warning appears: "⚠ Mismatched assumptions — direct comparison unreliable." The strip makes the mismatch explicit; the user must acknowledge before proceeding.
 
-#### Tax & debt overlays
-- Tax toggle shows: corporate tax rate (25% / 15% renewable), depreciation (straight-line, N years)
-- Debt toggle shows: gearing %, interest rate %, term (years); adds Equity IRR and min-DSCR to headline
-- Both shown as **deltas to the base case**: "with debt: equity IRR +2.1 pp vs unlevered"
+#### Export
+- `[Export results + assumptions]` produces a self-contained file (CSV or PDF) containing: headline metrics table, cash-flow series by year, NPV-vs-rate data, sensitivity inputs, **and the full current assumptions as a structured block**. A result without its assumptions is not a valid deliverable.
 
 #### Units
-- Monetary: ¥ millions (¥M) on charts; ¥ full value on headline cards
-- Rates: % (IRR, MIRR, WACC, tax rate)
+- Monetary: ¥ millions (¥M) on charts; ¥ full value on headline cards and assumption overrides
+- Rates: % (IRR, MIRR, WACC, r_f, ERP, tax rate, escalation)
 - Energy metrics: ¥/MWh (LCOE, LCOS)
-- Time: yr (payback, horizon, depreciation)
-- Power/energy: MW, MWh (CAPEX breakdown, site totals)
+- Time: yr (payback, horizon, depreciation, lifecycle)
+- CAPEX: ¥/kW (wind, solar), ¥/kWh (battery), ¥ lump (grid, soft costs)
 
 ---
 
@@ -688,10 +731,13 @@ The wizard inherits the existing dark engineering-dashboard aesthetic unchanged.
 - `AlgorithmCard` — algo + baseline cards in stage 2
 - `HyperparamForm` — SAC config form
 - `ProgressBar` — training step progress (% + ETA)
-- `FinanceAssumptionsPanel` — sliders + toggles
-- `CashFlowChart` — year-by-year bar/waterfall
-- `NpvCurveChart` — NPV vs discount rate (overlaid lines, per policy)
-- `TornadoChart` — sensitivity bar chart
+- `FinanceAssumptionsPanel` — full collapsible assumptions panel: six grouped sections (Discount Rate / Capital Structure / Escalation / Lifecycle / CAPEX-OPEX / Accounting), each field with value + provenance badge + ↺ reset; global reset-all
+- `CAPMBuilder` — r_f (tenor picker) + β + ERP → WACC build-up with override slider; shows formula tooltip; `[↺ Restore CAPM]` when overridden
+- `AssumptionField` — single-field primitive: editable control + provenance badge + ↺; used throughout `FinanceAssumptionsPanel`
+- `AssumptionsStrip` — always-visible one-liner summary of current assumptions (appears on results panel AND on every export); highlights overrides; mismatch warning
+- `CashFlowChart` — year-by-year bar/waterfall with replacement-year markers
+- `NpvCurveChart` — NPV vs discount rate (overlaid lines, per policy), IRR x-intercept markers
+- `TornadoChart` — sensitivity bar chart, ±ΔNPV ranked
 
 ---
 
@@ -709,13 +755,13 @@ The wizard inherits the existing dark engineering-dashboard aesthetic unchanged.
 - ~~Scenario selector (Q5)~~ — **RESOLVED: HIDE unactivated scenarios entirely.** No "coming soon" placeholders. v1 shows only power supply. When H₂/datacenter activate they appear. Updated §4.
 - ~~Scenario selection model~~ — **RESOLVED: multi-select composable toggles** (USER: "有可能氢和数据中心都有"). Not single-choice radio. Each activated group adds device config + revenue streams. Layout must not assume single-choice. Updated §4 and ScenarioComposer in §10.
 
-**Working defaults (team-lead recommendation, pending USER explicit confirmation):**
+**Resolved by USER (2026-06-12, "保留吧"):**
+- ~~Stale vs. reset on Config/Algorithm edit (Q1)~~ — **RESOLVED: stale-preserve.** Upstream edits mark downstream training-run entries as mismatched (amber notice in ③) but do not reset or clear Algorithm selection. The user's deliberate hyperparam choices are preserved — they re-confirm by starting a new training run, not by re-typing.
+- ~~Raw `/training` and `/eval` routes (Q6)~~ — **RESOLVED: keep both routes.** The raw routes remain as power-user direct-access paths (debugging, CI runs) with a small "← Wizard" back-link. The existing TrainingPanel mounts unchanged in both contexts — no code duplication.
 
-Q1. **Stale vs. reset on Config/Algorithm edit** — preserve Algorithm selection (STALE) rather than clearing to defaults (PENDING). Rationale: the user made deliberate hyperparam choices; they should re-confirm, not re-type. Working default: STALE preserves selection.
+**✅ All six questions resolved. No outstanding USER design questions remain.**
 
-Q6. **Raw `/training` and `/eval` routes** — preserve as power-user direct-access paths with a "← Wizard" back-link. Working default: keep both routes. The existing TrainingPanel mounts unchanged in both contexts — no duplication.
-
-**Always pending:** D32 product-spine amendment (task #64) — once landed, it is the fixed reference and may refine details here (wizard state persistence, validation endpoint contract shape, policy-library storage).
+**Always pending:** D32 product-spine amendment (task #64) — once landed in `docs/design/`, it is the fixed reference and may refine details here (wizard state persistence, validation endpoint contract shape, policy-library storage). Alignment pass after D32 merges.
 
 ---
 
@@ -730,4 +776,4 @@ After this flow document is reviewed and course-corrections incorporated:
 
 ---
 
-*docs/design/ux/wizard_flow.md — ui-designer, task #65 — v0.1 2026-06-11, v0.2 2026-06-12 (rl-architect ruling), v0.3 2026-06-12 (USER: decouple eval, policy library, composable scenarios, finance split)*
+*docs/design/ux/wizard_flow.md — ui-designer, task #65 — v0.1 2026-06-11 · v0.2 (rl-architect ruling) · v0.3 (USER: decouple eval, policy library, composable scenarios, finance split) · v0.4 2026-06-12 (USER: full finance assumptions panel, CAPM decomposition, provenance badges, assumptions strip; Q1+Q6 closed — all 6 resolved)*
