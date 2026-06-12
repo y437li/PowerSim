@@ -108,21 +108,27 @@ async def validation_error_handler(request: Request, exc) -> JSONResponse:
 async def request_validation_error_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
-    """Convert Pydantic request-body validation errors to HTTP 400.
+    """Convert Pydantic request-body validation errors to HTTP 400 for geo routes.
 
     Contract (geo_site_api.md §2): malformed body, missing required field,
-    or out-of-range parameter → 400.  FastAPI's default is 422; this handler
-    surfaces the first error message in the contract body format.
+    or out-of-range parameter → 400 for /api/site/, /api/tariff/, /api/devices/.
+
+    All other routes (training_proxy, rest_api, inference_stream) use FastAPI's
+    default 422 so their approved contracts are not affected.
     """
-    errors = exc.errors()
-    first_msg = errors[0]["msg"] if errors else "invalid request"
-    return JSONResponse(
-        status_code=400,
-        content={
-            "detail": first_msg,
-            "code": "REQUEST_VALIDATION_ERROR",
-        },
-    )
+    _GEO_PREFIXES = ("/api/site/", "/api/tariff/", "/api/devices/")
+    if any(request.url.path.startswith(p) for p in _GEO_PREFIXES):
+        errors = exc.errors()
+        first_msg = errors[0]["msg"] if errors else "invalid request"
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": first_msg,
+                "code": "REQUEST_VALIDATION_ERROR",
+            },
+        )
+    # Non-geo routes: preserve original FastAPI 422 behaviour
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
 if __name__ == "__main__":
