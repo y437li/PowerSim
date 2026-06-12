@@ -87,10 +87,17 @@ which is the correct pattern for merged configs.
 
 ### 3.2 Move tsconfig.app.json → .config/tsconfig.app.json
 
-**Action:** Create `.config/` directory. Move file. Update one reference.
+**Action:** Create `.config/` directory. Move file. Update two internal fields.
 
-**Content change** in `.config/tsconfig.app.json`:
+**Content changes** in `.config/tsconfig.app.json`:
 - `"extends": "./tsconfig.json"` → `"extends": "../tsconfig.json"` (one level up to root)
+- `"include": ["src"]` → `"include": ["../src"]`
+
+  **Why `include` must change:** TypeScript resolves `include` patterns relative to the
+  tsconfig file, not the process CWD. After the move to `.config/`, `["src"]` resolves to
+  `.config/src` (which does not exist), causing `tsc -p .config/tsconfig.app.json` to error
+  with "No inputs were found" — breaking `npm run build` in CI. The correct relative path
+  from `.config/` to the source tree is `"../src"`.
 
 **Script change** in `package.json`:
 - `"build": "tsc -p tsconfig.app.json && vite build"` → `"build": "tsc -p .config/tsconfig.app.json && vite build"`
@@ -118,9 +125,23 @@ exists for editor/IDE project-reference support only.
   Playwright `rootDir`, which defaults to config file's directory. If reporter output
   should stay at repo root, set to `'../../playwright-report/results.json'`. Either
   is acceptable — implementer picks and documents.
-- `webServer.command: 'npm run dev'` — **unchanged**. Playwright's `webServer.cwd`
-  defaults to the process CWD (i.e. where `playwright test` is invoked), which is the
-  repo root when run via `npm run test:e2e`. No `cwd` override needed.
+- `webServer.cwd` — **must be set explicitly** to the repo root:
+
+  ```typescript
+  webServer: {
+    command: 'npm run dev',
+    cwd: path.resolve(__dirname, '../..'),   // ← REQUIRED after move
+    // ...
+  }
+  ```
+
+  **Why `cwd` must be set:** Playwright's `webServer.cwd` "defaults to the directory of
+  the configuration file" (verified in `playwright/types/test.d.ts`), **not** the
+  process CWD. After the move, the default cwd becomes `tests/frontend_e2e/`, so
+  `npm run dev` would launch Vite from there — where neither `vite.config.ts` nor
+  `index.html` exist — causing the e2e dev server to misconfigure. CI does not run
+  `test:e2e`, so this would merge green and silently break all local/CI e2e runs.
+  `path.resolve(__dirname, '../..')` climbs from `tests/frontend_e2e/` to the repo root.
 
 **Script change** in `package.json`:
 - `"test:e2e": "playwright test"` → `"test:e2e": "playwright test --config tests/frontend_e2e/playwright.config.ts"`

@@ -163,9 +163,13 @@ describe(".config/tsconfig.app.json — internal paths updated (§3.2)", () => {
     expect(json.extends).not.toBe("./tsconfig.json");
   });
 
-  it("has include array with 'src'", () => {
+  it("has include array with '../src' (not bare 'src' — resolves relative to .config/)", () => {
+    // tsconfig include resolves relative to the tsconfig file. After moving to .config/,
+    // bare "src" → .config/src (nonexistent) → tsc errors "No inputs found" → build breaks.
+    // Correct value is "../src" (climbs from .config/ to repo root, then into src/).
     const json = readJson(".config/tsconfig.app.json");
-    expect(json.include).toContain("src");
+    expect(json.include).toContain("../src");
+    expect(json.include).not.toContain("src");
   });
 });
 
@@ -216,6 +220,22 @@ describe("tests/frontend_e2e/playwright.config.ts — internal paths updated (§
   it("still has webServer block with npm run dev", () => {
     const src = readFile("tests/frontend_e2e/playwright.config.ts");
     expect(src).toContain("npm run dev");
+  });
+
+  it("webServer sets an explicit cwd climbing to repo root (§3.4)", () => {
+    // Playwright webServer.cwd defaults to the config file's directory (tests/frontend_e2e/),
+    // NOT the process CWD. Without an explicit cwd, `npm run dev` fails to find root
+    // vite.config.ts/index.html after the move.  cwd must point two levels up to repo root.
+    const src = readFile("tests/frontend_e2e/playwright.config.ts");
+    expect(src).toMatch(/cwd\s*:/);
+    const climbsToRoot =
+      /cwd\s*:\s*['"]\.\.\/\.\.\/?['"]/.test(src) ||
+      /cwd\s*:\s*path\.resolve\(\s*__dirname\s*,\s*['"]\.\.\/\.\.['"]\s*\)/.test(src) ||
+      /cwd\s*:\s*path\.join\(\s*__dirname\s*,\s*['"]\.\.['"]\s*,\s*['"]\.\.['"]\s*\)/.test(src);
+    expect(
+      climbsToRoot,
+      "webServer.cwd must resolve to the repo root (e.g. path.resolve(__dirname, '../..'))"
+    ).toBe(true);
   });
 });
 
