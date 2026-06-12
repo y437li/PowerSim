@@ -60,8 +60,8 @@ Certain shared contracts are **LOCKED** — they have a version number and may n
 - `contracts/shared/telemetry_schema.md` v1.0.0 — JSON wire format (`env_step`/`train_metrics`/`eval_compare`) (LOCKED PR #6)
 - `contracts/shared/checkpoint_format.md` v1.0.0 — checkpoint layout (LOCKED PR #41)
 - `assets/3d/registry.json` v1.0.0 — 3D asset IDs (LOCKED PR #24)
-- `contracts/shared/device_model_schema.md` v1.0.0→v2.0.0 — site/device YAML schema (v1.0.0 keystone LOCKED PR #79; v1.1.0 economics additive minor — no standalone re-LOCK; v2.0.0 seasonal reshape on main PR #87 — LINEAGE append pending PR #93)
-- `contracts/shared/tariff_model_schema.md` v1.0.0 — tariff YAML schema (on main PR #91; LINEAGE append pending PR #93)
+- `contracts/shared/device_model_schema.md` v1.0.0→v2.0.0 — site/device YAML schema (v1.0.0 keystone LOCKED PR #79; v1.1.0 economics additive minor — no standalone re-LOCK; v2.0.0 seasonal reshape LOCKED PR #87)
+- `contracts/shared/tariff_model_schema.md` v1.0.0 — tariff YAML schema (LOCKED PR #91)
 - `contracts/shared/config_validation.md` v1.0.0 — two-tier site-config validator (LOCKED PR #89)
 
 **Authoritative record:** [`LINEAGE.md`](../LINEAGE.md) is the definitive list of LOCKED entries. The above is a snapshot; when in doubt, read LINEAGE directly. A PR that deviates from a LOCKED contract without a superseding DECISION is a stop-the-line item.
