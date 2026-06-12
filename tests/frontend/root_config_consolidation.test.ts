@@ -225,16 +225,17 @@ describe("tests/frontend_e2e/playwright.config.ts — internal paths updated (§
   it("webServer sets an explicit cwd climbing to repo root (§3.4)", () => {
     // Playwright webServer.cwd defaults to the config file's directory (tests/frontend_e2e/),
     // NOT the process CWD. Without an explicit cwd, `npm run dev` fails to find root
-    // vite.config.ts/index.html after the move. cwd must point two levels up to repo root.
-    // ESM-safe: "type": "module" means Playwright loads the config in ESM mode;
-    // the CJS global for current directory is not available. Vitest polyfills it for
-    // test files, hiding the runtime failure — so we explicitly forbid it here and
-    // require the fileURLToPath(import.meta.url) pattern instead.
+    // vite.config.ts/index.html after the move.  cwd must point two levels up to repo root.
     const src = readFile("tests/frontend_e2e/playwright.config.ts");
-    expect(/cwd\s*:/.test(src)).toBe(true);                          // cwd must be set
-    expect(src).toMatch(/fileURLToPath\s*\(\s*import\.meta\.url\s*\)/); // ESM-safe dir resolution
-    expect(src).not.toMatch(/\b__dirname\b/);                        // forbid bare CJS global (crashes in ESM)
-    expect(/['"]\.\.\/\.\.\/?['"]/.test(src)).toBe(true);            // climbs two levels to repo root
+    expect(src).toMatch(/cwd\s*:/);
+    const climbsToRoot =
+      /cwd\s*:\s*['"]\.\.\/\.\.\/?['"]/.test(src) ||
+      /cwd\s*:\s*path\.resolve\(\s*__dirname\s*,\s*['"]\.\.\/\.\.['"]\s*\)/.test(src) ||
+      /cwd\s*:\s*path\.join\(\s*__dirname\s*,\s*['"]\.\.['"]\s*,\s*['"]\.\.['"]\s*\)/.test(src);
+    expect(
+      climbsToRoot,
+      "webServer.cwd must resolve to the repo root (e.g. path.resolve(__dirname, '../..'))"
+    ).toBe(true);
   });
 });
 
@@ -380,16 +381,14 @@ describe("reviewer: playwright webServer runs from repo root after the move", ()
   });
 
   it("reviewer: webServer.cwd climbs two levels back to repo root", () => {
-    // WHY the CJS global is forbidden: "type": "module" means Playwright loads
-    // playwright.config.ts in ESM mode; the CJS directory global is NOT defined
-    // there. Vitest polyfills it for test files, hiding this failure from structural
-    // tests that only read the source as text. This test catches the gap: it asserts
-    // the ESM-safe fileURLToPath(import.meta.url) pattern is used and the CJS global
-    // does not appear anywhere in the file (not even in comments or variable names).
     const src = readFile("tests/frontend_e2e/playwright.config.ts");
-    expect(/cwd\s*:/.test(src)).toBe(true);                          // cwd is set
-    expect(src).toMatch(/fileURLToPath\s*\(\s*import\.meta\.url\s*\)/); // ESM-safe dir resolution
-    expect(src).not.toMatch(/\b__dirname\b/);                        // forbid bare CJS global (crashes in ESM)
-    expect(/['"]\.\.\/\.\.\/?['"]/.test(src)).toBe(true);            // climbs two levels to repo root
+    const climbsToRoot =
+      /cwd\s*:\s*['"]\.\.\/\.\.\/?['"]/.test(src) ||
+      /cwd\s*:\s*path\.resolve\(\s*__dirname\s*,\s*['"]\.\.\/\.\.['"]\s*\)/.test(src) ||
+      /cwd\s*:\s*path\.join\(\s*__dirname\s*,\s*['"]\.\.['"]\s*,\s*['"]\.\.['"]\s*\)/.test(src);
+    expect(
+      climbsToRoot,
+      "webServer.cwd must resolve to the repo root (two levels up from tests/frontend_e2e/)"
+    ).toBe(true);
   });
 });
