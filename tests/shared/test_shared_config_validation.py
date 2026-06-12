@@ -746,3 +746,131 @@ class TestExhaustive:
         ids = [e.rule_id for e in result.errors]
         assert "E-CAP-POS" in ids, "E-CAP-POS must be collected"
         assert "E-TAR-SHAPE" in ids, "E-TAR-SHAPE must be collected (not short-circuited)"
+
+
+# ===========================================================================
+# Reviewer-added edge cases (backend-reviewer, PR #89 advisory)
+# Cover gaps the original suite missed: §3.2 division-guard non-raising,
+# E-CAP-POS NaN/grid coverage, W-BAT-CRATE-2C independence, strict-> boundary.
+# Hand-values re-verified by execution. Contract amended at 19770be to spec these.
+# ===========================================================================
+
+class TestReviewerDivisionGuard:
+    """# reviewer: backend-reviewer — §3.2 division guard (no ZeroDivisionError escapes)."""
+
+    def test_zero_capacity_with_models_no_crash_crate_skips(self):
+        # reviewer: backend-reviewer (PR #89 [HIGH])
+        # fleet_capacity_mwh=0.0 WITH device_models: E-BAT-CRATE would compute
+        # fleet_power/0.0 → ZeroDivisionError in Python. §3.2 division guard requires
+        # the C-rate rule to SKIP (denominator ≤ 0); E-CAP-POS catches the zero;
+        # validate() must NOT raise.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        site["assets"]["battery"]["fleet_capacity_mwh"] = 0.0
+        result = validate(site, GANSU_MODELS)            # must NOT raise
+        err_ids = [e.rule_id for e in result.errors]
+        assert "E-CAP-POS" in err_ids, f"zero capacity must fire E-CAP-POS; got {err_ids}"
+        assert "E-BAT-CRATE" not in err_ids, (
+            "E-BAT-CRATE must SKIP on zero capacity (§3.2 guard), not compute 98.16/0.0"
+        )
+
+    def test_zero_power_with_models_no_crash_duration_skips(self):
+        # reviewer: backend-reviewer (PR #89 [HIGH])
+        # fleet_power_mw=0.0: W-BAT-DUR-10H computes fleet_capacity/0.0 → ZeroDivisionError.
+        # §3.2 guard: duration rule SKIPS (denominator ≤ 0); E-CAP-POS catches zero power;
+        # no raise. (C-rate = 0.0/294.5 = 0C, so W-BAT-CRATE-2C/E-BAT-CRATE simply don't fire.)
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        site["assets"]["battery"]["fleet_power_mw"] = 0.0
+        result = validate(site, GANSU_MODELS)            # must NOT raise
+        err_ids = [e.rule_id for e in result.errors]
+        warn_ids = [w.rule_id for w in result.warnings]
+        assert "E-CAP-POS" in err_ids, f"zero power must fire E-CAP-POS; got {err_ids}"
+        assert "W-BAT-DUR-10H" not in warn_ids, (
+            "W-BAT-DUR-10H must SKIP on zero power (§3.2 guard), not compute 294.5/0.0"
+        )
+        assert "W-BAT-CRATE-2C" not in warn_ids, "C-rate=0/294.5=0C → no 2C warning"
+
+    def test_nan_capacity_fires_e_cap_pos(self):
+        # reviewer: backend-reviewer (PR #89 [LOW] NaN / §4 IEEE-754 note)
+        # NaN capacity is "obviously unreasonable" (user directive). E-CAP-POS MUST use
+        # `not (x > 0)`: nan > 0 is False → not(False)=True → fires.  A naive `x <= 0`
+        # would MISS nan (nan <= 0 is False).  Also exercises §3.2: E-BAT-CRATE skips
+        # on a NaN denominator without raising.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        site["assets"]["battery"]["fleet_capacity_mwh"] = float("nan")
+        result = validate(site, GANSU_MODELS)            # must NOT raise
+        err_ids = [e.rule_id for e in result.errors]
+        assert "E-CAP-POS" in err_ids, (
+            f"NaN capacity must fire E-CAP-POS via `not (x>0)`; got {err_ids}"
+        )
+        assert "E-BAT-CRATE" not in err_ids, "E-BAT-CRATE must skip on NaN denominator (§3.2)"
+
+
+class TestReviewerCrateIndependenceAndBoundary:
+    """# reviewer: backend-reviewer — W-BAT-CRATE-2C independence + strict-> C-rate boundary."""
+
+    def test_2c_warning_fires_while_crate_error_passes(self):
+        # reviewer: backend-reviewer (PR #89 [MED] independence)
+        # Proves W-BAT-CRATE-2C fires "even if E-BAT-CRATE passes" — needs a device rated >2C.
+        # device per-unit: power_mw_per_unit=700, capacity_mwh_per_unit=300 → 700/300 = 2.3333C
+        # fleet: fleet_power_mw=650, fleet_capacity_mwh=294.5 → 650/294.5 = 2.2071C
+        # 2.0 < 2.2071 → W-BAT-CRATE-2C fires;  2.2071 ≤ 2.3333 → E-BAT-CRATE does NOT fire.
+        validate = _import_validate()
+        models = copy.deepcopy(GANSU_MODELS)
+        models["models"]["catl-lmp-300mwh"]["physics"]["power_mw_per_unit"] = 700.0
+        site = copy.deepcopy(GANSU_SITE)
+        site["assets"]["battery"]["fleet_power_mw"] = 650.0
+        result = validate(site, models)
+        warn_ids = [w.rule_id for w in result.warnings]
+        err_ids = [e.rule_id for e in result.errors]
+        assert "W-BAT-CRATE-2C" in warn_ids, "2.207C > 2.0C must fire W-BAT-CRATE-2C"
+        assert "E-BAT-CRATE" not in err_ids, (
+            "2.207C ≤ device 2.333C must NOT fire E-BAT-CRATE — proves W/E independence"
+        )
+
+    def test_crate_exactly_equal_device_no_error(self):
+        # reviewer: backend-reviewer (PR #89 [LOW] strict-> boundary, "no tolerance")
+        # "HARD ERROR iff fleet_crate > device_crate" — equality must NOT error.
+        # fleet: power=100.0, capacity=300.0 → 0.33333C ; device catl 100/300 → 0.33333C.
+        # 0.33333 > 0.33333 is False (same float) → no error.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        site["assets"]["battery"]["fleet_power_mw"] = 100.0
+        site["assets"]["battery"]["fleet_capacity_mwh"] = 300.0
+        result = validate(site, GANSU_MODELS)
+        err_ids = [e.rule_id for e in result.errors]
+        assert "E-BAT-CRATE" not in err_ids, (
+            "fleet_crate == device_crate (0.333C) must NOT error (strict > , no tolerance)"
+        )
+
+
+class TestReviewerGridCapPos:
+    """# reviewer: backend-reviewer — E-CAP-POS coverage of resolved grid limits (§4 lists them)."""
+
+    def test_grid_export_zero_fires_e_cap_pos(self):
+        # reviewer: backend-reviewer (PR #89 [MED] grid coverage)
+        # §4 lists grid.max_export_mw (resolved) as an E-CAP-POS field; resolved from
+        # device physics. max_export_mw=0.0 → not (0 > 0) → E-CAP-POS.
+        validate = _import_validate()
+        models = copy.deepcopy(GANSU_MODELS)
+        models["models"]["pcc-substation-945mw"]["physics"]["max_export_mw"] = 0.0
+        result = validate(GANSU_SITE, models)
+        err_ids = [e.rule_id for e in result.errors]
+        assert "E-CAP-POS" in err_ids, f"zero grid max_export must fire E-CAP-POS; got {err_ids}"
+        assert any("max_export" in e.field for e in result.errors), (
+            "E-CAP-POS issue must reference the max_export field"
+        )
+
+    def test_grid_import_zero_fires_e_cap_pos(self):
+        # reviewer: backend-reviewer (PR #89 [MED] grid coverage)
+        validate = _import_validate()
+        models = copy.deepcopy(GANSU_MODELS)
+        models["models"]["pcc-substation-945mw"]["physics"]["max_import_mw"] = 0.0
+        result = validate(GANSU_SITE, models)
+        err_ids = [e.rule_id for e in result.errors]
+        assert "E-CAP-POS" in err_ids, f"zero grid max_import must fire E-CAP-POS; got {err_ids}"
+        assert any("max_import" in e.field for e in result.errors), (
+            "E-CAP-POS issue must reference the max_import field"
+        )
