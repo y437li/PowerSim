@@ -39,3 +39,20 @@ no new physics, no LOCKED-env touch.
 ### Lineage
 v2 (flat 36-field) was APPROVED @ d61bc27; rl-architect ruled the stream-keyed structure → v3.
 Reviewer cases survived the v3 restructure (grid-import correctly adapted, not dropped).
+
+### Test-correction (backend-reviewer @ stage-2, 2026-06-11)
+`test_no_mwh_fields_in_wire` was internally inconsistent with
+`test_wire_has_exactly_9_locked_keys`: the former asserted NO wire key ends in
+`_mwh`/`_mw`, but the locked 9-key wire schema (contract lines 70-81) includes
+`soc_violation_mwh` — a penalty/violation diagnostic, not one of the 22 new
+physical-quantity accumulators. The two tests were jointly unsatisfiable (impl
+sat at 51/52). jax-env-engineer correctly escalated rather than editing an
+approved test. **Reviewer ruling (I own the bug — I authored/approved the test):**
+narrow the suffix guard to exempt ONLY `soc_violation_mwh` (`_WIRE_QTY_EXEMPT`),
+NOT the whole locked set — strictly stronger than exempting all locked keys
+(still catches a NEW `_mwh`/`_mw` accumulator even if one were wrongly added to
+`_LOCKED_WIRE_KEYS`) and avoids enumerating all 22 fields. Verified
+`soc_violation_mwh` is the sole locked key matching the suffix, so all 22 new
+accumulators remain guarded. The test's protective intent is preserved; the
+primary wire-isolation guard (`test_wire_has_exactly_9_locked_keys`,
+`test_streams_key_not_in_wire`) is unchanged. Marked `# reviewer:`.

@@ -661,8 +661,21 @@ class TestWireIsolation:
         assert "streams" not in wire
 
     def test_no_mwh_fields_in_wire(self):
+        # reviewer: backend-reviewer — narrow the suffix guard to the one LOCKED
+        # _mwh wire field. `soc_violation_mwh` (contract eval_result_extended.md
+        # lines 70-81) is one of the 9 LOCKED wire keys — a penalty/violation
+        # diagnostic, NOT one of the 22 new physical-quantity accumulators. The
+        # original blanket suffix filter contradicted the locked 9-key schema
+        # (test_wire_has_exactly_9_locked_keys), making the two tests jointly
+        # unsatisfiable. Exempt ONLY soc_violation_mwh (not all locked keys) so
+        # this stays an independent guard that still catches a NEW physical-qty
+        # _mwh/_mw field even if one were wrongly added to _LOCKED_WIRE_KEYS.
+        _WIRE_QTY_EXEMPT = {"soc_violation_mwh"}
         wire = _policy_dict(_make_full_result())
-        leaked = [k for k in wire if k.endswith("_mwh") or k.endswith("_mw")]
+        leaked = [
+            k for k in wire
+            if (k.endswith("_mwh") or k.endswith("_mw")) and k not in _WIRE_QTY_EXEMPT
+        ]
         assert leaked == [], f"physical-qty fields leaked to wire: {leaked}"
 
     def test_locked_field_values_pass_through_unchanged(self):
