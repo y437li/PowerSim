@@ -50,7 +50,9 @@ Two things this pins:
 
 ## 3. Scenario activation — scheduled, sequenced, gated
 
-D31/b's "design-proven config-only, NOT built" is now a **scheduled deliverable** (USER directive). The **gate is unchanged** per scenario (action_dim growth, new state, §3.6 extension, per-scenario `(obs_dim,action_dim)` → own checkpoint, both-reviewer re-review + rl-architect re-LOCK); only the **schedule** changes.
+D31/b's "design-proven config-only, NOT built" is now a **scheduled deliverable** (USER directive). The **gate is unchanged** per group (action_dim growth, new state, §3.6 extension, per-**enabled-set** `(obs_dim,action_dim)` → own checkpoint, both-reviewer re-review + rl-architect re-LOCK); only the **schedule** changes. (Groups *compose* — see §3.1.)
+
+**UI:** unactivated groups are **HIDDEN** in the config stage (not greyed "coming soon") — distinct from the *eval picker*, where an activated-but-incompatible **policy** is greyed **with reason** (§2.2). Hiding = "this product doesn't exist yet"; greying = "this policy can't run on this env."
 
 **Sequence (by increasing kernel-internal novelty — each builds the machinery the next needs):**
 
@@ -62,6 +64,16 @@ D31/b's "design-proven config-only, NOT built" is now a **scheduled deliverable*
 | 3 | **datacenter** | deferrable IT load | **FLEXIBLE-LOAD ACTION extension** (job deferral) + SLA | **action-space change → USER sign-off** |
 
 The two **future USER sign-offs** (aluminum temporal §3.6; datacenter flexible-load action) are flagged now; each escalates **at its scenario's design time**, not now. The overall scope is USER-authorized by the integration directive.
+
+### 3.1 Scenarios COMPOSE — a scenario is a SET, not a choice (USER ruling)
+
+A site may run **multiple product groups at once** (e.g. electrolyzer **and** datacenter, on the always-present power/battery base). So:
+
+- **Scenario = a SET of enabled device/stream groups on top of the power base — NOT an enum.** The config schema is a **set/flags** structure (`enabled_groups: [electrolyzer, datacenter]`), never a single-choice field. **No contract may bake in mutual exclusivity.** This is the keystone's natural form — devices and revenue streams were always composable; this states it as a binding requirement. *(It also retroactively validates the #82 decision to pre-declare all six streams with zero-placeholders: enabling a group simply flips its stream from dormant to active — composition is free.)*
+- **obs/action compose ADDITIVELY per enabled group**, at **fixed canonical offsets**: `(obs_dim, action_dim) = base + Σ(enabled groups)`. A **deterministic canonical group ordering** (fixed registry order — base, electrolyzer, smelter, datacenter — each at a fixed slot) is **required** so `{electrolyzer, datacenter}` always yields the *same* layout regardless of enable order — otherwise checkpoints aren't comparable.
+- **The compat check (§2.2) keys on the enabled-SET, not scalar dims.** Two different enabled-sets can share a dim count but mean different things, so a policy's reusability is gated on its **trained-on enabled-set** matching the env's (read from the checkpoint's `run_config_json` — already in the LOCKED `checkpoint_format`, so **no checkpoint re-LOCK**; scalar dims are the fast necessary check, the enabled-set signature is the sufficient one).
+- **Activation schedule unchanged.** Each group still activates through its own kernel-internal gate (H₂ first, …); **composition becomes available as soon as ≥2 groups are individually activated** — no separate "composition" milestone.
+- **Dispatch competition is the RL policy's job — no extra mechanism.** When H₂ + datacenter + grid-export all compete for the same renewable/battery energy, the **unified reward** (Σ active streams, §4) is exactly what drives the policy to the highest-value allocation. The single stream-economics primitive (§2) makes composed dispatch competition fall out for free — that competition is *why* there's a learned policy at all.
 
 ## 4. Reward alignment — "train on the economics you'll be judged on"
 
@@ -75,7 +87,7 @@ D13 **extends**, doesn't break: `reward_basis = Σ(active real-money streams, ca
 **Training runs are immutable** (USER revision) — a config edit **never stales a run**; runs are tied to *their* config and live in the library (§2.2). Invalidation applies to the **eval→finance** edge and the **config→(new evals)** edge, not to `config→training-runs`:
 
 - **Physical config** (sizing · device · tariff-shape) edit → existing **eval *results*** (computed against the old config) go stale → a **new eval** is needed = select a **compatible** policy from the library × the new config. A fresh **train** is required only if no suitable compatible policy exists for the new config (the `algorithm_id` picks the producer). The old run is untouched and still valid for *its* config.
-- **Finance-only config** (discount rate · escalation · currency) → **re-run ⑤ only**, *no re-dispatch* (re-arithmetic on the cached per-`(year,stream)` accumulators). Rate/sensitivity controls are **interactive sliders**.
+- **Finance-only config** (discount rate · escalation · currency) → **re-run ⑤ only**, *no re-dispatch* (re-arithmetic on the cached per-`(year,stream)` accumulators). Rate/sensitivity controls are **interactive sliders**. **Residency split (USER-confirmed):** the simple re-discount (rate/escalation on the cached cash flows) runs **client-side** for instant interactivity; **tax/debt layering** runs **server-side** (heavier, the finance engine's domain).
 
 A stale edge is **machine-visible** (same provenance-guard family as `dispatch_fidelity`): the wizard refuses to present a stage-⑤ number whose underlying eval's `evaluated-on` provenance ≠ the current config — and *flags* (does not block) a deliberate **cross-eval** (a library policy run against a config it wasn't trained on, §2.2).
 
@@ -100,4 +112,4 @@ API: `validate(config) → { errors: [Issue], warnings: [Issue] }`, `Issue = { r
 
 ### One-line summary
 
-> One config threads the stages through one stream-economics primitive; train and eval decouple via an immutable policy library (select policy × env config, with a compatibility check and cross-eval provenance); sizing and algorithm are first-class config; physical edits need a new eval, finance edits re-slice instantly; scenarios activate on a gated schedule; nothing reaches the step kernel except through a named gate.
+> One config threads the stages through one stream-economics primitive; train and eval decouple via an immutable policy library (select policy × env config, with an enabled-set compatibility check and cross-eval provenance); sizing and algorithm are first-class config; scenarios are a **composable set** of device/stream groups (not an enum) that activate on a gated schedule and compete for energy through the unified reward; physical edits need a new eval, finance edits re-slice instantly; nothing reaches the step kernel except through a named gate.
