@@ -57,10 +57,10 @@ See [`STACK.md`](../STACK.md) for the full, up-to-date table. Key choices as of 
 
 Certain shared contracts are **LOCKED** — they have a version number and may not be changed without a superseding DECISION:
 
-- `contracts/shared/telemetry_schema.md` v1.0.0 — the JSON wire format (LOCKED PR #6)
+- `contracts/shared/telemetry_schema.md` v1.0.0 — JSON wire format (`env_step`/`train_metrics`/`eval_compare`) (LOCKED PR #6)
 - `contracts/shared/checkpoint_format.md` v1.0.0 — checkpoint layout (LOCKED PR #41)
-- `assets/3d/registry.json` — 3D asset IDs (LOCKED PR #24)
-- `contracts/shared/device_model_schema.md` v2.0.0 — site/device YAML schema (LOCKED PR #87)
+- `assets/3d/registry.json` v1.0.0 — 3D asset IDs (LOCKED PR #24)
+- `contracts/shared/device_model_schema.md` v2.0.0 — site/device YAML schema (v1.0.0 keystone LOCKED PR #79 + v1.1.0 economics minor + v2.0.0 seasonal reshape LOCKED PR #87; v1.1.0 is an additive minor pre-authorized by the v1.0.0 versioning rule — no standalone re-LOCK)
 - `contracts/shared/tariff_model_schema.md` v1.0.0 — tariff YAML schema (LOCKED PR #91)
 - `contracts/shared/config_validation.md` v1.0.0 — two-tier site-config validator (LOCKED PR #89)
 
