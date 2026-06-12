@@ -119,6 +119,12 @@ at the first error.  This ensures the UI can display all problems at once.
 If a required field is absent (e.g., `assets.battery` missing entirely), the relevant
 rules are skipped and the missing-field itself is an E-SCHEMA error (see §4 E-SCHEMA-*).
 
+**Division guard:** rules that compute a ratio (`fleet_power / fleet_capacity` for C-rate;
+`fleet_capacity / fleet_power` for duration) MUST skip rather than divide when the
+denominator is ≤ 0 or NaN.  Non-positive capacities/powers are already covered by
+`E-CAP-POS` — C-rate and duration rules therefore skip and defer.  Implementation MUST
+NOT let a ZeroDivisionError escape from `validate()`.
+
 ### 3.3 Contract: device_models optional
 
 When `device_models=None`, rules that require device-model physics are silently skipped
@@ -148,6 +154,11 @@ Each failing field produces a separate `ValidationIssue` with `rule_id="E-CAP-PO
 **Constraint format example:**  
 `"fleet_capacity_mwh = -10.0 MWh — must be > 0"`
 
+**NaN / missing guard:** implementation MUST check `not (x > 0)` (which is True for both
+≤ 0 and NaN) rather than `x <= 0` (which would silently pass NaN because `NaN <= 0`
+is False in Python/IEEE 754).  Any field where `not (x > 0)` produces an E-CAP-POS
+issue with an informative constraint message.
+
 **Gansu:** all capacities positive → no error.
 
 ### E-BAT-CRATE — Battery C-rate exceeds device per-unit rating
@@ -163,11 +174,15 @@ device_crate   = device.physics.power_mw_per_unit / device.physics.capacity_mwh_
 HARD ERROR iff  fleet_crate > device_crate  (no tolerance)
 ```
 
+**Skip guard:** if `fleet_capacity_mwh ≤ 0` or `not (fleet_capacity_mwh > 0)`, this rule
+is **skipped** (E-CAP-POS already covers the non-positive capacity case; dividing would
+raise ZeroDivisionError, violating §3.2).
+
 **Constraint format example:**  
 `"200.0MW/294.5MWh=0.679C > device limit 100.0MW/300.0MWh=0.333C"`
 
 **Gansu:** 98.16/294.5 = 0.3333C ≤ 100.0/300.0 = 0.3333C → no error.
-*(arithmetic: 98.16/294.5 = 0.33327…; 100.0/300.0 = 0.33333…; within floating-point)*
+*(arithmetic: 98.16/294.5 = 0.333311…; 100.0/300.0 = 0.333333…; within floating-point)*
 
 ### E-BAT-UNIT — Explicit unit_count inconsistent with fleet sizing
 
@@ -275,6 +290,14 @@ fleet_crate = fleet_power_mw / fleet_capacity_mwh
 WARNING iff fleet_crate > 2.0
 ```
 
+**Skip guard:** if `not (fleet_capacity_mwh > 0)`, this rule is **skipped**
+(E-CAP-POS covers the case; dividing would violate §3.2).
+
+**Independence from E-BAT-CRATE:** this warning fires based solely on the 2.0C
+absolute threshold — it fires even when E-BAT-CRATE does not fire (i.e., when
+fleet C-rate ≤ device C-rate but still > 2.0C, which happens when the device itself
+is rated above 2C).
+
 **Constraint format example:**  
 `"fleet_power=591.0MW/fleet_capacity=294.5MWh=2.007C > 2.0C LFP advisory"`
 
@@ -289,6 +312,9 @@ Storage >10 hours (ultra-long duration) is unusual and likely a configuration er
 duration_h = fleet_capacity_mwh / fleet_power_mw
 WARNING iff duration_h > 10.0
 ```
+
+**Skip guard:** if `not (fleet_power_mw > 0)`, this rule is **skipped**
+(E-CAP-POS covers the case; dividing would violate §3.2).
 
 **Constraint format example:**  
 `"294.5MWh/9.816MW=30.0h > 10h — check units (MWh vs kWh?)"`
@@ -502,3 +528,8 @@ panel), `field` must encode the device index or ID (e.g.,
 - [ ] Each rule tested with a hand-crafted invalid/borderline config (see test file)
 - [ ] `device_models=None` → device-dependent rules silently skipped, not errored
 - [ ] Stable `rule_id` strings present in all `ValidationIssue` instances
+- [ ] E-CAP-POS uses `not (x > 0)` — catches both ≤ 0 and NaN (IEEE 754 safe)
+- [ ] E-BAT-CRATE skips (not errors) when fleet_capacity_mwh ≤ 0 or NaN
+- [ ] W-BAT-CRATE-2C skips when fleet_capacity_mwh ≤ 0 or NaN
+- [ ] W-BAT-DUR-10H skips when fleet_power_mw ≤ 0 or NaN
+- [ ] No ZeroDivisionError escapes from `validate()` under any input
