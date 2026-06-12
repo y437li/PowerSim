@@ -938,14 +938,17 @@ class MpcPolicy:
             a_bat_lp = 0.0
 
         # Clip to SOC-feasible window derived from actual env_state.soc.
-        # Same (1-1e-5) relative margin as DpOraclePolicy: the LP is float64 but
-        # the JAX env stores SOC in float32 — even a float64→float32 conversion
-        # in a_bat * bat_power can land 1 ULP above max_P_ch.  The margin
-        # (≈250 W on 50 MW, 80× float32 epsilon) absorbs that without affecting
-        # the LP objective.
-        soc_now    = float(env_state.soc)
-        _max_P_ch  = max(0.0, (soc_max_f - soc_now) * bat_cap / eta_ch)
-        _max_P_dis = max(0.0, (soc_now - soc_min_f) * bat_cap * eta_dis)
+        # Root cause of SOC violations: catastrophic f32 cancellation when
+        # soc ≈ soc_max/soc_min (gap ≈ 6e-7).  Python float64 subtraction gives
+        # a ~3.5% larger headroom than the env's float32 arithmetic — the
+        # (1-1e-5) margin cannot bridge that gap.  Fix: mirror the env's f32
+        # arithmetic exactly by computing the subtraction in float32 first;
+        # the (1-1e-5) margin then only needs to cover the residual 1-ULP diff.
+        soc_f32    = np.float32(float(env_state.soc))
+        _max_P_ch  = float(np.maximum(np.float32(0.0),
+                         (np.float32(soc_max_f) - soc_f32) * np.float32(bat_cap) / np.float32(eta_ch)))
+        _max_P_dis = float(np.maximum(np.float32(0.0),
+                         (soc_f32 - np.float32(soc_min_f)) * np.float32(bat_cap) * np.float32(eta_dis)))
         a_ch_max   = min(1.0, _max_P_ch  * (1.0 - 1e-5) / bat_pow)
         a_dis_max  = min(1.0, _max_P_dis * (1.0 - 1e-5) / bat_pow)
         a_bat_lp   = float(np.clip(a_bat_lp, -a_dis_max, a_ch_max))
