@@ -121,6 +121,29 @@ class TestComputeFittedShear:
         alpha = fn(v10, v100)
         assert abs(float(alpha[0]) - 0.14) < 1e-5
 
+    def test_no_shear_ratio_one_alpha_zero(self):
+        # reviewer: backend-reviewer (PR #92) — v100 == v10 → ratio 1 → ln(1)/ln(10) = 0 → α = 0.
+        # This is the boundary between the negative-raw-α-clipped-to-0 case and positive α.
+        # Both winds are positive and well-defined, so it must NOT take the 0.14 calm fallback —
+        # a naive impl that treats ratio==1 (or ln==0) as "degenerate" would wrongly return 0.14.
+        fn = self._fn()
+        v10  = np.array([7.0], dtype=np.float32)
+        v100 = np.array([7.0], dtype=np.float32)
+        alpha = fn(v10, v100)
+        assert abs(float(alpha[0]) - 0.0) < 1e-6, (
+            f"v100==v10 must give α=0 (no shear), not the 0.14 calm fallback; got {alpha[0]}"
+        )
+
+    def test_nan_inf_input_uses_neutral_default(self):
+        # reviewer: backend-reviewer (PR #92) — §3.1 stability flag: when v10/v100 is NaN or ±Inf
+        # the ln() is NaN/±Inf → α = 0.14 (neutral). The calm v≤0 path is tested above; this pins
+        # the NaN/Inf path, which a naive ln() would otherwise propagate as NaN through the clip.
+        fn = self._fn()
+        a_nan10 = fn(np.array([np.nan], dtype=np.float32), np.array([10.0], dtype=np.float32))
+        assert abs(float(a_nan10[0]) - 0.14) < 1e-5, f"NaN v10 → 0.14 neutral; got {a_nan10[0]}"
+        a_inf100 = fn(np.array([5.0], dtype=np.float32), np.array([np.inf], dtype=np.float32))
+        assert abs(float(a_inf100[0]) - 0.14) < 1e-5, f"+Inf v100 → 0.14 neutral; got {a_inf100[0]}"
+
     def test_batch_mixed_cases(self):
         """Array input: [nominal, high-shear, calm-v10, inversion, neutral-stable].
         Expected: [0.30103, 0.6, 0.14, 0.0, 0.17609]
@@ -261,6 +284,23 @@ class TestExtrapolateToHub:
         v_hub = fn(v100, alpha, hub_height_m=120.0)
         expected = 6.0 * (120.0 / 100.0) ** 0.6
         assert abs(float(v_hub[0]) - expected) < 1e-3
+
+    def test_alpha_zero_hub_independent(self):
+        # reviewer: backend-reviewer (PR #92) — α=0 (no shear) ⇒ v_hub = v100·(hub/100)^0 = v100,
+        # for ANY hub height. Pairs with test_no_shear_ratio_one_alpha_zero (v100==v10 → α=0):
+        # no shear must mean no height adjustment. Checked at two hubs (90m, 120m) to confirm
+        # the result is hub-independent (a buggy `**` or a missing α=0 short-circuit would not be).
+        fn = self._fn()
+        v100 = np.array([8.0], dtype=np.float32)
+        alpha = np.array([0.0], dtype=np.float32)
+        v_hub_90  = fn(v100, alpha, hub_height_m=90.0)
+        v_hub_120 = fn(v100, alpha, hub_height_m=120.0)
+        assert abs(float(v_hub_90[0])  - 8.0) < 1e-5, (
+            f"α=0, hub=90 → v_hub=v100=8.0 (no shear, no adjustment); got {v_hub_90[0]}"
+        )
+        assert abs(float(v_hub_120[0]) - 8.0) < 1e-5, (
+            f"α=0, hub=120 → v_hub=v100=8.0 (hub-independent); got {v_hub_120[0]}"
+        )
 
     def test_output_dtype_float32(self):
         """Output dtype must be float32."""
