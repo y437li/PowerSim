@@ -330,9 +330,14 @@ describe("WCAG contrast ratios (§7)", () => {
   });
 
   // faint-on-surface: #64748b on #1e2533 (large text only — 3:1 minimum)
-  // L(#64748b) ≈ 0.1312, L(#1e2533) ≈ 0.0138 → (0.1312+0.05)/(0.0138+0.05) ≈ 2.87:1 …
-  // NB: The contract says "3:1 (large)" for card titles in uppercase. If the computed value
-  // is slightly below 3.0 the test will flag it — this is intentional (contract §7 says ≥3:1).
+  // #64748b: r=100, g=116, b=139
+  //   R_lin = ((100/255+0.055)/1.055)^2.4 ≈ 0.1275
+  //   G_lin = ((116/255+0.055)/1.055)^2.4 ≈ 0.1749
+  //   B_lin = ((139/255+0.055)/1.055)^2.4 ≈ 0.2580
+  //   L ≈ 0.2126×0.1275 + 0.7152×0.1749 + 0.0722×0.2580 ≈ 0.1708
+  // #1e2533: r=30, g=37, b=51
+  //   L ≈ 0.2126×0.0138 + 0.7152×0.0161 + 0.0722×0.0333 ≈ 0.0142
+  // Contrast: (0.1708+0.05)/(0.0142+0.05) ≈ 3.44:1 — meets 3:1 for large/uppercase
   it("faint text (#64748b) on surface bg (#1e2533) meets 3:1 for large/uppercase text", () => {
     const r = contrast("#64748b", "#1e2533");
     expect(r).toBeGreaterThanOrEqual(3.0);
