@@ -22,6 +22,7 @@ try:
         SellClamp,
         validate_tariff_region,
         ValidationIssue,
+        ValidationResult,
     )
     HAS_MODULE = True
 except ImportError:
@@ -315,9 +316,9 @@ class TestValidationETariffShape:
         because the tariff library always expects (12, 24).
         """
         region = self._make_region([GANSU_ROW])   # shape (1, 24), not (12, 24) → also wrong
-        issues = validate_tariff_region(region)
-        rule_ids = [i.rule_id for i in issues]
-        assert "E-TARIFF-SHAPE" in rule_ids
+        result = validate_tariff_region(region)
+        error_ids = [i.rule_id for i in result.errors]
+        assert "E-TARIFF-SHAPE" in error_ids
 
     def test_wrong_month_count_fires_error(self):
         """6 rows (shape (6,24)) must fire E-TARIFF-SHAPE.
@@ -325,9 +326,9 @@ class TestValidationETariffShape:
         Hand-computed: need exactly 12 rows (Jan–Dec). 6 rows is wrong → error.
         """
         region = self._make_region([GANSU_ROW] * 6)
-        issues = validate_tariff_region(region)
-        rule_ids = [i.rule_id for i in issues]
-        assert "E-TARIFF-SHAPE" in rule_ids
+        result = validate_tariff_region(region)
+        error_ids = [i.rule_id for i in result.errors]
+        assert "E-TARIFF-SHAPE" in error_ids
 
     def test_wrong_hour_count_fires_error(self):
         """24 rows of 12 entries each (shape (24,12)) must fire E-TARIFF-SHAPE.
@@ -336,25 +337,33 @@ class TestValidationETariffShape:
         """
         row_12 = GANSU_ROW[:12]  # 12 entries
         region = self._make_region([row_12] * 24)
-        issues = validate_tariff_region(region)
-        rule_ids = [i.rule_id for i in issues]
-        assert "E-TARIFF-SHAPE" in rule_ids
+        result = validate_tariff_region(region)
+        error_ids = [i.rule_id for i in result.errors]
+        assert "E-TARIFF-SHAPE" in error_ids
 
     def test_correct_shape_no_error(self):
         """A valid (12,24) table must NOT fire E-TARIFF-SHAPE."""
         region = self._make_region([GANSU_ROW] * 12)
-        issues = validate_tariff_region(region)
-        rule_ids = [i.rule_id for i in issues]
-        assert "E-TARIFF-SHAPE" not in rule_ids
+        result = validate_tariff_region(region)
+        error_ids = [i.rule_id for i in result.errors]
+        assert "E-TARIFF-SHAPE" not in error_ids
 
     def test_e_tariff_shape_is_error_not_warning(self):
-        """E-TARIFF-SHAPE must be severity ERROR (HARD), not WARNING (§5)."""
+        """E-TARIFF-SHAPE must be in result.errors (HARD), never in result.warnings (§5).
+
+        The LOCKED config_validation contract uses errors/warnings lists (not a severity field)
+        to distinguish hard errors from soft warnings. E-TARIFF-SHAPE is a HARD error: it must
+        appear in result.errors AND must NOT appear in result.warnings.
+        """
         region = self._make_region([GANSU_ROW] * 6)
-        issues = validate_tariff_region(region)
-        shape_issues = [i for i in issues if i.rule_id == "E-TARIFF-SHAPE"]
-        assert len(shape_issues) >= 1
-        assert shape_issues[0].severity == "error", (
-            f"E-TARIFF-SHAPE must be 'error', got '{shape_issues[0].severity}'"
+        result = validate_tariff_region(region)
+        error_ids = [i.rule_id for i in result.errors]
+        warning_ids = [i.rule_id for i in result.warnings]
+        assert "E-TARIFF-SHAPE" in error_ids, (
+            "E-TARIFF-SHAPE must be in result.errors (HARD ERROR)"
+        )
+        assert "E-TARIFF-SHAPE" not in warning_ids, (
+            "E-TARIFF-SHAPE must NOT appear in result.warnings"
         )
 
     def test_ragged_rows_fire_shape_error(self):
@@ -369,10 +378,10 @@ class TestValidationETariffShape:
         """
         table = [list(GANSU_ROW)] * 11 + [list(GANSU_ROW[:23])]   # row 11 has 23 entries
         region = self._make_region(table)
-        issues = validate_tariff_region(region)
-        rule_ids = [i.rule_id for i in issues]
-        assert "E-TARIFF-SHAPE" in rule_ids, (
-            f"ragged (11×24 + 1×23) table must fire E-TARIFF-SHAPE; got {rule_ids}"
+        result = validate_tariff_region(region)
+        error_ids = [i.rule_id for i in result.errors]
+        assert "E-TARIFF-SHAPE" in error_ids, (
+            f"ragged (11×24 + 1×23) table must fire E-TARIFF-SHAPE; got errors {error_ids}"
         )
 
 
@@ -396,13 +405,16 @@ class TestValidationWTariffPriceNeg:
             "demand_rate_yuan_per_mw_month": 32000.0,
             "sell_clamp": {"spread_yuan_per_mwh": 30.0, "spread_noise_std_yuan_per_mwh": 10.0},
         }
-        issues = validate_tariff_region(region)
-        rule_ids = [i.rule_id for i in issues]
-        assert "W-TARIFF-PRICE-NEG" in rule_ids
+        result = validate_tariff_region(region)
+        warning_ids = [i.rule_id for i in result.warnings]
+        assert "W-TARIFF-PRICE-NEG" in warning_ids
 
     def test_negative_price_is_warning_not_error(self):
-        """W-TARIFF-PRICE-NEG must be severity WARNING (not error; negative prices exist in
-        real markets — contract §5 explicitly defers hard enforcement)."""
+        """W-TARIFF-PRICE-NEG must be in result.warnings, NOT in result.errors.
+
+        Negative prices can occur in real electricity markets (§5). The rule is a soft
+        warning: the env will run but the operator should review.
+        """
         bad_row = list(GANSU_ROW)
         bad_row[0] = -1.0
         region = {
@@ -411,11 +423,14 @@ class TestValidationWTariffPriceNeg:
             "demand_rate_yuan_per_mw_month": 32000.0,
             "sell_clamp": {"spread_yuan_per_mwh": 30.0, "spread_noise_std_yuan_per_mwh": 10.0},
         }
-        issues = validate_tariff_region(region)
-        neg_issues = [i for i in issues if i.rule_id == "W-TARIFF-PRICE-NEG"]
-        assert len(neg_issues) >= 1
-        assert neg_issues[0].severity == "warning", (
-            f"W-TARIFF-PRICE-NEG must be 'warning', got '{neg_issues[0].severity}'"
+        result = validate_tariff_region(region)
+        error_ids = [i.rule_id for i in result.errors]
+        warning_ids = [i.rule_id for i in result.warnings]
+        assert "W-TARIFF-PRICE-NEG" in warning_ids, (
+            "W-TARIFF-PRICE-NEG must be in result.warnings"
+        )
+        assert "W-TARIFF-PRICE-NEG" not in error_ids, (
+            "W-TARIFF-PRICE-NEG must NOT be in result.errors (it is a soft warning)"
         )
 
     def test_all_positive_prices_no_warning(self):
@@ -426,9 +441,9 @@ class TestValidationWTariffPriceNeg:
             "demand_rate_yuan_per_mw_month": 32000.0,
             "sell_clamp": {"spread_yuan_per_mwh": 30.0, "spread_noise_std_yuan_per_mwh": 10.0},
         }
-        issues = validate_tariff_region(region)
-        rule_ids = [i.rule_id for i in issues]
-        assert "W-TARIFF-PRICE-NEG" not in rule_ids
+        result = validate_tariff_region(region)
+        warning_ids = [i.rule_id for i in result.warnings]
+        assert "W-TARIFF-PRICE-NEG" not in warning_ids
 
     def test_zero_price_no_warning(self):
         """A price of exactly 0.0 must NOT fire W-TARIFF-PRICE-NEG (rule is strictly < 0).
@@ -442,9 +457,9 @@ class TestValidationWTariffPriceNeg:
             "demand_rate_yuan_per_mw_month": 32000.0,
             "sell_clamp": {"spread_yuan_per_mwh": 30.0, "spread_noise_std_yuan_per_mwh": 10.0},
         }
-        issues = validate_tariff_region(region)
-        rule_ids = [i.rule_id for i in issues]
-        assert "W-TARIFF-PRICE-NEG" not in rule_ids
+        result = validate_tariff_region(region)
+        warning_ids = [i.rule_id for i in result.warnings]
+        assert "W-TARIFF-PRICE-NEG" not in warning_ids
 
 
 # ---------------------------------------------------------------------------
@@ -465,16 +480,16 @@ class TestValidationWTariffSpreadNeg:
     def test_negative_spread_fires_warning(self):
         """spread_yuan_per_mwh < 0 → sell > buy by default → risk-free arbitrage risk (D7)."""
         region = self._valid_region(spread=-5.0)
-        issues = validate_tariff_region(region)
-        rule_ids = [i.rule_id for i in issues]
-        assert "W-TARIFF-SPREAD-NEG" in rule_ids
+        result = validate_tariff_region(region)
+        warning_ids = [i.rule_id for i in result.warnings]
+        assert "W-TARIFF-SPREAD-NEG" in warning_ids
 
     def test_negative_spread_std_fires_warning(self):
         """spread_noise_std_yuan_per_mwh < 0 → negative σ is mathematically incoherent."""
         region = self._valid_region(std=-1.0)
-        issues = validate_tariff_region(region)
-        rule_ids = [i.rule_id for i in issues]
-        assert "W-TARIFF-SPREAD-NEG" in rule_ids
+        result = validate_tariff_region(region)
+        warning_ids = [i.rule_id for i in result.warnings]
+        assert "W-TARIFF-SPREAD-NEG" in warning_ids
 
     def test_zero_spread_no_warning(self):
         """spread=0 → deterministic zero discount, valid (sell == buy — unusual but not wrong).
@@ -482,9 +497,9 @@ class TestValidationWTariffSpreadNeg:
         Hand-computed: rule is 'iff spread < 0'; 0.0 is not < 0, no warning.
         """
         region = self._valid_region(spread=0.0)
-        issues = validate_tariff_region(region)
-        rule_ids = [i.rule_id for i in issues]
-        assert "W-TARIFF-SPREAD-NEG" not in rule_ids
+        result = validate_tariff_region(region)
+        warning_ids = [i.rule_id for i in result.warnings]
+        assert "W-TARIFF-SPREAD-NEG" not in warning_ids
 
     def test_zero_std_no_warning(self):
         """std=0 → deterministic spread, valid (no noise).
@@ -492,41 +507,202 @@ class TestValidationWTariffSpreadNeg:
         Hand-computed: rule is 'iff std < 0'; 0.0 is not < 0, no warning.
         """
         region = self._valid_region(std=0.0)
-        issues = validate_tariff_region(region)
-        rule_ids = [i.rule_id for i in issues]
-        assert "W-TARIFF-SPREAD-NEG" not in rule_ids
+        result = validate_tariff_region(region)
+        warning_ids = [i.rule_id for i in result.warnings]
+        assert "W-TARIFF-SPREAD-NEG" not in warning_ids
 
     def test_spread_neg_is_warning_not_error(self):
-        """W-TARIFF-SPREAD-NEG must be severity WARNING."""
+        """W-TARIFF-SPREAD-NEG must be in result.warnings, NOT result.errors."""
         region = self._valid_region(spread=-5.0)
-        issues = validate_tariff_region(region)
-        spread_issues = [i for i in issues if i.rule_id == "W-TARIFF-SPREAD-NEG"]
-        assert len(spread_issues) >= 1
-        assert spread_issues[0].severity == "warning"
+        result = validate_tariff_region(region)
+        error_ids = [i.rule_id for i in result.errors]
+        warning_ids = [i.rule_id for i in result.warnings]
+        assert "W-TARIFF-SPREAD-NEG" in warning_ids, (
+            "W-TARIFF-SPREAD-NEG must be in result.warnings"
+        )
+        assert "W-TARIFF-SPREAD-NEG" not in error_ids, (
+            "W-TARIFF-SPREAD-NEG must NOT be in result.errors"
+        )
 
 
 # ---------------------------------------------------------------------------
-# 8. ValidationIssue schema check
+# 8. Validation — W-TARIFF-CURRENCY-UNKNOWN (WARNING)
+# ---------------------------------------------------------------------------
+
+class TestValidationWTariffCurrencyUnknown:
+    """W-TARIFF-CURRENCY-UNKNOWN warns when currency is not 'CNY'."""
+
+    def _valid_region(self, currency="CNY"):
+        return {
+            "currency": currency,
+            "price_table_yuan_per_mwh": [GANSU_ROW] * 12,
+            "demand_rate_yuan_per_mw_month": 32000.0,
+            "sell_clamp": {"spread_yuan_per_mwh": 30.0, "spread_noise_std_yuan_per_mwh": 10.0},
+        }
+
+    def test_non_cny_currency_fires_warning(self):
+        """currency != 'CNY' must fire W-TARIFF-CURRENCY-UNKNOWN.
+
+        Hand-computed: env is ¥-internal; a non-CNY currency tag is suspicious —
+        operator probably entered wrong data or copy-pasted from a foreign tariff file.
+        "USD" is a clearly wrong currency for the Gansu grid → warning.
+        """
+        region = self._valid_region(currency="USD")
+        result = validate_tariff_region(region)
+        warning_ids = [i.rule_id for i in result.warnings]
+        assert "W-TARIFF-CURRENCY-UNKNOWN" in warning_ids, (
+            f"currency='USD' must fire W-TARIFF-CURRENCY-UNKNOWN; got warnings {warning_ids}"
+        )
+
+    def test_cny_no_warning(self):
+        """currency='CNY' must NOT fire W-TARIFF-CURRENCY-UNKNOWN.
+
+        Hand-computed: CNY is the only recognised currency; no warning.
+        """
+        region = self._valid_region(currency="CNY")
+        result = validate_tariff_region(region)
+        warning_ids = [i.rule_id for i in result.warnings]
+        assert "W-TARIFF-CURRENCY-UNKNOWN" not in warning_ids
+
+    def test_currency_unknown_is_warning_not_error(self):
+        """W-TARIFF-CURRENCY-UNKNOWN must be WARNING, not HARD ERROR.
+
+        Rationale: the env doesn't use currency for arithmetic; a wrong code is
+        suspicious but not operationally fatal — the numbers still run.
+        """
+        region = self._valid_region(currency="JPY")
+        result = validate_tariff_region(region)
+        error_ids = [i.rule_id for i in result.errors]
+        warning_ids = [i.rule_id for i in result.warnings]
+        assert "W-TARIFF-CURRENCY-UNKNOWN" in warning_ids, (
+            "W-TARIFF-CURRENCY-UNKNOWN must be in result.warnings"
+        )
+        assert "W-TARIFF-CURRENCY-UNKNOWN" not in error_ids, (
+            "W-TARIFF-CURRENCY-UNKNOWN must NOT be in result.errors"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 9. Validation — W-TARIFF-DEMAND-NEG (WARNING)
+# ---------------------------------------------------------------------------
+
+class TestValidationWTariffDemandNeg:
+    """W-TARIFF-DEMAND-NEG warns when demand_rate < 0; 0.0 is valid (no demand charge)."""
+
+    def _valid_region(self, demand_rate=32000.0):
+        return {
+            "currency": "CNY",
+            "price_table_yuan_per_mwh": [GANSU_ROW] * 12,
+            "demand_rate_yuan_per_mw_month": demand_rate,
+            "sell_clamp": {"spread_yuan_per_mwh": 30.0, "spread_noise_std_yuan_per_mwh": 10.0},
+        }
+
+    def test_negative_demand_rate_fires_warning(self):
+        """demand_rate < 0 → negative demand charge → suspicious (implies demand subsidy).
+
+        Hand-computed: -100.0 ¥/MW·month is negative — real CN tariffs don't pay for peak
+        demand. This is a soft warning (not a hard error) because some research configs
+        intentionally use negative demand to model subsidies.
+        """
+        region = self._valid_region(demand_rate=-100.0)
+        result = validate_tariff_region(region)
+        warning_ids = [i.rule_id for i in result.warnings]
+        assert "W-TARIFF-DEMAND-NEG" in warning_ids, (
+            f"demand_rate=-100.0 must fire W-TARIFF-DEMAND-NEG; got warnings {warning_ids}"
+        )
+
+    def test_zero_demand_rate_no_warning(self):
+        """demand_rate=0.0 must NOT fire W-TARIFF-DEMAND-NEG.
+
+        Hand-computed: 0.0 means no demand charge (valid for sites without demand tariff).
+        Rule is strictly '< 0'; 0.0 is the boundary and is valid.
+        """
+        region = self._valid_region(demand_rate=0.0)
+        result = validate_tariff_region(region)
+        warning_ids = [i.rule_id for i in result.warnings]
+        assert "W-TARIFF-DEMAND-NEG" not in warning_ids, (
+            "demand_rate=0.0 must NOT fire W-TARIFF-DEMAND-NEG; "
+            "0.0 is valid (no demand charge site)"
+        )
+
+    def test_positive_demand_rate_no_warning(self):
+        """demand_rate=32000.0 (Gansu standard) must NOT fire W-TARIFF-DEMAND-NEG.
+
+        Hand-computed: 32 000 ¥/MW·month > 0 → no warning.
+        """
+        region = self._valid_region(demand_rate=32000.0)
+        result = validate_tariff_region(region)
+        warning_ids = [i.rule_id for i in result.warnings]
+        assert "W-TARIFF-DEMAND-NEG" not in warning_ids
+
+    def test_demand_neg_is_warning_not_error(self):
+        """W-TARIFF-DEMAND-NEG must be in result.warnings, NOT result.errors.
+
+        Rationale: negative demand rate is unusual but not operationally fatal —
+        the env will run with a negative demand charge component.
+        """
+        region = self._valid_region(demand_rate=-100.0)
+        result = validate_tariff_region(region)
+        error_ids = [i.rule_id for i in result.errors]
+        warning_ids = [i.rule_id for i in result.warnings]
+        assert "W-TARIFF-DEMAND-NEG" in warning_ids, (
+            "W-TARIFF-DEMAND-NEG must be in result.warnings"
+        )
+        assert "W-TARIFF-DEMAND-NEG" not in error_ids, (
+            "W-TARIFF-DEMAND-NEG must NOT be in result.errors"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 10. ValidationResult and ValidationIssue schema
 # ---------------------------------------------------------------------------
 
 class TestValidationIssueSchema:
-    """ValidationIssue instances returned by validate_tariff_region must have the
-    correct fields (compatible with config_validation.ValidationIssue shape — §6)."""
+    """ValidationIssue instances returned inside ValidationResult must have the
+    correct fields (compatible with config_validation.ValidationIssue shape — §6).
 
-    def test_issue_has_rule_id_severity_message(self):
-        """Every ValidationIssue must have rule_id, severity, and message fields."""
+    LOCKED config_validation.ValidationIssue shape:
+      NamedTuple(rule_id: str, field: str, message: str, constraint: str)
+    Severity is IMPLICIT (errors list vs warnings list in ValidationResult),
+    NOT an explicit field.
+    """
+
+    def test_validate_returns_validation_result(self):
+        """validate_tariff_region() must return a ValidationResult with .errors and .warnings."""
         region = {
             "currency": "CNY",
             "price_table_yuan_per_mwh": [GANSU_ROW] * 6,  # wrong shape → E-TARIFF-SHAPE
             "demand_rate_yuan_per_mw_month": 32000.0,
             "sell_clamp": {"spread_yuan_per_mwh": 30.0, "spread_noise_std_yuan_per_mwh": 10.0},
         }
-        issues = validate_tariff_region(region)
-        assert len(issues) >= 1
-        for issue in issues:
+        result = validate_tariff_region(region)
+        assert hasattr(result, "errors"), "ValidationResult must have 'errors' attribute"
+        assert hasattr(result, "warnings"), "ValidationResult must have 'warnings' attribute"
+        assert isinstance(result.errors, list), "result.errors must be a list"
+        assert isinstance(result.warnings, list), "result.warnings must be a list"
+
+    def test_issue_has_rule_id_field_message_constraint(self):
+        """Every ValidationIssue must have rule_id, field, message, constraint — no severity.
+
+        The LOCKED config_validation.ValidationIssue is:
+          NamedTuple(rule_id: str, field: str, message: str, constraint: str)
+        There is NO severity field — severity is implicit in which list the issue appears in.
+        An implementation that adds a severity field violates the LOCKED contract.
+        """
+        region = {
+            "currency": "CNY",
+            "price_table_yuan_per_mwh": [GANSU_ROW] * 6,  # wrong shape → E-TARIFF-SHAPE
+            "demand_rate_yuan_per_mw_month": 32000.0,
+            "sell_clamp": {"spread_yuan_per_mwh": 30.0, "spread_noise_std_yuan_per_mwh": 10.0},
+        }
+        result = validate_tariff_region(region)
+        assert len(result.errors) >= 1, "Expected at least one error for wrong-shape table"
+        for issue in result.errors:
             assert hasattr(issue, "rule_id"), "ValidationIssue missing 'rule_id'"
-            assert hasattr(issue, "severity"), "ValidationIssue missing 'severity'"
+            assert hasattr(issue, "field"), "ValidationIssue missing 'field'"
             assert hasattr(issue, "message"), "ValidationIssue missing 'message'"
-            assert issue.severity in ("error", "warning"), (
-                f"severity must be 'error' or 'warning', got '{issue.severity}'"
+            assert hasattr(issue, "constraint"), "ValidationIssue missing 'constraint'"
+            assert not hasattr(issue, "severity"), (
+                "ValidationIssue must NOT have 'severity' field — severity is implicit "
+                "(errors list = hard, warnings list = soft)"
             )

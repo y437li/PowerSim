@@ -73,25 +73,37 @@ regions:
 | `schema_version` | string | — | `"1.0.0"` | Presence-only check in tests; equality check in validators |
 | `currency` | string | ISO-4217 | non-empty | Display only; env arithmetic is always ¥-internal |
 | `price_table_yuan_per_mwh` | list[list[float]] | ¥/MWh | shape (12, 24); values ≥ 0 by convention | **Hard error E-TARIFF-SHAPE if shape ≠ (12, 24)** |
-| `demand_rate_yuan_per_mw_month` | float | ¥/MW·month | > 0 | Maps directly to `EnvParams.demand_rate_yuan_per_mw_month` |
+| `demand_rate_yuan_per_mw_month` | float | ¥/MW·month | ≥ 0 (W-TARIFF-DEMAND-NEG if < 0) | Maps directly to `EnvParams.demand_rate_yuan_per_mw_month`; 0.0 valid for no-demand-charge sites |
 | `spread_yuan_per_mwh` | float | ¥/MWh | ≥ 0 | D7: `eff_spread = max(0, spread + N(0, σ))` |
 | `spread_noise_std_yuan_per_mwh` | float | ¥/MWh | ≥ 0 | D7 σ; 0.0 = deterministic spread |
 
 ### 2.2 Loader API
 
 ```python
-from energy_go.env.tariff_model_schema import load_tariff_schema, TariffRegion
+from energy_go.env.tariff_model_schema import (
+    load_tariff_schema, TariffRegion, SellClamp,
+    validate_tariff_region, ValidationIssue, ValidationResult,
+)
 
 schema: dict = load_tariff_schema(path)
 # schema["schema_version"]  → str
 # schema["regions"]         → dict[str, TariffRegion]
 
 region: TariffRegion = schema["regions"]["cn-gansu"]
-# region.currency                        → str
-# region.price_table_yuan_per_mwh        → np.ndarray shape (12, 24) float32
-# region.demand_rate_yuan_per_mw_month   → float
+# region.currency                                      → str
+# region.price_table_yuan_per_mwh                      → np.ndarray shape (12, 24) float32
+# region.demand_rate_yuan_per_mw_month                 → float
 # region.sell_clamp.spread_yuan_per_mwh                → float
 # region.sell_clamp.spread_noise_std_yuan_per_mwh      → float
+# region.provenance                                    → "public" | "private"
+#                                                        (runtime-injected by resolver; not in YAML)
+
+result: ValidationResult = validate_tariff_region(region_dict)
+# result.errors   → list[ValidationIssue]  — hard errors (E-* rules; block env startup)
+# result.warnings → list[ValidationIssue]  — soft warnings (W-* rules; operator review)
+# ValidationIssue: NamedTuple(rule_id: str, field: str, message: str, constraint: str)
+# Note: ValidationIssue has NO 'severity' field — severity is implicit
+#       (errors list = hard, warnings list = soft).  See config_validation.md §2.
 ```
 
 `TariffRegion` and `SellClamp` are NamedTuple or dataclass; NamedTuple preferred for pytree
@@ -169,6 +181,11 @@ fallback receives a legacy `(24,)` input it replicates × 12 (same logic as PR #
 If `tariff_region` is set but the key is absent from `tariff_model_schema.yaml`, the resolver
 raises `ConfigValidationError` (not a silent fallback) — E-TARIFF-REGION rule in config_validation.
 
+**Test placement note:** E-TARIFF-REGION (missing region key) and backward-compatible inline-fallback
+tests (absent `tariff_region` → inline site YAML) belong in `tests/env/test_env_resolver.py`
+(owned by the serving/env integration layer), not in this file. This file tests the schema
+validator (`validate_tariff_region`) only.
+
 ---
 
 ## 5. Validation rules
@@ -210,6 +227,32 @@ field:   "sell_clamp.spread_yuan_per_mwh" | "sell_clamp.spread_noise_std_yuan_pe
 Negative spread → sell price > buy price by default (risk-free arbitrage — D7 was designed to
 prevent this). Negative σ is mathematically incoherent.
 
+### W-TARIFF-CURRENCY-UNKNOWN
+
+```
+WARNING iff currency != "CNY"
+rule_id: "W-TARIFF-CURRENCY-UNKNOWN"
+field:   "currency"
+```
+
+The env is ¥-pure internally; all arithmetic uses ¥ regardless of the currency field. A non-CNY
+currency code is unusual and likely an operator data-entry error (e.g. copy-pasted from a
+foreign tariff file). Soft warning only — it does not affect env arithmetic.  
+Message template: `"W-TARIFF-CURRENCY-UNKNOWN: currency='{v}'; env is ¥-pure, only 'CNY' is recognised"`
+
+### W-TARIFF-DEMAND-NEG
+
+```
+WARNING iff demand_rate_yuan_per_mw_month < 0
+rule_id: "W-TARIFF-DEMAND-NEG"
+field:   "demand_rate_yuan_per_mw_month"
+```
+
+Negative demand rate implies a subsidy for peak demand (unusual in CN tariffs). Soft warning only:
+some research configurations intentionally model demand subsidies. 0.0 is valid (no demand charge)
+— rule is strictly `< 0`.  
+Message template: `"W-TARIFF-DEMAND-NEG: demand_rate={v:.1f} < 0 (unusual; negative implies demand subsidy)"`
+
 ### E-TARIFF-REGION (resolver error, not schema-file error)
 
 ```
@@ -243,19 +286,51 @@ owner when this contract is locked.
 
 ## 7. Consumer notes
 
-### 7.1 Frontend — TOU-band display (Step-B flag)
+### 7.1 Frontend — TOU-band display (server-side derivation required)
 
-frontend-reviewer flagged (PR #89 advisory, §11.2): the dashboard TOU-band display must become
-**month-aware** once the (12, 24) table is live. Band boundaries can vary month-to-month in
-seasonal tariff data.
+frontend-reviewer flagged (PR #91 advisory, finding #1): TOU band boundaries **must be derived
+server-side** and served as structured data. The dashboard must NOT reconstruct band boundaries
+client-side from price-table deltas (single-source-of-truth rule).
 
-- The serving layer must expose the full `(12, 24)` table in the telemetry `env_config` frame
-  (or a `/api/config/tariff/<region_id>` endpoint) so the dashboard can render the correct
-  band for the simulated month.
-- The exact telemetry-schema amendment for this field is out of scope for this contract; it is
-  owned by the serving-engineer at the time of integration.
+**`TariffBand` shape** (Python-side; serialised to JSON for the REST endpoint):
 
-### 7.2 Private-overlay mechanism
+```python
+class TariffBand(NamedTuple):
+    name: str               # e.g. "valley", "mid", "peak", "critical_peak"
+    start_hour: int         # inclusive, 0–23
+    end_hour: int           # exclusive, 1–24
+    price_yuan_per_mwh: float
+```
+
+**REST endpoint** (owned by serving-engineer; out of scope for this contract):
+
+```
+GET /api/config/tariff/<region_id>?month=<0-11>
+→ { "region_id": str, "month": int, "bands": [TariffBand, ...] }
+```
+
+**Derivation algorithm**: run-length encoding of `price_table_yuan_per_mwh[month]` — each
+contiguous run of equal prices becomes one `TariffBand`. Band name lookup from price value
+(Gansu initial: 250 → "valley", 450 → "mid", 620 → "peak", 780 → "critical_peak").
+Implementation lives in `serving/tariff_bands.py` (future serving-layer PR).
+
+The dashboard's **existing hardcoded band boundaries** (10:30, 11:30, etc.) must be replaced
+with data from this endpoint once it is live.
+
+The TariffBand type and endpoint contract are out of scope for this contract (owned by
+serving-engineer); this section documents the requirement so implementation is ready at
+integration time.
+
+### 7.2 Provenance and private-overlay mechanism
+
+**Provenance field:** `TariffRegion.provenance` is a string literal `"public"` or `"private"`,
+set by the resolver at load time — it is NOT stored in the YAML file:
+
+- `"public"`: sourced from `config/tariff_model_schema.yaml` (checked-in; public data).
+- `"private"`: sourced from the `ENERGY_GO_PRIVATE_CONFIG` overlay (gitignored; proprietary
+  customer or seasonal tariffs).
+
+The resolver injects `provenance` after loading; YAML entries never contain a `provenance` key.
 
 Tariff entries are overlayable via `ENERGY_GO_PRIVATE_CONFIG` using the same mechanism as device
 models (PR #68 ruling). Public `config/tariff_model_schema.yaml` carries only public data
@@ -283,8 +358,8 @@ reference PR #68.
   used only when spread mode is off; they are not part of the TOU table and are not parameterised
   in this schema.
 - Sub-hourly tariff resolution — D3 fixes Δt=1h; the (12, 24) table is the correct resolution.
-- Time-of-use band metadata (band names, band boundary hours) as explicit fields — derived by
-  the display layer from the price table itself.
+- TariffBand endpoint implementation — documented in §7.1 as a requirement; contract and
+  implementation owned by serving-engineer at integration time.
 - Multi-currency arithmetic in the env — env stays ¥-pure; currency field is display metadata.
 - Tariff escalation (year-on-year price changes) — D31/F1 uses constant-real-price dispatch;
   escalation is applied post-hoc in the finance layer.
@@ -295,11 +370,16 @@ reference PR #68.
 
 - [ ] cn-gansu 24-vector values match §3.7 + D8 minute=0 convention (especially h=10 peak vs h=11 critical-peak boundary)
 - [ ] (12, 24) shape correct for month×hour semantics (row = month, col = hour)
-- [ ] `demand_rate` units ¥/MW·month (not ¥/kW·month) matching `EnvParams` field
+- [ ] `demand_rate` units ¥/MW·month (not ¥/kW·month) matching `EnvParams` field; 0.0 valid (no demand charge); W-TARIFF-DEMAND-NEG fires at < 0
 - [ ] D7 sell_clamp parameters sourced correctly (spread=30, σ=10 from LINEAGE D7)
-- [ ] E-TARIFF-SHAPE is HARD ERROR (not warning)
-- [ ] W-TARIFF-PRICE-NEG is WARNING (not hard error — negative prices exist in real markets)
+- [ ] E-TARIFF-SHAPE is HARD ERROR (in `result.errors`; NOT in `result.warnings`)
+- [ ] W-TARIFF-PRICE-NEG is WARNING (in `result.warnings`; NOT in `result.errors`)
+- [ ] W-TARIFF-SPREAD-NEG is WARNING (fires for spread < 0 OR σ < 0; 0.0 is valid for both)
+- [ ] W-TARIFF-CURRENCY-UNKNOWN is WARNING (fires for currency != "CNY")
+- [ ] W-TARIFF-DEMAND-NEG is WARNING (fires for demand_rate < 0; 0.0 valid)
+- [ ] `validate_tariff_region()` returns `ValidationResult` (not bare list); `ValidationIssue` has {rule_id, field, message, constraint} — NO severity field
+- [ ] `TariffRegion.provenance` field documented; resolver injects at load time; NOT in YAML
+- [ ] TariffBand server-side endpoint requirement documented in §7.1 (no client-side reconstruction)
 - [ ] Backward-compat fallback (absent `tariff_region` → inline site YAML)
-- [ ] E-TARIFF-REGION (missing region key) raises ConfigValidationError
+- [ ] E-TARIFF-REGION (missing region key) raises ConfigValidationError; resolver tests in `tests/env/test_env_resolver.py`
 - [ ] Private overlay referenced but not re-spec'd (PR #68 authority)
-- [ ] Frontend TOU-band step-B flag documented in consumer notes (§7.1)
