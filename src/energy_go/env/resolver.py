@@ -1,6 +1,7 @@
 """energy_go.env.resolver — device-model schema resolver.
 
 Contract: contracts/shared/device_model_schema.md
+         contracts/shared/tariff_model_schema.md (§4.2 — tariff_region integration)
 Spec: §2.1 (obs), §2.2 (action), §3.1–§3.4 (physics/costs), §7 (JAX purity), §8
 Decisions: D2, D3, D5, D12, D19, D22c, D23
 
@@ -23,6 +24,7 @@ from energy_go.env.jax_env import EnvParams, PRICE_TABLE_YPW  # noqa: F401
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 # resolver.py lives at src/energy_go/env/resolver.py → parents[3] = repo root
 _DEFAULT_DEVICE_MODELS = _REPO_ROOT / "config" / "device_models.yaml"
+_DEFAULT_TARIFF_SCHEMA = _REPO_ROOT / "config" / "tariff_model_schema.yaml"
 _DEFAULT_SITE_GANSU    = _REPO_ROOT / "config" / "site_gansu.yaml"
 
 
@@ -176,31 +178,70 @@ def resolve_site(
     grid_max_import_mw = float(grid_cfg.get("max_import_mw", gp["max_import_mw"]))
 
     # ------------------------------------------------------------------
-    # Tariff
+    # Tariff — §4.2 tariff_region join (tariff_model_schema.md)
+    #
+    # If site_config sets `tariff_region`, load the region from
+    # config/tariff_model_schema.yaml and source price_table, demand_rate,
+    # and spread from it (overrides the inline `tariff` / `costs` blocks).
+    #
+    # Absent `tariff_region` → inline fallback: read price_table from
+    # site["tariff"]["price_table_yuan_per_mwh"] (backward-compatible).
     # ------------------------------------------------------------------
-    price_table_raw = site["tariff"]["price_table_yuan_per_mwh"]
-    if len(price_table_raw) != 24:
-        raise ValueError(
-            f"price_table_yuan_per_mwh must have exactly 24 entries; "
-            f"got {len(price_table_raw)}"
-        )
-    # v2.0.0: build (12, 24) seasonal table; flat (24,) site YAML replicated ×12.
-    # Real per-month data arrives via tariff_model_schema; until then all rows are identical.
-    _row = jnp.array(price_table_raw, dtype=jnp.float32)  # shape (24,)
-    price_table = jnp.stack([_row] * 12, axis=0)           # shape (12, 24)
+    tariff_region_id = site.get("tariff_region")
+
+    if tariff_region_id:
+        # Region-keyed path (§4.2)
+        from energy_go.env.tariff_model_schema import load_tariff_schema
+        from energy_go.env.config_validation import ConfigValidationError
+
+        tariff_schema = load_tariff_schema(_DEFAULT_TARIFF_SCHEMA)
+        if tariff_region_id not in tariff_schema["regions"]:
+            from energy_go.env.config_validation import ValidationIssue as _VI
+            raise ConfigValidationError(
+                errors=[_VI(
+                    rule_id="E-TARIFF-REGION",
+                    field="tariff_region",
+                    message=(
+                        f"E-TARIFF-REGION: tariff_region='{tariff_region_id}' not found "
+                        f"in tariff_model_schema.yaml; available: "
+                        f"{sorted(tariff_schema['regions'].keys())}"
+                    ),
+                    constraint=f"tariff_region='{tariff_region_id}' absent from schema",
+                )],
+                warnings=[],
+            )
+        region = tariff_schema["regions"][tariff_region_id]
+        price_table = jnp.array(region.price_table_yuan_per_mwh, dtype=jnp.float32)
+        # demand_rate, spread: from region (override inline costs block)
+        demand_rate_yuan_per_mw_month = float(region.demand_rate_yuan_per_mw_month)
+        price_spread_yuan_per_mwh     = float(region.sell_clamp.spread_yuan_per_mwh)
+        price_spread_sigma            = float(region.sell_clamp.spread_noise_std_yuan_per_mwh)
+    else:
+        # Inline fallback path (backward-compat; existing callers unaffected)
+        price_table_raw = site["tariff"]["price_table_yuan_per_mwh"]
+        if len(price_table_raw) != 24:
+            raise ValueError(
+                f"price_table_yuan_per_mwh must have exactly 24 entries; "
+                f"got {len(price_table_raw)}"
+            )
+        # v2.0.0: build (12, 24) seasonal table; flat (24,) site YAML replicated ×12.
+        _row = jnp.array(price_table_raw, dtype=jnp.float32)  # shape (24,)
+        price_table = jnp.stack([_row] * 12, axis=0)           # shape (12, 24)
+        # demand_rate, spread: sourced from inline costs block
+        demand_rate_yuan_per_mw_month = float(site["costs"]["demand_rate_yuan_per_mw_month"])
+        price_spread_yuan_per_mwh     = float(site["costs"]["price_spread_yuan_per_mwh"])
+        price_spread_sigma            = float(site["costs"]["price_spread_sigma"])
 
     # ------------------------------------------------------------------
-    # Costs
+    # Costs (non-tariff fields — always from inline costs block)
     # ------------------------------------------------------------------
     costs = site["costs"]
     c_deg_yuan_per_mwh            = float(costs["c_deg_yuan_per_mwh"])
     voll_yuan_per_mwh             = float(costs["voll_yuan_per_mwh"])
     curtail_yuan_per_mwh          = float(costs["curtail_yuan_per_mwh"])
-    demand_rate_yuan_per_mw_month = float(costs["demand_rate_yuan_per_mw_month"])
     soc_penalty_yuan_per_mwh      = float(costs["soc_penalty_yuan_per_mwh"])
     reward_scale                  = float(costs["reward_scale"])
-    price_spread_yuan_per_mwh     = float(costs["price_spread_yuan_per_mwh"])
-    price_spread_sigma            = float(costs["price_spread_sigma"])
+    # demand_rate, price_spread, price_spread_sigma set above (tariff path)
 
     # ------------------------------------------------------------------
     # Forecast

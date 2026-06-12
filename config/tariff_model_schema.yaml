@@ -1,0 +1,58 @@
+schema_version: "1.0.0"
+# Tariff library — region-keyed TOU tariff configurations.
+# Contract: contracts/shared/tariff_model_schema.md v1.0.0
+# Join key: region_id (e.g. "cn-gansu") used as site_*.yaml `tariff_region` field.
+#
+# price_table_yuan_per_mwh: (12, 24) — row = month (0=Jan..11=Dec), col = hour (0-23).
+# At Δt=1h all steps land on :00 (D3/D8); minute is always 0 in the env step.
+#
+# provenance field is NOT stored here — injected at runtime by the resolver.
+#   Public config → provenance="public"  (the default)
+#   Private overlay (ENERGY_GO_PRIVATE_CONFIG) → provenance="private"
+
+regions:
+
+  cn-gansu:
+    # Gansu Province, China — 4-tier TOU tariff (§3.7, D8)
+    # Initial entry: flat 24-vector replicated ×12 (all months identical).
+    # Bit-parity with device_model_schema v2.0.0 PRICE_TABLE_SEASONAL_YPW baseline.
+    # Real seasonal data lands as a data-only update (no contract amendment needed).
+    currency: "CNY"
+    # 12 identical rows at Δt=1h (minute=0 for all steps):
+    #   Valley   (250 ¥/MWh): h=0–6, h=23              (23:00–07:00)
+    #   Mid      (450 ¥/MWh): h=7, h=12–17              (07:00–08:00, 11:30–18:00)
+    #   Peak     (620 ¥/MWh): h=8–10, h=18, h=21–22     (08:00–10:30, 18:00–19:00, 21:00–23:00)
+    #   Crit-pk  (780 ¥/MWh): h=11, h=19–20             (10:30–11:30, 19:00–21:00)
+    # D8 boundary cases (minute=0):
+    #   h=10 → 10:00 < 10:30 → peak(620)   (critical peak starts at 10:30)
+    #   h=11 → 11:00 < 11:30 → crit(780)   (still in 10:30–11:30 window)
+    #   h=21 → 21:00 = exclusive end → peak(620)  (window is 19:00–21:00, not ≤21:00)
+    price_table_yuan_per_mwh:
+      # Jan
+      - [250, 250, 250, 250, 250, 250, 250, 450, 620, 620, 620, 780, 450, 450, 450, 450, 450, 450, 620, 780, 780, 620, 620, 250]
+      # Feb
+      - [250, 250, 250, 250, 250, 250, 250, 450, 620, 620, 620, 780, 450, 450, 450, 450, 450, 450, 620, 780, 780, 620, 620, 250]
+      # Mar
+      - [250, 250, 250, 250, 250, 250, 250, 450, 620, 620, 620, 780, 450, 450, 450, 450, 450, 450, 620, 780, 780, 620, 620, 250]
+      # Apr
+      - [250, 250, 250, 250, 250, 250, 250, 450, 620, 620, 620, 780, 450, 450, 450, 450, 450, 450, 620, 780, 780, 620, 620, 250]
+      # May
+      - [250, 250, 250, 250, 250, 250, 250, 450, 620, 620, 620, 780, 450, 450, 450, 450, 450, 450, 620, 780, 780, 620, 620, 250]
+      # Jun
+      - [250, 250, 250, 250, 250, 250, 250, 450, 620, 620, 620, 780, 450, 450, 450, 450, 450, 450, 620, 780, 780, 620, 620, 250]
+      # Jul
+      - [250, 250, 250, 250, 250, 250, 250, 450, 620, 620, 620, 780, 450, 450, 450, 450, 450, 450, 620, 780, 780, 620, 620, 250]
+      # Aug
+      - [250, 250, 250, 250, 250, 250, 250, 450, 620, 620, 620, 780, 450, 450, 450, 450, 450, 450, 620, 780, 780, 620, 620, 250]
+      # Sep
+      - [250, 250, 250, 250, 250, 250, 250, 450, 620, 620, 620, 780, 450, 450, 450, 450, 450, 450, 620, 780, 780, 620, 620, 250]
+      # Oct
+      - [250, 250, 250, 250, 250, 250, 250, 450, 620, 620, 620, 780, 450, 450, 450, 450, 450, 450, 620, 780, 780, 620, 620, 250]
+      # Nov
+      - [250, 250, 250, 250, 250, 250, 250, 450, 620, 620, 620, 780, 450, 450, 450, 450, 450, 450, 620, 780, 780, 620, 620, 250]
+      # Dec
+      - [250, 250, 250, 250, 250, 250, 250, 450, 620, 620, 620, 780, 450, 450, 450, 450, 450, 450, 620, 780, 780, 620, 620, 250]
+    demand_rate_yuan_per_mw_month: 32000.0   # ¥/MW·month (§3.7: "32 000 ¥/MW·month")
+    sell_clamp:
+      spread_yuan_per_mwh:             30.0  # ¥/MWh — D7 mean buy-sell spread
+      spread_noise_std_yuan_per_mwh:   10.0  # ¥/MWh — D7 σ for spread noise
