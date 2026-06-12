@@ -12,7 +12,7 @@
  *
  * Tests FAIL until implementation is complete — that is correct at contract+tests stage.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
 
