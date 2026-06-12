@@ -195,6 +195,27 @@ class TestGansuPriceTable:
         tbl = gansu.price_table_yuan_per_mwh
         assert float(tbl.min()) >= 0.0, f"negative price found: min={float(tbl.min())}"
 
+    def test_h20_critical_h21_peak_evening_window_close(self, gansu):
+        """# reviewer: backend-reviewer (PR #91) — evening critical-window CLOSING edge.
+
+        D8 has TWO critical-peak windows. test_h10 pins the morning window's edge;
+        this pins the evening window's CLOSING edge — the symmetric off-by-one.
+        Evening critical-peak window is 19:00–21:00. At Δt=1h, minute=0:
+          h=20 -> 20:00 ∈ [19:00, 21:00) -> critical peak (780)
+          h=21 -> 21:00  NOT < 21:00 (exclusive window end) -> peak (620)   <-- off-by-one
+        A naive implementation that treats 21:00 as still-in-window would price h=21
+        at 780. Row-equality tests cover this for Gansu, but this pins the D8 semantics
+        explicitly (and survives once real per-month rows differ).
+        """
+        for m in range(12):
+            assert gansu.price_table_yuan_per_mwh[m][20] == 780, (
+                f"m={m} h=20 should be critical(780): 20:00 ∈ [19:00,21:00) per D8"
+            )
+            assert gansu.price_table_yuan_per_mwh[m][21] == 620, (
+                f"m={m} h=21 should be peak(620) not crit(780): 21:00 is the exclusive "
+                f"end of the 19:00–21:00 window per D8"
+            )
+
 
 # ---------------------------------------------------------------------------
 # 3. Demand rate and sell-clamp
@@ -334,6 +355,24 @@ class TestValidationETariffShape:
         assert len(shape_issues) >= 1
         assert shape_issues[0].severity == "error", (
             f"E-TARIFF-SHAPE must be 'error', got '{shape_issues[0].severity}'"
+        )
+
+    def test_ragged_rows_fire_shape_error(self):
+        """# reviewer: backend-reviewer (PR #91) — ragged price_table (unequal row lengths).
+
+        test_wrong_hour_count builds a UNIFORM short table (all rows same short length);
+        this builds a RAGGED one: 11 rows of 24 + 1 row of 23. `np.array()` of a ragged
+        nested list yields an object-dtype array of shape (12,), NOT (12, 23) — so a
+        shape check that only compares `.shape == (12, 24)` still flags it, but a check
+        that does `len(table) == 12 and len(table[0]) == 24` (sampling row 0 only) would
+        MISS the short row 11. This pins that E-TARIFF-SHAPE catches ragged tables.
+        """
+        table = [list(GANSU_ROW)] * 11 + [list(GANSU_ROW[:23])]   # row 11 has 23 entries
+        region = self._make_region(table)
+        issues = validate_tariff_region(region)
+        rule_ids = [i.rule_id for i in issues]
+        assert "E-TARIFF-SHAPE" in rule_ids, (
+            f"ragged (11×24 + 1×23) table must fire E-TARIFF-SHAPE; got {rule_ids}"
         )
 
 
