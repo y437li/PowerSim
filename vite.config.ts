@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VITE_PROXY_CONFIG } from "./src/config/viteProxy";
@@ -17,6 +18,12 @@ export default defineConfig({
     // Contract: contracts/frontend/app_integration.md §1, configurable_ports.md §2
     proxy: VITE_PROXY_CONFIG,
   },
-  // NOTE: no test: block here — Vitest uses vitest.config.ts exclusively.
-  // Contract: contracts/frontend/registry_build_copy.md §Solution
+  // Vitest configuration (merged from vitest.config.ts — contract: root_config_consolidation §3.1)
+  // registryBuildPlugin runs at configResolved so the registry import resolves during vitest runs.
+  test: {
+    environment: "jsdom",
+    globals: true,
+    setupFiles: ["./tests/setup.ts"],
+    include: ["tests/**/*.test.tsx", "tests/**/*.test.ts"],
+  },
 });
