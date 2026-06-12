@@ -85,4 +85,5 @@ addopts = "-q"
 asyncio_mode = "auto"
 markers = [
     "slow: marks tests as slow (full install + venv creation); deselect with -m 'not slow'",
+    "network: marks tests that require live network access; deselect with -m 'not network'",
 ]

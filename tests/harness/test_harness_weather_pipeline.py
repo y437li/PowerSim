@@ -737,8 +737,19 @@ class TestModeSwitch:
 # Live fetch tests (require WEATHER_PIPELINE_NETWORK=1)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.slow
+@pytest.mark.network
 class TestLiveFetch:
-    """Integration tests requiring network access."""
+    """Integration tests requiring live network access (Open-Meteo API).
+
+    Skipped unless WEATHER_PIPELINE_NETWORK=1 is set AND the slow/network marks
+    are not deselected.  Never run in the fast CI lane (contract carry-forward,
+    backend-reviewer PR #92 review record).
+
+    Run manually with:
+        WEATHER_PIPELINE_NETWORK=1 pytest tests/harness/test_harness_weather_pipeline.py \
+          -k TestLiveFetch -v
+    """
 
     @skip_network
     def test_gansu_fetch_produces_parquet(self, tmp_path):
