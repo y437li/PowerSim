@@ -196,10 +196,11 @@ describe(".config/tsconfig.node.json — internal paths updated (§3.3)", () => 
 // 8. tests/frontend_e2e/playwright.config.ts — path updates (§3.4)
 // ---------------------------------------------------------------------------
 describe("tests/frontend_e2e/playwright.config.ts — internal paths updated (§3.4)", () => {
-  it("testDir is '.' (config is now co-located with tests)", () => {
+  it("testDir is '.' or './' (config is now co-located with tests)", () => {
     const src = readFile("tests/frontend_e2e/playwright.config.ts");
-    // testDir: '.' or testDir: "./"
-    expect(src).toMatch(/testDir\s*:\s*['"]\.[\/'"]?['"]/);
+    // Matches: testDir: '.'  or  testDir: "./"  or  testDir: './'
+    // Pattern: key, colon, whitespace, opening-quote, dot, optional-slash, closing-quote
+    expect(src).toMatch(/testDir\s*:\s*['"]\.\/?\s*['"]/);
   });
 
   it("does NOT have testDir: './tests/frontend_e2e' (old root-relative path)", () => {
