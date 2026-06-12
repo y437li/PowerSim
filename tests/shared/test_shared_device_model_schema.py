@@ -129,17 +129,18 @@ class TestYamlSchema:
         )
 
     def test_schema_version_present(self):
-        """schema_version: '2.0.0' must be present (v2.0.0 price_table reshape).
-        
-        Rebase note (post-PR-#86): device_models.yaml is at v2.0.0 after the price_table
-        reshape.  The Option-A presence-only approach from PR #86 is superseded by this
-        strict check which was approved by backend-reviewer for PR #87.
+        """schema_version field must be present (presence-only — version strings evolve).
+
+        Option A: backend-reviewer-approved on PR #86, rl-architect-confirmed.
+        The specific version string is asserted by the versioned test
+        TestV200VersionString.test_schema_version_is_2_0_0; this stays
+        version-agnostic so it survives §11-sanctioned version bumps without
+        breaking.  Rebase note: main's Option A is the later, reviewer-approved
+        resolution — restored here after a wrong conflict-side pick in the rebase.
         """
         with open(_DEVICE_MODELS_PATH) as f:
             doc = yaml.safe_load(f)
-        assert doc.get("schema_version") == "2.0.0", (
-            f"Expected schema_version '2.0.0'; got {doc.get('schema_version')!r}"
-        )
+        assert doc.get("schema_version") is not None, "schema_version field missing"
 
     def test_all_gansu_model_ids_present(self):
         """All 4 LOCKED registry IDs must appear in device_models.yaml."""
