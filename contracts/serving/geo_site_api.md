@@ -34,7 +34,20 @@ All paths are relative to the FastAPI server root (default port 8000).
 is invalid (`POST /api/site/validate` returns errors in the body, not as HTTP 4xx).
 
 **Client error (HTTP 400):** malformed JSON body, missing required field, out-of-range
-parameter. Body: `{ "detail": "<human-readable>", "code": "<REASON_CODE>" }`.
+parameter, or unknown ID for a **fixed catalog** lookup (tariff region, device model).
+Body: `{ "detail": "<human-readable>", "code": "<REASON_CODE>" }`.
+
+**Resource not found (HTTP 404):** used exclusively for **created resources** — specifically,
+weather job IDs that do not exist in the server's in-memory job registry. Rationale: a weather
+job is a server-created resource with a lifetime; asking for a non-existent job ID has the
+semantics of "this resource is gone or never existed" (404). In contrast, looking up a tariff
+region or device model ID from a fixed static catalog has the semantics of "bad parameter"
+(400 TARIFF_REGION_NOT_FOUND / DEVICE_MODEL_NOT_FOUND) — the catalog is configuration, not
+a mutable resource.
+
+**Frontend implication:** the wizard's weather-job poller must handle 404 as a terminal
+"job gone" state (e.g., server restart) rather than treating it as a retryable error.
+Tariff/device not-found errors are always 400 and indicate a client-supplied bad ID.
 
 **Server error (HTTP 500):** unexpected exception. Body: `{ "detail": "<message>" }`.
 
