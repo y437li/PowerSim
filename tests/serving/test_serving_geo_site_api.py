@@ -328,6 +328,51 @@ class TestSiteValidate:
         assert any("fleet_rated_mw" in f for f in e_cap_pos_fields)
         assert any("fleet_capacity_mwh" in f for f in e_cap_pos_fields)
 
+    def test_passthrough_fidelity_matches_validate_directly(self, client):
+        # reviewer: backend-reviewer (PR #94) — D32(i)/D18 single-source-of-truth.
+        # The endpoint MUST be a pure passthrough of energy_go.env.config_validation.validate():
+        # its errors/warnings must be EXACTLY what validate() produces on the same input —
+        # same rule_id sets, nothing re-derived, added, or dropped. The per-rule tests confirm
+        # individual rules surface; this pins exact fidelity, which is the whole point of the
+        # "never re-implements rules" guarantee the D18 architecture rests on. Compares against
+        # a DIRECT validate() call (no hardcoded rule list), so it stays correct as rules evolve.
+        from energy_go.env.config_validation import validate
+        cfg = {
+            **GANSU_SITE_CONFIG,
+            "assets": {
+                **GANSU_SITE_CONFIG["assets"],
+                "battery": {
+                    "model": "catl-lmp-300mwh",
+                    "fleet_capacity_mwh": -5.0,   # E-CAP-POS (hard error)
+                    "fleet_power_mw": 98.16,
+                },
+            },
+            "tariff": {"price_table_yuan_per_mwh": [1, 2, 3]},  # E-TAR-SHAPE (hard error)
+        }
+        direct = validate(cfg, GANSU_DEVICE_MODELS)
+        resp = client.post("/api/site/validate", json={
+            "site_config": cfg, "device_models": GANSU_DEVICE_MODELS,
+        })
+        assert resp.status_code == 200
+        body = resp.json()
+        assert {e.rule_id for e in direct.errors} == {e["rule_id"] for e in body["errors"]}, (
+            "endpoint errors must EXACTLY match validate() — no rule re-implementation (D32(i))"
+        )
+        assert {w.rule_id for w in direct.warnings} == {w["rule_id"] for w in body["warnings"]}, (
+            "endpoint warnings must EXACTLY match validate() — no rule re-implementation (D32(i))"
+        )
+
+    def test_site_config_not_a_dict_returns_400(self, client):
+        # reviewer: backend-reviewer (PR #94) — contract §3.1: "HTTP 400 ... site_config is not
+        # a dict". Only the missing-key trigger is tested (test_missing_site_config_key_returns_400);
+        # this pins the present-but-non-dict trigger the contract also specifies. Note: validate()
+        # itself tolerates a non-dict (returns empty per config_validation §3.2), so the 400 MUST
+        # originate from the endpoint's request-shape guard — not from validate() raising.
+        resp = client.post("/api/site/validate", json={"site_config": "not-a-dict"})
+        assert resp.status_code == 400, (
+            f"site_config that is present but not a dict must be HTTP 400; got {resp.status_code}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # §3.2  GET /api/tariff/regions
