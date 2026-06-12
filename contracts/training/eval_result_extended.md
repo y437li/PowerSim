@@ -286,6 +286,22 @@ Contract test: given a fully-populated 32-field `PolicyEvalResult`, `_policy_dic
 
 None — purely additive. The 9 LOCKED fields are computed identically to today.
 
+### §BC-compat amendment (post-QA compatibility fix, team-lead directive)
+
+All 23 new fields (`streams` + 9 physical-qty + 13 per-source) are given
+backward-compatible defaults so old `PolicyEvalResult(9-field-kwargs)` constructors
+remain valid. This is a compatibility clause, not a semantic change:
+
+- `streams` defaults to `field(default_factory=...)` → all 6 keys zero
+  (`StreamAccumulator(volume=0.0, value_yuan=0.0)`) — identical to the dormant-stream
+  zero-placeholder design already specified.
+- All `*_mwh` fields default to `0.0`.
+
+**Invariants unaffected:** `run_eval()` always populates all fields explicitly; defaults
+are only observable when constructing test helpers with the original 9-field signature.
+The wire-isolation guarantee (§7) is unaffected — `_policy_dict()` only serialises the
+9 LOCKED keys regardless of construction path.
+
 ---
 
 ## 11. Implementation checklist (for QA)

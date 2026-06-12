@@ -10,7 +10,7 @@ Contract: contracts/training/eval_result_extended.md
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
@@ -88,22 +88,34 @@ class PolicyEvalResult:
     #             h2_sale, avoided_cost, token_sale
     # v1 active: grid_export, grid_import, demand_charge
     # v1 zero placeholders: h2_sale, avoided_cost, token_sale
+    #
+    # Default: all 6 streams zero (backward-compat — old tests omit streams).
+    # run_eval() always populates explicitly; only test helpers constructed with
+    # 9 original fields use the default.  See §BC-compat amendment in contract.
     # -----------------------------------------------------------------------
-    streams: dict  # dict[str, StreamAccumulator]
+    streams: dict = field(default_factory=lambda: {
+        "grid_export":    StreamAccumulator(volume=0.0, value_yuan=0.0),
+        "grid_import":    StreamAccumulator(volume=0.0, value_yuan=0.0),
+        "demand_charge":  StreamAccumulator(volume=0.0, value_yuan=0.0),
+        "h2_sale":        StreamAccumulator(volume=0.0, value_yuan=0.0),
+        "avoided_cost":   StreamAccumulator(volume=0.0, value_yuan=0.0),
+        "token_sale":     StreamAccumulator(volume=0.0, value_yuan=0.0),
+    })  # dict[str, StreamAccumulator]
 
     # -----------------------------------------------------------------------
     # NEW: physical-quantity accumulators (MWh) — required by finance for
     # LCOE/LCOS/OPEX/replacement.  Δt=1h (D3) → Σ p_X_mw = MWh.  All ≥ 0.
+    # Default 0.0 for backward-compat (old 9-field constructors; §BC-compat).
     # -----------------------------------------------------------------------
-    generation_mwh:     float   # Σ (p_wind_mw + p_pv_mw)  ← LCOE denominator
-    wind_generated_mwh: float   # Σ p_wind_mw
-    pv_generated_mwh:   float   # Σ p_pv_mw
-    bat_charge_mwh:     float   # Σ (wind_to_bat + pv_to_bat + grid_to_bat)
-    bat_discharge_mwh:  float   # Σ (bat_to_load + bat_to_grid + bat_curtailed)  ← LCOS denominator
-    bat_throughput_mwh: float   # bat_charge + bat_discharge  ← VarOM / cycle-life
-    load_served_mwh:    float   # Σ (wind_to_load + pv_to_load + bat_to_load + grid_to_load)
-    load_unserved_mwh:  float   # Σ p_load_unserved_mw  ← INV-VOLL reliability
-    curtailed_mwh:      float   # Σ p_curtailed_mw  ← INV-CURT
+    generation_mwh:     float = 0.0  # Σ (p_wind_mw + p_pv_mw)  ← LCOE denominator
+    wind_generated_mwh: float = 0.0  # Σ p_wind_mw
+    pv_generated_mwh:   float = 0.0  # Σ p_pv_mw
+    bat_charge_mwh:     float = 0.0  # Σ (wind_to_bat + pv_to_bat + grid_to_bat)
+    bat_discharge_mwh:  float = 0.0  # Σ (bat_to_load + bat_to_grid + bat_curtailed)  ← LCOS denominator
+    bat_throughput_mwh: float = 0.0  # bat_charge + bat_discharge  ← VarOM / cycle-life
+    load_served_mwh:    float = 0.0  # Σ (wind_to_load + pv_to_load + bat_to_load + grid_to_load)
+    load_unserved_mwh:  float = 0.0  # Σ p_load_unserved_mw  ← INV-VOLL reliability
+    curtailed_mwh:      float = 0.0  # Σ p_curtailed_mw  ← INV-CURT
 
     # -----------------------------------------------------------------------
     # NEW: per-source flow breakdown (13 fields, MWh = MW × 1h per step)
@@ -112,21 +124,21 @@ class PolicyEvalResult:
     #   pv_generated   = pv_to_load   + pv_to_bat   + pv_to_grid   + pv_curtailed
     #   bat_discharge  = bat_to_load  + bat_to_grid  + bat_curtailed
     #   grid_import.volume = grid_to_bat + grid_to_load  (§3.6 F-IMPORT)
-    # All ≥ 0.
+    # All ≥ 0.  Default 0.0 for backward-compat (§BC-compat amendment).
     # -----------------------------------------------------------------------
-    wind_to_load_mwh:   float   # Σ p_wind_to_load_mw
-    wind_to_bat_mwh:    float   # Σ p_wind_to_bat_mw
-    wind_to_grid_mwh:   float   # Σ p_wind_to_grid_mw
-    wind_curtailed_mwh: float   # Σ p_wind_curtailed_mw
-    pv_to_load_mwh:     float   # Σ p_sol_to_load_mw  (EnvInfo naming: "sol")
-    pv_to_bat_mwh:      float   # Σ p_sol_to_bat_mw
-    pv_to_grid_mwh:     float   # Σ p_sol_to_grid_mw
-    pv_curtailed_mwh:   float   # Σ p_sol_curtailed_mw
-    bat_to_load_mwh:    float   # Σ p_bat_to_load_mw
-    bat_to_grid_mwh:    float   # Σ p_bat_to_grid_mw
-    bat_curtailed_mwh:  float   # Σ p_bat_curtailed_mw
-    grid_to_bat_mwh:    float   # Σ p_grid_to_bat_mw
-    grid_to_load_mwh:   float   # Σ p_grid_to_load_mw
+    wind_to_load_mwh:   float = 0.0  # Σ p_wind_to_load_mw
+    wind_to_bat_mwh:    float = 0.0  # Σ p_wind_to_bat_mw
+    wind_to_grid_mwh:   float = 0.0  # Σ p_wind_to_grid_mw
+    wind_curtailed_mwh: float = 0.0  # Σ p_wind_curtailed_mw
+    pv_to_load_mwh:     float = 0.0  # Σ p_sol_to_load_mw  (EnvInfo naming: "sol")
+    pv_to_bat_mwh:      float = 0.0  # Σ p_sol_to_bat_mw
+    pv_to_grid_mwh:     float = 0.0  # Σ p_sol_to_grid_mw
+    pv_curtailed_mwh:   float = 0.0  # Σ p_sol_curtailed_mw
+    bat_to_load_mwh:    float = 0.0  # Σ p_bat_to_load_mw
+    bat_to_grid_mwh:    float = 0.0  # Σ p_bat_to_grid_mw
+    bat_curtailed_mwh:  float = 0.0  # Σ p_bat_curtailed_mw
+    grid_to_bat_mwh:    float = 0.0  # Σ p_grid_to_bat_mw
+    grid_to_load_mwh:   float = 0.0  # Σ p_grid_to_load_mw
 
 
 # ---------------------------------------------------------------------------
