@@ -14,6 +14,15 @@ for Workstreams C (multi-year degradation) and D (project finance).  The resolve
 **ignore all `economics:` fields** — no resolver API change, no `EnvParams` change.  Minor version
 bump from v1.0.0 baseline (additive optional fields → no re-LOCK required).
 
+**v2.0.0 amendment (task #58 / Step A):** reshapes `EnvParams.price_table` from `(24,)` to
+`(12, 24)` (months × hours).  Gansu: old `(24,)` row **replicated ×12** — bit-identical parity
+for all `EnvParams()` callers.  Lookup in `jax_env.py`: `params.price_table[month, hour]` where
+`month = MONTH_OF_STEP[t]` (already precomputed module-level).  Resolver builds `(12,24)` from a
+flat `(24,)` site YAML input.  Real seasonal data arrives later via `tariff_model_schema` (task
+#58 Step B); until then Gansu stays replicated-×12.
+**Breaking shape change → major version bump; re-LOCK required** (both reviewers advisory +
+rl-architect re-LOCK).  Combined contract+impl PR per rl-architect sequencing ruling.
+
 ---
 
 ## Overview
@@ -407,37 +416,64 @@ that differ from nameplate math.
 
 ## 5. `EnvParams.price_table` refactor
 
-### 5.1 New field
+### 5.1 Field shape (v1.0.0 → v2.0.0)
 
-`EnvParams` gains one field appended after the existing fields:
+`EnvParams.price_table` is reshaped from `(24,)` to `(12, 24)` (months × hours):
 
 ```python
+# v1.0.0 (SUPERSEDED by v2.0.0):
+# price_table: jax.Array = PRICE_TABLE_YPW  # shape (24,), float32, ¥/MWh
+
+# v2.0.0 (this amendment):
+PRICE_TABLE_SEASONAL_YPW: jax.Array = jnp.stack(
+    [PRICE_TABLE_YPW] * 12, axis=0
+)  # shape (12, 24), month m=0..11 (Jan..Dec)
+
 class EnvParams(NamedTuple):
     # ... existing fields unchanged ...
-    # Tariff (NEW — was module-level PRICE_TABLE_YPW)
-    price_table: jax.Array = PRICE_TABLE_YPW  # shape (24,), float32, ¥/MWh
+    # Tariff — (12, 24) seasonal table (NEW shape; v2.0.0)
+    price_table: jax.Array = PRICE_TABLE_SEASONAL_YPW  # shape (12,24), float32, ¥/MWh
 ```
 
-The default value is `PRICE_TABLE_YPW` (the existing module-level Gansu constant),
-preserving backward-compatibility: `EnvParams()` still produces the Gansu-correct params.
+`PRICE_TABLE_YPW` (the `(24,)` constant) is **retained** as a module-level constant
+for use in parity assertions; it is no longer the default for `EnvParams.price_table`.
+`PRICE_TABLE_SEASONAL_YPW` is the new `(12,24)` default (all 12 rows identical to
+`PRICE_TABLE_YPW` — bit-identical parity for Gansu).
 
-### 5.2 Step / obs refactor
+### 5.2 Step / obs refactor (v2.0.0)
 
-All uses of the module-global `PRICE_TABLE_YPW` inside `step()` and `get_obs()` are
-replaced with `params.price_table`.  `PRICE_TABLE_YPW` remains as a module-level
-constant for use as the `EnvParams.price_table` default and in parity tests.
+All `params.price_table[h]` reads in `jax_env.py` are updated to
+`params.price_table[month, h]` where `month = MONTH_OF_STEP[t]`:
 
-- **Before:** `PRICE_TABLE_YPW[h]` (closes over module global — §7 impurity)
-- **After:** `params.price_table[h]` (reads from the shared `params` pytree — §7 pure)
+| Location | Before (v1.0.0) | After (v2.0.0) |
+|---|---|---|
+| `get_obs()` — live price obs | `params.price_table[hour]` | `params.price_table[month, hour]` |
+| `get_obs()` — forecast price | `params.price_table[t_fc % 24]` | `params.price_table[MONTH_OF_STEP[t_fc], t_fc % 24]` |
+| `step()` — buy price for cost | `params.price_table[hour]` | `params.price_table[month, hour]` |
+
+`MONTH_OF_STEP` is the existing precomputed `(8761,) int32` module-level array
+(`MONTH_OF_STEP[t]` = calendar month 0=Jan … 11=Dec for step `t`).  No new
+data-dependent Python branching is introduced.
 
 Since `params` is shared across vmapped envs (not in the vmap batch axis), the
-`(24,)` array field adds no per-env memory and does not affect vmap semantics.
+`(12, 24)` array field adds negligible per-env memory and does not affect vmap semantics.
 
-### 5.3 Backward compatibility
+### 5.3 Backward compatibility / parity gate
 
-`EnvParams()` (no args) continues to produce the correct Gansu params.
-Existing tests that call `step(state, action, EnvParams(), data)` remain valid.
-The Gansu parity gate asserts this explicitly.
+`EnvParams()` (no args) produces `price_table = PRICE_TABLE_SEASONAL_YPW` where
+every row equals `PRICE_TABLE_YPW`.  The **bit-identity parity test** is:
+
+```python
+# For ALL months m ∈ [0,11] and hours h ∈ [0,23]:
+assert EnvParams().price_table[m, h] == PRICE_TABLE_YPW[h]
+# Equivalently:
+assert jnp.allclose(EnvParams().price_table, PRICE_TABLE_SEASONAL_YPW)
+```
+
+Existing tests that call `step(state, action, EnvParams(), data)` continue to produce
+identical outputs because `price_table[MONTH_OF_STEP[t], hour] == PRICE_TABLE_YPW[hour]`
+for every month.  The resolver parity test extends to check
+`resolve_gansu()[0].price_table[m, h] == PRICE_TABLE_YPW[h]` for all `m, h`.
 
 ---
 
@@ -569,29 +605,45 @@ forecast:
 | `costs.price_spread_sigma` | `price_spread_sigma` | 10 ¥/MWh |
 | `forecast.sigma_max` | `forecast_sigma_max` | 0.10 |
 | *(EnvParams default)* | `episode_len` | 168 steps |
-| `tariff.price_table_yuan_per_mwh` | `price_table` | (24,) ¥/MWh (NEW field) |
+| `tariff.price_table_yuan_per_mwh` | `price_table` | **(12,24)** ¥/MWh — flat 24-entry YAML replicated ×12 by resolver (v2.0.0); real seasonal data via tariff_model_schema |
 
 ---
 
 ## 9. Deliberate deviations
 
-None — this contract adds new functionality.
+**v1.0.0 (no deviations):** This contract added new functionality; no behavior changed.
 
-- `PRICE_TABLE_YPW` is retained as a module-level constant (default for
-  `EnvParams.price_table`; used in tests); only removed from the jitted read path.
-- `EnvParams()` (no-arg construction) preserves Gansu defaults — backward-compatible.
-- All physics values are the same as the current `EnvParams` hardcoded defaults;
-  the schema resolver is a new indirection, not a value change.
+**v2.0.0 deviations (breaking shape change — gated by re-LOCK):**
+
+| Old behavior | New behavior | Reason |
+|---|---|---|
+| `EnvParams.price_table.shape == (24,)` | `shape == (12, 24)` | Enable seasonal tariffs |
+| Default `PRICE_TABLE_YPW` | Default `PRICE_TABLE_SEASONAL_YPW` (= stack of 12 × `PRICE_TABLE_YPW`) | Same values, new shape |
+| `params.price_table[hour]` | `params.price_table[month, hour]` | Month-indexed lookup |
+| Resolver builds flat `(24,)` | Resolver builds `(12,24)` via `stack([row]*12)` | Match new shape |
+
+All v2.0.0 changes produce **bit-identical outputs** for any scenario that was valid
+under v1.0.0, because `PRICE_TABLE_SEASONAL_YPW[m, h] == PRICE_TABLE_YPW[h]` for
+all `m ∈ [0,11]` and `h ∈ [0,23]`.  The parity bit-identity test is the acceptance gate.
+
+- `PRICE_TABLE_YPW` is **retained** as a module-level constant (parity assertion target).
+- `PRICE_TABLE_SEASONAL_YPW` is the new module-level default for `EnvParams.price_table`.
+- `EnvParams()` (no-arg construction) continues to produce Gansu-correct params.
+- All physics values are unchanged — this is a shape-only refactor.
 
 ---
 
 ## 10. Out of scope
 
-- **Sub-hour TOU structure:** `price_table` is an hourly `(24,)` array and cannot
-  express sub-hour TOU boundaries (e.g., D8's 10:30/11:30 transitions). Gansu v1 is
-  correct — Δt=1 h steps land on :00 and the minute-aware lookup lives in the
-  reference impl (not the table). Multi-site deployments with genuine sub-hour TOU
-  will require a breaking schema change (major version bump, superseding DECISION).
+- **Sub-hour TOU structure:** `price_table` is an hourly `(12, 24)` array (v2.0.0)
+  and cannot express sub-hour TOU boundaries (e.g., D8's 10:30/11:30 transitions).
+  Gansu v1 is correct — Δt=1 h steps land on :00 and the minute-aware lookup lives in
+  the reference impl (not the table). Sub-hour TOU would require a further breaking
+  schema change (superseding DECISION + re-LOCK).
+- **Intra-year seasonal variation (Gansu):** v2.0.0 ships Gansu as replicated-×12
+  (all 12 months identical); real monthly Gansu TOU data arrives in `tariff_model_schema`
+  (task #58 Step B), delivered as explicit `(12,24)` values, each row independently
+  testable via hand-computed cost assertions.
 - **Frontend physics access:** the browser cannot read `config/device_models.yaml`
   off disk; device physics (including `unit_counts` from §4.1) must be served via a
   REST endpoint wrapping the resolver. The serving contract owns that endpoint shape.
@@ -615,24 +667,22 @@ None — this contract adds new functionality.
 
 `config/device_models.yaml` carries `schema_version`.
 
-| Version | Content | Re-LOCK? |
-|---------|---------|---------|
-| `"1.0.0"` | 4 Gansu device models, `physics:` catalogue (LOCKED PR #79) | — |
+| Version | Change | Re-LOCK? |
+|---|---|---|
+| `"1.0.0"` | Initial release — 4 Gansu device models, `physics:` catalogue (PR #79) | First LOCK |
 | `"1.1.0"` | Adds `economics:` field catalogue, Gansu initial estimates (task #57) | No — additive optional fields |
-| future minor | Additional device-model entries, additional optional fields | No |
-| future major | Field removal, rename, type change, composition-rule change | Yes → superseding DECISION + re-LOCK + re-review |
+| `"2.0.0"` | `price_table` reshaped `(24,)→(12,24)` seasonal; Gansu replicated ×12 (bit-identical) | Yes — shape change |
 
-**Adding non-Gansu models that produce different `(obs_dim, action_dim)` is also a
-minor schema bump** — it does NOT reopen the LOCKED Gansu checkpoint.  The Gansu
-checkpoint remains authoritative at `obs_dim=107, action_dim=6`; non-Gansu site
-compositions receive their own site-specific checkpoints (per §8 design and the
-checkpoint-format contract §6 note on non-Gansu sites).  Each composition is
-independently verifiable by `resolve_site()`.
-
-**`economics:` values** are initial estimates (2024/25 Chinese market) and will be
-refined by the benchmark library (task #63).  Updating economics values = minor bump
-(no re-LOCK); updating economics field names or adding required-field enforcement in
-the resolver = major bump.
-
-Field removal, rename, type change, or semantics change = major bump → superseding
-DECISION + re-LOCK + re-review.
+**Rules:**
+- Additive new model entries or `economics:` fields = minor bump — no re-LOCK required.
+- **`economics:` values** are initial estimates (2024/25 Chinese market) and will be
+  refined by the benchmark library (task #63).  Updating economics values = minor bump
+  (no re-LOCK); updating economics field names or adding required-field enforcement in
+  the resolver = major bump.
+- **Adding non-Gansu models** that produce different `(obs_dim, action_dim)` is also a
+  minor schema bump — it does NOT reopen the LOCKED Gansu checkpoint.  The Gansu
+  checkpoint remains authoritative at `obs_dim=107, action_dim=6`; non-Gansu site
+  compositions receive their own site-specific checkpoints (per §8 design and the
+  checkpoint-format contract §6 note on non-Gansu sites).
+- Field removal, rename, type change, or shape change = major bump → superseding
+  DECISION + re-LOCK + both-reviewer re-review.

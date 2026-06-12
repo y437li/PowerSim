@@ -1,4 +1,4 @@
-schema_version: "1.1.0"
+schema_version: "2.0.0"
 # Device model library — physics constants keyed by LOCKED registry.json IDs (D23).
 # Non-overridable constants (see contracts/shared/device_model_schema.md §3.1):
 #   wind_turbine: v_cutin_mps, v_rated_mps, v_cutout_mps
