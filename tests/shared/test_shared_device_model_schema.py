@@ -1726,6 +1726,16 @@ class TestMonthIndexedLookupParity:
     for all Gansu scenarios.
     """
 
+    @pytest.fixture(scope="class")
+    def resolved(self):
+        """Same fixture as TestGansuParity.resolved — class-scoped fixtures are not
+        visible to sibling classes in pytest, so the fixture must be duplicated here.
+        Fix approved by backend-reviewer (PR #87, 2026-06-11): strictly additive,
+        no assertion changed.
+        """
+        params, obs_dim, action_dim = resolve_gansu(_DEVICE_MODELS_PATH)
+        return params, obs_dim, action_dim
+
     def test_all_months_all_hours_bit_identical(self, resolved):
         """params.price_table[m, h] == PRICE_TABLE_YPW[h] for m in [0,11], h in [0,23].
 
