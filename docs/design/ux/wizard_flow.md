@@ -1,7 +1,7 @@
 # Five-Stage Pipeline Wizard — UX Flow & Interaction Design
 
 > **Owner:** ui-designer · **Task:** #65
-> **Status:** DRAFT v0.2 — incorporates rl-architect edit-class ruling (2026-06-12); pending USER aesthetic review before per-screen detail pass
+> **Status:** DRAFT v0.3 — incorporates USER revision: eval decoupled (policy×env picker, policy library), scenario multi-select composable, finance residency split confirmed, unactivated scenarios hidden (2026-06-12)
 > **Gate:** USER reviews aesthetic direction before frontend contracts are written against this.
 > **Inputs:** master_plan_geo_finance.md (workstreams A/E), REBUILD_SPEC §3–§5, existing app at http://localhost:15174
 > **Pending reference:** D32 product-spine amendment (task #64) — once landed in `docs/design/`, supersedes any conflicts here
@@ -13,11 +13,11 @@
 The wizard is the product's **primary flow** (USER directive). It guides the operator from a bare site config through to a project finance simulation, with five sequentially-dependent stages:
 
 ```
-Config → Algorithm Select → Train → Eval → Finance
-  (A)          (B)            (C)     (D)      (E)
+Config → Algorithm → Train → Eval → Finance
+  (1)       (2)       (3)     (4)      (5)
 ```
 
-The key design constraint: **upstream edits invalidate downstream results**. A sizing change means the training run is no longer valid; a new training run makes the eval stale. This must be legible at every point in the flow — not a hidden footgun.
+**Core model (USER revision 2026-06-12):** Train and Eval are **decoupled**. Training produces artifacts (checkpoints + baselines) into a persistent **policy library**. Eval is a deliberate selection stage: pick a (policy, environment config) pair and run a full evaluation. Multiple eval results can coexist; Finance picks which eval result feeds it. This makes cross-eval (running a policy trained on config A against env config B) a first-class robustness check, not a mistake.
 
 The existing app has three isolated routes (`/`, `/training`, `/eval`). The wizard **replaces the flat nav** with a structured pipeline that preserves the same underlying components (TrainingPanel, EvalComparison, SiteView) and wraps them in the stage shell.
 
@@ -25,7 +25,7 @@ The existing app has three isolated routes (`/`, `/training`, `/eval`). The wiza
 
 ## 2. Stage dependency model — the core design rule
 
-### 2.0 Two edit classes — the product asymmetry *(rl-architect ruling, 2026-06-12)*
+### 2.0 Two edit classes — the product asymmetry *(rl-architect ruling + USER revision, 2026-06-12)*
 
 The entire wizard UX is built on **one architectural asymmetry**:
 
@@ -33,44 +33,55 @@ The entire wizard UX is built on **one architectural asymmetry**:
  ┌─────────────────────────────────────────────────────────────────────┐
  │  CLASS A — Physical config edits                                    │
  │  (fleet sizing · device model · tariff shape · algorithm choice)   │
- │  → Invalidate ③ Train + ④ Eval + ⑤ Finance                        │
- │  → Retraining REQUIRED — no shortcut                               │
- │  → Unmissable stale state: downstream stages visually greyed,      │
- │    stale banners on any existing results, "Re-train required"      │
- │    replaces every "Continue" button downstream                     │
+ │  → ③ Train is the primary concern: new training needed to get a   │
+ │    policy reflecting the new config                                 │
+ │  → ④ Eval + ⑤ Finance surface provenance but are NOT auto-stale   │
+ │    (eval is an explicit selection; old eval results remain valid   │
+ │     for their recorded config, shown in provenance banners)        │
+ │  → Unmissable notice in ③: "Current config differs from            │
+ │    policies in library — train a new policy to reflect it"         │
  └─────────────────────────────────────────────────────────────────────┘
  ┌─────────────────────────────────────────────────────────────────────┐
  │  CLASS B — Finance-only edits                                       │
- │  (discount rate · escalation %/yr · currency · tax/debt toggles)   │
- │  → Invalidate ⑤ Finance ONLY                                       │
- │  → ⑤ recomputes INSTANTLY — no re-dispatch, no server roundtrip   │
- │    on slider drag; IRR/NPV/MIRR/LCOE update live                   │
- │  → ③ and ④ are UNAFFECTED and remain COMPLETE                     │
+ │  (discount rate · escalation %/yr · currency)                      │
+ │  → ⑤ Finance recomputes INSTANTLY, client-side, no re-dispatch     │
+ │    IRR/NPV/MIRR/LCOE update live as the slider moves               │
+ │  → ALL OTHER stages unaffected                                      │
+ └─────────────────────────────────────────────────────────────────────┘
+ ┌─────────────────────────────────────────────────────────────────────┐
+ │  CLASS C — Finance structure edits                                  │
+ │  (tax/debt toggle, gearing %, interest rate — structural changes)  │
+ │  → ⑤ Finance recomputes server-side (heavier, not slider-speed)    │
+ │  → Shows loading state in results panel; all other stages unchanged │
  └─────────────────────────────────────────────────────────────────────┘
 ```
 
-This asymmetry *is* the product experience: the upstream pipeline is heavyweight and correct (physics drives economics); the downstream finance playground is instant and explorable. The UX must make both halves feel right — heavy consequences upstream, zero friction downstream.
+This asymmetry *is* the product experience: the upstream pipeline is heavyweight and correct (physics drives economics); eval is deliberate and provenance-visible; finance is an instant-playground downstream. The UX must make all three tiers feel right.
 
 **Algorithm choice is Class A** (not a separate class): choosing SAC vs. another algorithm, or changing SAC hyperparameters, is equivalent to a physical config change — it requires a new training run. The two-card "Algorithm" stage feeds directly into Train.
+
+**Eval is NOT in the stale cascade** (USER revision): because eval is a deliberate (policy × env) selection with explicit provenance, a Config change does not auto-cascade to ④⑤. Old eval results are valid records — they still tell you exactly what they measured. The design surfaces mismatches through provenance labels, not blocking stale states.
 
 ### 2.1 Dependency graph
 
 ```
- Config ──►  Algorithm ──►  Train ──►  Eval ──►  Finance
-   (1)     CLASS A edits     (3)        (4)         (5)
-             invalidate                          CLASS B edits
-           ③ ④ ⑤ →                             only invalidate
-           retrain req.                           ⑤ (instant)
+ Config → Algorithm → [Policy Library] ← Train (adds policies)
+              ↑                ↓
+        Class A edit   Eval picks (policy × env)
+        notes mismatch         ↓
+                          Finance picks eval result
+                               ↓
+                       Class B/C edits recompute ⑤ only
 ```
 
-| Edit trigger | Edit class | Stages invalidated | User action required |
+| Edit trigger | Edit class | Primary effect | UX treatment |
 |---|---|---|---|
-| Config: fleet sizing, device model, tariff shape | **A — physical** | ③ ④ ⑤ | Two-step confirm → re-run train |
-| Algorithm: choice or any hyperparam | **A — physical** | ③ ④ ⑤ | Two-step confirm → re-run train |
-| Training re-launched | **A — physical** | ④ ⑤ | Re-run eval (auto or manual) |
-| Eval re-run (new checkpoint) | **A — physical** | ⑤ | Finance auto-recalculates |
-| Finance: discount rate, escalation, currency | **B — finance-only** | ⑤ internal only | None — instant client-side recompute |
-| Finance: tax/debt toggles | **B — finance-only** | ⑤ internal only | None — instant recompute (slightly heavier) |
+| Config: fleet sizing, device model, tariff | **A — physical** | ③ Train notes config mismatch | Amber notice in ③: "Train a new policy to reflect current config" |
+| Algorithm: choice or any hyperparam | **A — physical** | ③ Train notes algo mismatch | Amber notice in ③: "Current settings differ from library policies" |
+| Train run completes | — | New checkpoint enters policy library | ③ shows "Added to library: run-xyz" |
+| Eval: different (policy, env) selection | — | Previous eval result remains; new result added | ④ shows list of all eval results; ⑤ picks which one |
+| Finance: discount rate, escalation, currency | **B — finance-only** | ⑤ instant client-side recompute | No modal; IRR/NPV/LCOE update live on drag |
+| Finance: tax/debt structure toggle | **C — finance structure** | ⑤ server-side recompute | Loading state in results panel; ~1–3 s |
 
 ### 2.2 Stage state machine (per stage)
 
@@ -94,20 +105,31 @@ Each stage has one of five states, shown in the wizard bar:
 **COMPLETE** — output exists and upstream is unchanged.
 **STALE** — output exists but an upstream stage was edited after it ran; results shown with amber banner "⚠ Config changed after this ran — results may not reflect current setup."
 
-### 2.3 Stale vs. Locked distinction
+### 2.3 State semantics per stage
 
-This distinction is intentional and important:
+With decoupled eval, the state model differs by stage:
 
-- **STALE** = "you have results but they're from a different (Class A) config change." The user can still *view* stale results while deciding whether to re-run. They **cannot proceed** to the next stage using stale outputs — the "Continue →" button is **replaced by a disabled "Re-train required"** button. Stale results are shown behind a full-width amber banner: "⚠ Config changed after this ran — results may not reflect current setup." The banner is not dismissable; it clears only when the stage is re-run.
-- **LOCKED** = "no results at all — upstream hasn't produced valid output yet." Stage is greyed and non-enterable (cursor: not-allowed on the wizard bar node).
+**Stages ③ Train, ④ Eval, ⑤ Finance — distinct semantics:**
 
-The rl-architect ruling requires stale state to be **unmissable** — not a subtle badge that gets overlooked. Design treatment:
-  - Wizard bar: STALE node shows amber ⚠ with strikethrough text (not just a colour change)
-  - Stage header: full-width amber banner, always visible above the content area
-  - Footer: "Continue →" replaced by "Re-train required ↑" (non-clickable, explains which stage to fix)
-  - The *content* of a stale stage remains readable — the user can inspect old results — but every metric is overlaid with a translucent amber tint to reinforce "these numbers are from a prior run"
+| Stage | STALE means | LOCKED means |
+|---|---|---|
+| ③ Train | Current config/algo differs from all policies in the library; no policy matches the current setup | No policy library yet (never trained) |
+| ④ Eval | — (eval results are explicit records; they don't become stale — their provenance is fixed) | No policy in the library to select from |
+| ⑤ Finance | — (same — Finance is based on a selected eval result; its provenance is fixed) | No eval result to select from |
 
-The same visual separation used for TOU price bands (amber = caution, green = clear, grey = unavailable) maps cleanly here.
+**Provenance banners replace the stale cascade for ④⑤:**
+Rather than auto-marking ④⑤ stale when config changes, the design uses prominent provenance labels on eval and finance results:
+- "Evaluated: policy run-abc-123 (SAC, 3M steps) · Gansu-v1 config #a1b2c3d4 · synthetic weather"
+- If the user selects an eval result that was run against a different config than current: "ℹ Cross-eval: this policy was trained on config #old123, evaluated on config #new456. This is a valid robustness check."
+
+**The unmissable alert stays in ③ Train** — when the current config/algorithm differs from existing library policies, the Train stage shows an amber notice (not blocking): "⚠ Current config differs from all trained policies — start a new run to train a policy with the current setup."
+
+**LOCKED** = no upstream output yet; stage is greyed and non-enterable (cursor: not-allowed in wizard bar).
+**PENDING** = prerequisites met, not yet started.
+**IN_PROGRESS** = actively running.
+**COMPLETE** = at least one result exists for this stage.
+
+The same visual language applies: amber = informational/mismatch, green = clean/current, grey = unavailable.
 
 ---
 
@@ -120,15 +142,15 @@ The wizard bar persists across all routes, replacing the current flat NavLinks:
 │  ⚡ Energy GO                                                        ▸ Docs │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  ① Config       → ② Algorithm  → ③ Train       → ④ Eval        → ⑤ Finance │
-│  ✓ Gansu-v1        ● SAC          ◌ Pending       🔒 Locked       🔒 Locked │
+│  ✓ Gansu-v1        ✓ SAC          ✓ 3 policies   ● Running       🔒 Locked │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 Each stage node in the bar:
-- **Icon** — state icon (see §2.2)
+- **Icon** — state icon (see §2.3)
 - **Number badge** — always shown (①–⑤)
 - **Stage name** — always shown
-- **Summary subtitle** — one-liner when COMPLETE (e.g. "Gansu-v1", "SAC lr=3e-4", "3.2M steps", "−¥18.4M/yr", "IRR 11.2%")
+- **Summary subtitle** — one-liner when COMPLETE (e.g. "Gansu-v1", "SAC lr=3e-4", "3 policies in library", "2 eval results", "IRR 11.2%")
 - **Clickable** — only if COMPLETE or STALE (jump to that stage to review/edit)
 - **Chevrons** (→) between stages — styled dim when the downstream stage is LOCKED
 
@@ -171,7 +193,10 @@ Compose the site: geographic location, device fleet, weather source, tariff regi
 │                          │             + 294.5 MWh storage          │
 │                          │  ─────────────────────────────────────── │
 │                          │  Tariff: [Gansu TOU v2024   ▼]           │
-│                          │  Scenario: [● Power supply ○ (future)]   │
+│                          │  SCENARIO COMPOSITION                     │
+│                          │  ☑ Power supply  [base — always active]  │
+│                          │  (additional scenarios appear as they     │
+│                          │   activate in future versions)            │
 │                          │  ─────────────────────────────────────── │
 │                          │  VALIDATION                               │
 │                          │  ✓ Device IDs all resolve                 │
@@ -198,8 +223,9 @@ Compose the site: geographic location, device fleet, weather source, tariff regi
 - **Validation tiers:**
   - **Hard errors** (red `✗`) — block "Save & Continue": missing device IDs, invalid lat/lon range, C-rate/SOC constraint violations, no devices of required type. Cannot proceed.
   - **Soft warnings** (amber `⚠`) — shown with a per-warning Acknowledge button; user must explicitly dismiss each before proceeding (not silently bypassed). Example: "Historical weather coverage: 2 years available (2022–2023) — short horizon may affect training diversity."
-- **Edit mode (Class A confirmation)** — when stage is COMPLETE, any field change immediately triggers the two-step modal: "⚠ Changing Config will mark Train, Eval, and Finance as **stale** (results preserved but no longer current). Continue editing?" → [Cancel] [Edit Anyway]. If dismissed, the field reverts. If confirmed, STALE propagates to ③④⑤ immediately.
+- **Edit mode (Class A notice)** — when stage is COMPLETE, any field change triggers an amber notice in Stage ③ (not a blocking modal): "Current config differs from trained policies — start a new run to train a policy with the current setup." Stage ③ is NOT hard-blocked; ④ and ⑤ retain their existing results with provenance labels. (No stale cascade to ④⑤ per the decoupled-eval model.)
 - **Weather mode** — three-way selector: Synthetic / Historical / Bootstrap (§2/§3 map modes from master_plan §3); historical/bootstrap gated on data-availability for the chosen lat/lon
+- **Scenario composition — multi-select composable toggles** (USER revision): scenario is not a single exclusive choice but a set of enabled device/stream groups composed onto the power base. For v1, only the power base is active and shown. When H₂ or datacenter scenarios activate in later versions, they appear as additional toggleable cards — each adding its device config section (e.g. electrolyzer fleet row, load_data_center row) and revenue streams. **Unactivated scenarios are HIDDEN entirely** (not greyed-out "coming soon") per USER decision. The layout must be designed to accommodate future toggles additively — no single-choice assumption baked in.
 
 ### Units displayed
 - Device capacity: MW (wind/solar generators), MWh (storage), MW (grid connection)
@@ -339,67 +365,117 @@ The existing TrainingPanel components mount here directly:
 │  [View full training history ▾] (collapsible — MetricCurves below)  │
 │                                                                      │
 ├──────────────────────────────────────────────────────────────────────┤
-│  [← Back]        [Re-train (new run)]      [Proceed to Eval →]      │
+│  [← Back]   [+ Start another run]      [Go to Eval →]              │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
+The policy library sub-panel lists every run in the current session:
+```
+POLICY LIBRARY
+┌────────────────────────────────────────────────────────────────────┐
+│ #  Type    Name          Config    Algorithm  Steps   Best score   │
+│ 1  RL      run-abc-123   #a1b2c3  SAC        3.0M    −0.041       │
+│ 2  RL      run-def-456   #a1b2c3  SAC        2.0M    −0.049       │
+│ ─  Base    TOU rule      —        —          —       (always avail)│
+│ ─  Base    No-battery    —        —          —       (always avail)│
+└────────────────────────────────────────────────────────────────────┘
+```
+
 ### Key interaction rules
+- **Policy library** — every completed training run's checkpoints are stored persistently; baselines are always available. The library is keyed by `(run_id, checkpoint_step)` and carries full provenance: `{config_hash, algorithm, hyperparams, steps, train_date, best_eval_reward}`.
+- **Config-mismatch notice** — when the current Config/Algorithm differs from the most recent library entry, an amber notice appears (not blocking): "⚠ Current config differs from library policies (#a1b2c3 vs current #e5f6a7) — start a new run to train a policy with the current setup."
 - **Background training** — training runs independently; user can navigate away; wizard bar shows amber spinner on stage ③
 - **Page reload persistence** — wizard state (run_id, checkpoint_id, stage statuses) stored in `localStorage` so a page reload resumes the in-progress view
-- **Pause/Stop** — Pause suspends the training stream; Stop saves the latest checkpoint and transitions to the "Complete" sub-state with a "Stopped early" badge
-- **Stale re-entry** — if user edits Config/Algorithm after training is COMPLETE, stage 3 shows a STALE banner; user must click "Re-train" to produce new results
+- **Pause/Stop** — Pause suspends the training stream; Stop saves the latest checkpoint and adds it to the policy library with a "Stopped early" badge
 
 ---
 
 ## 7. Stage 4 — Eval
 
 ### Purpose
-Compare the trained RL policy against baselines across operating metrics.
+**Evaluation workbench**: pick a (policy, environment config) pair and run a full 8760-step evaluation. Results accumulate — multiple eval results can coexist. Finance picks which eval result it uses. Cross-eval (a policy vs. a different env than it was trained on) is a first-class robustness check.
 
 ### Layout
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│  STAGE 4: EVAL                                          [● Pending]  │
-│  (STALE banner if training was re-run)                               │
+│  STAGE 4: EVAL                                       [✓ 2 results]  │
 ├──────────────────────────────────────────────────────────────────────┤
-│  POLICY EVALUATION — 8 760-step full-year run                       │
+│  NEW EVALUATION RUN                                                  │
 │                                                                      │
-│  Checkpoint: [run abc-123, step 2 950 000  ▼]  [▶ Run Evaluation]  │
+│  POLICY SELECTOR                                                     │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │ ● RL    run-abc-123  SAC  3.0M steps  config #a1b2  −0.041  │   │
+│  │ ○ RL    run-def-456  SAC  2.0M steps  config #a1b2  −0.049  │   │
+│  │ ○ Base  TOU rule-based                                       │   │
+│  │ ○ Base  No-battery                                           │   │
+│  └──────────────────────────────────────────────────────────────┘   │
 │                                                                      │
-│  ── OPERATING RESULTS ─────────────────────────────────────────────  │
+│  ENVIRONMENT CONFIG                                                  │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │ ● Current config (Gansu-v1 · #a1b2c3d4 · synthetic)         │   │
+│  │ ○ Gansu-v1 · historical weather 2022                         │   │
+│  │ ○ Other saved config...                                      │   │
+│  └──────────────────────────────────────────────────────────────┘   │
 │                                                                      │
-│  ┌────────────────────┬──────────────────┬──────────────┬─────────┐  │
-│  │ Metric             │ RL (SAC)         │ TOU Rule     │ No Bat  │  │
-│  ├────────────────────┼──────────────────┼──────────────┼─────────┤  │
-│  │ Total cost (¥/yr)  │ −18 420 000      │ −16 110 000  │ −22 880K│  │
-│  │ Energy cost (¥)    │ −12 340 000      │ −10 920 000  │ −19 450K│  │
-│  │ Demand charge (¥)  │  −3 210 000      │  −3 890 000  │  −3 430K│  │
-│  │ Degradation (¥)    │    −870 000      │    −300 000  │       0 │  │
-│  │ Curtailment (¥)    │           0      │           0  │    0    │  │
-│  │ VOLL (¥)           │           0      │           0  │       0 │  │
-│  │ Export (MWh/yr)    │   1 234 567      │  1 198 340   │  1 078K │  │
-│  │ Import (MWh/yr)    │     123 456      │    145 670   │   234K  │  │
-│  │ Bat throughput(MWh)│     234 567      │     89 340   │       0 │  │
-│  ├────────────────────┼──────────────────┼──────────────┼─────────┤  │
-│  │ vs No-Battery (¥)  │  ▲ +4 460 000   │ ▲ +6 770 000 │ baseline│  │
-│  └────────────────────┴──────────────────┴──────────────┴─────────┘  │
+│  COMPATIBILITY CHECK                                                 │
+│  ✓ run-abc-123 obs_dim=107, action_dim=6 matches env               │
+│    (power scenario, 6-action power dispatch)                        │
 │                                                                      │
-│  (all monetary values in ¥ nominal; negative = cost, positive = rev)│
+│  PROVENANCE PREVIEW                                                  │
+│  Policy trained on: Gansu-v1 config #a1b2c3d4 (synthetic)          │
+│  Evaluating on:     Gansu-v1 config #a1b2c3d4 (synthetic) [same]   │
+│  ℹ Cross-eval? Different configs selected — results show            │
+│    how the policy generalises beyond its training distribution.     │
 │                                                                      │
-│  P50 / P90 / P99: [single-draw M=1, point estimate — ensemble      │
-│  exceedances available when §12 historical weather feeds M>1 draws]  │
+│  [▶ Run Evaluation — 8 760 steps, ~3 min]                          │
 ├──────────────────────────────────────────────────────────────────────┤
-│  [← Back]        [Re-run Eval]           [Proceed to Finance →]     │
+│  EVAL RESULTS LIBRARY                                                │
+│                                                                      │
+│  ┌──────────────┬───────────┬──────────┬──────────────┬──────────┐  │
+│  │ # Policy      │ Env       │ Date     │ Total ¥/yr   │         │  │
+│  ├──────────────┼───────────┼──────────┼──────────────┼──────────┤  │
+│  │ 1 SAC abc-123 │ Gansu syn │ Jun 11   │ −18 420 000  │ [View]  │  │
+│  │              │           │          │              │ [→ Fin.] │  │
+│  │ 2 SAC abc-123 │ Gansu his │ Jun 11   │ −17 890 000  │ [View]  │  │
+│  │              │           │          │              │ [→ Fin.] │  │
+│  └──────────────┴───────────┴──────────┴──────────────┴──────────┘  │
+│                                                                      │
+│  (click [View] to expand full metric table below)                   │
+│                                                                      │
+│  ── EXPANDED: Eval #1 — SAC run-abc-123 · Gansu-v1 synthetic ─────  │
+│  ┌─────────────────────┬──────────────┬──────────────┬───────────┐  │
+│  │ Metric              │ RL (SAC)     │ TOU Rule     │ No Bat    │  │
+│  ├─────────────────────┼──────────────┼──────────────┼───────────┤  │
+│  │ Total cost (¥/yr)   │ −18 420 000  │ −16 110 000  │ −22 880K  │  │
+│  │ Energy cost (¥)     │ −12 340 000  │ −10 920 000  │ −19 450K  │  │
+│  │ Demand charge (¥)   │  −3 210 000  │  −3 890 000  │  −3 430K  │  │
+│  │ Degradation (¥)     │    −870 000  │    −300 000  │        0  │  │
+│  │ Curtailment (¥)     │          0   │          0   │        0  │  │
+│  │ VOLL (¥)            │          0   │          0   │        0  │  │
+│  │ Export (MWh/yr)     │  1 234 567   │  1 198 340   │  1 078K   │  │
+│  │ Import (MWh/yr)     │    123 456   │    145 670   │    234K   │  │
+│  │ Bat throughput (MWh)│    234 567   │     89 340   │        0  │  │
+│  ├─────────────────────┼──────────────┼──────────────┼───────────┤  │
+│  │ vs No-Battery (¥)   │ ▲+4 460 000 │ ▲+6 770 000  │ baseline  │  │
+│  └─────────────────────┴──────────────┴──────────────┴───────────┘  │
+│  (¥ nominal; negative = net cost; positive vs No-Bat = value added) │
+│                                                                      │
+│  P50/P90/P99: v1 = point estimate (M=1 draw). Ensemble              │
+│  exceedances activate when §12 historical weather feeds M>1 draws.  │
+├──────────────────────────────────────────────────────────────────────┤
+│  [← Back to Train]                                                   │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Key interaction rules
-- **Checkpoint selector** — dropdown of saved checkpoints from the current run (step, eval-reward, timestamp); default is the highest-eval-reward checkpoint
-- **Run Evaluation button** — triggers a full 8760-step eval; shows progress (step count / 8760, elapsed time)
-- **Negative = cost** convention — explicit note in the UI to prevent sign confusion (matches D13 where costs are positive but displayed as negative net-revenue for intuitive reading)
-- **vs No-Battery row** — always shown as an incremental comparison; positive = battery adds value (View II from master_plan §5.2)
-- **Best-in-column** — the best (lowest cost / highest revenue) cell in each metric row is highlighted with a subtle green tint
-- **Stale results** — if upstream changed, existing results are shown with amber "⚠ Stale — from a previous config" banner; buttons "Use stale for Finance" (with warning) or "Re-run Eval"
+- **Policy selector** — shows all policies in the library (all training runs' best checkpoints + baselines). Keyed by `(run_id, step)` with provenance labels.
+- **Env config selector** — defaults to current config; can also select any previously-saved config. The pair `(policy, env_config)` is the unit of an eval run.
+- **Compatibility check** — **backend-validated**: when a (policy, env) pair is selected, `GET /api/eval/check-compat?policy_id=…&config_hash=…` returns `{compatible: bool, reason: string}`. Incompatible pairs (obs_dim mismatch, action_dim mismatch, scenario mismatch) are shown greyed with the reason: "⊗ Policy trained on 6-action power scenario; env resolves to 8-action H₂ scenario — incompatible." Compatible pairs with dimension match are immediately runnable.
+- **Cross-eval provenance** — when trained-on config ≠ eval env config, a blue `ℹ` notice explains: "Cross-eval: policy generalisation check. Results show how this policy performs on a different site/weather/tariff than its training distribution." Not a warning — cross-eval is intentional.
+- **Accumulating results** — each eval run appends to the Eval Results Library; results are never overwritten. `[→ Finance]` button sends a specific eval result to Stage ⑤.
+- **Auto-select in Finance** — clicking `[→ Finance]` on any result pre-populates Stage ⑤ with that result and navigates there.
+- **Best-in-column** — in the expanded metric table, the best value per row is highlighted with a subtle green tint (lowest net cost / highest net value).
+- **Units** — all monetary values in ¥ nominal; sign convention: negative = cost/expense, positive = revenue added.
 
 ---
 
@@ -411,8 +487,9 @@ Interactive project finance simulation: IRR/NPV/MIRR/LCOE over 10–20 year hori
 ### Layout — dual-panel with instant recompute
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│  STAGE 5: FINANCE                                    [● In Progress] │
-│  [PROVENANCE: Gansu-v1 · SAC run abc-123 · power-supply · M=1 draw] │
+│  STAGE 5: FINANCE                                    [✓ Complete]   │
+│  EVAL BASIS: Eval #1 — SAC run-abc-123 · Gansu-v1 syn · Jun 11     │
+│  [Change eval basis ▼]                                              │
 ├──────────────────────────────────────────────────────────────────────┤
 │  ASSUMPTIONS                  │  RESULTS                            │
 │  ─────────────────────────    │  ──────────────────────────────────  │
@@ -452,11 +529,20 @@ Interactive project finance simulation: IRR/NPV/MIRR/LCOE over 10–20 year hori
 
 ### Key interaction rules
 
-#### Rate slider — instant recompute
-- Discount-rate slider triggers an immediate client-side recompute of NPV/payback/DSCR (the cash-flow series is already loaded; only the discount-rate application changes)
-- IRR/MIRR are precomputed (not rate-dependent); LCOE/LCOS are also precomputed
-- **No server roundtrip on slider drag** — finance math lives client-side, using the loaded cash-flow series from `GET /api/finance/compare`
-- The NPV-vs-rate chart redraws live as the slider moves; the vertical marker showing "current r" tracks the slider
+#### Eval basis picker
+- Finance begins by selecting which eval result from Stage ④ to use. A compact "EVAL BASIS" banner at the top of Stage ⑤ shows the selected eval (policy, env, date). A `[Change eval basis ▼]` dropdown lists all results from the Eval Library. Switching recalculates the full finance model from the new eval result.
+- **Provenance guard** — if the selected eval result was run against a different config than the current Config stage, a blue `ℹ` notice appears: "This eval was run against Gansu-v1 config #a1b2c3, which differs from your current config. Finance reflects that eval's operating results." Not a blocking error — the eval is a valid result for its recorded config.
+
+#### Rate slider — instant recompute (Class B, client-side)
+- **Confirmed** (USER answer to Q4): discount-rate slider and escalation/sensitivity controls → **instant client-side recompute** on the loaded cash-flow series from `GET /api/finance/compare`
+- No server roundtrip on drag; IRR/MIRR are precomputed (not rate-dependent); LCOE/LCOS precomputed
+- The NPV-vs-rate chart redraws live as the slider moves; the vertical "current r" marker tracks the slider
+- **No modal** for slider moves — Class B, zero friction
+
+#### Tax/debt toggles — server-side recompute (Class C)
+- **Confirmed** (USER answer to Q4): tax/debt structure changes → **server-side recompute** (structural change to the cash-flow model, not just discount arithmetic)
+- Toggle shows a loading indicator in the results panel (~1–3 s); assumptions panel remains interactive
+- Result replaces the current finance result for this eval basis
 
 #### View I / View II toggle
 - **View I (Absolute)** — CAPEX basis = full plant (¥1.80 B); benefit = total annual operating net revenue
@@ -493,38 +579,40 @@ Interactive project finance simulation: IRR/NPV/MIRR/LCOE over 10–20 year hori
 - **Direct stage jump** — clicking a COMPLETE or STALE stage in the wizard bar navigates directly; LOCKED stages are non-clickable (cursor: not-allowed)
 - **Browser back/forward** — wizard stage is part of the URL (`/wizard/config`, `/wizard/algo`, `/wizard/train`, `/wizard/eval`, `/wizard/finance`); browser nav works correctly
 
-### 9.2 Stale confirmation flow
+### 9.2 Edit-class flow summary
 
-**Class A edit** (physical config or algorithm change — the common path):
+**Class A edit** (physical config or algorithm change):
 ```
-[User changes a Config or Algorithm field while that stage is COMPLETE]
+[User changes Config or Algorithm field]
          ↓
-┌──────────────────────────────────────────────────┐
-│  ⚠ Physical config change detected              │
-│                                                  │
-│  Changing [device count / tariff / algorithm]    │
-│  will mark Train, Eval, and Finance as stale.    │
-│  Their results remain visible but a new          │
-│  training run is required before Finance         │
-│  results can be trusted.                         │
-│                                                  │
-│  [Cancel — revert]         [Edit Anyway]         │
-└──────────────────────────────────────────────────┘
-         ↓ (on "Edit Anyway")
-Stage 1 or 2 → EDIT mode (field change accepted)
-Stages 3, 4, 5 → STALE (amber ⚠, unmissable banners)
-```
-
-**Class B edit** (finance assumptions — no confirmation needed):
-```
-[User moves discount-rate slider or toggles tax/debt in Finance stage]
+Change accepted immediately — NO blocking modal
          ↓
-Finance results recompute instantly — no modal, no stale state
-Stages 1–4 are UNAFFECTED (remain COMPLETE)
-NPV/IRR/MIRR/payback update live as slider moves
+Stage ③ Train: amber informational notice appears
+  "⚠ Current config differs from library policies (#a1b2c3 vs #e5f6a7)
+   Start a new run to train a policy with the current setup."
+Stage ④ Eval: unaffected — existing results stay valid with provenance
+Stage ⑤ Finance: unaffected — provenance banner shows which eval/config it used
 ```
 
-**Why no modal for Class B:** the entire point of the finance playground is friction-free exploration. A confirmation modal on a slider drag would be the antithesis of the intended UX. Class B edits affect only the discount arithmetic on an already-loaded cash-flow series — they are reversible by moving the slider back, and no server data is invalidated.
+*Why no modal:* with decoupled eval, existing eval/finance results are records of what was measured — they don't become wrong. Only future training is affected. The amber notice in ③ is sufficient signal.
+
+**Class B edit** (discount rate, escalation, currency — finance playground):
+```
+[User moves discount-rate slider or adjusts escalation]
+         ↓
+Finance ⑤ results recompute instantly — client-side only, no modal
+All other stages UNAFFECTED (remain at their current state)
+NPV/IRR/MIRR/payback/LCOE update live as slider moves
+```
+
+**Class C edit** (tax/debt structure toggle — heavier finance change):
+```
+[User toggles Tax Enable or Debt Enable]
+         ↓
+Finance ⑤ results show loading state (~1–3 s) — server-side recompute
+All other stages UNAFFECTED
+New results replace the current finance view for this eval basis
+```
 
 ### 9.3 Long-running operation feedback
 Training can run for minutes to hours. The UX must survive:
@@ -587,10 +675,16 @@ The wizard inherits the existing dark engineering-dashboard aesthetic unchanged.
 - `ErrorBoundary` — per-stage wrapper
 
 ### New components required (to be specced in contracts)
-- `WizardBar` — top stepper (replaces NavLinks); stage state badges
-- `StageShell` — wrapper for each stage: header, stale banner slot, content, footer nav
+- `WizardBar` — top stepper (replaces NavLinks); stage state badges; provenance subtitle per stage
+- `StageShell` — wrapper for each stage: header, provenance/mismatch notice slot, content, footer nav
 - `MapPicker` — lat/lon + MapLibre tile view (or fallback text input)
-- `DeviceFleetTable` — device rows, validation, add/remove
+- `DeviceFleetTable` — device rows, validation, add/remove; scenario-group layout (composable)
+- `ScenarioComposer` — multi-select composable scenario toggles (v1: single "power supply" always-on; additive for future groups)
+- `PolicyLibrary` — list of training runs + baselines with provenance; used in Stage ③ and Stage ④
+- `EvalPicker` — (policy × env config) selector with backend compatibility check; provenance preview
+- `EvalResultLibrary` — accumulating list of eval results; each row has [View] + [→ Finance] actions
+- `CompatibilityBadge` — shows ✓ / ⊗ + reason for (policy, env) compatibility
+- `ProvenanceBanner` — shows config hash, algo, weather mode, date for any result; highlights cross-eval
 - `AlgorithmCard` — algo + baseline cards in stage 2
 - `HyperparamForm` — SAC config form
 - `ProgressBar` — training step progress (% + ETA)
@@ -601,26 +695,27 @@ The wizard inherits the existing dark engineering-dashboard aesthetic unchanged.
 
 ---
 
-## 11. Open questions for team-lead / USER review
+## 11. Open questions — resolution log
 
 **Resolved by rl-architect ruling (2026-06-12):**
-- ~~Finance recompute mechanism~~ — **RESOLVED**: discount-rate slider = instant client-side recompute on the loaded cash-flow series (Class B edit, no server roundtrip on drag). Tax/debt toggles also client-side (reload from loaded series, no new dispatch). Both are Class B: zero upstream invalidation.
-- ~~Algorithm edit class~~ — **RESOLVED**: algorithm choice and hyperparams are Class A (physical config). Same stale-propagation as Config edits: ③④⑤ marked STALE.
-- ~~Validation source~~ — **RESOLVED**: backend validate endpoint (`POST /api/site/validate`) is the single source; returns `{errors[], warnings[]}` with field-level, numbers-shown messages. No TS reimplementation. (See also task #66 — `config_validation` sibling contract.)
+- ~~Finance recompute mechanism~~ — **RESOLVED** (Class B/C split): discount-rate/escalation/sensitivity = client-side instant; tax/debt structure = server-side (~1–3 s). Updated throughout.
+- ~~Algorithm edit class~~ — **RESOLVED**: algorithm + hyperparams = Class A (physical config). Amber notice in ③, no cascade to ④⑤.
+- ~~Validation source~~ — **RESOLVED**: `POST /api/site/validate` backend endpoint, `{errors[], warnings[]}` with field-level numbers-shown messages. No TS reimplementation.
 
-**Still open — for USER:**
+**Resolved by USER revision (2026-06-12):**
+- ~~Auto-eval after training (Q2)~~ — **RESOLVED: NO, manual, decoupled by design.** Eval is an explicit (policy × env) selection stage, not auto-chained. Eval workbench updated.
+- ~~Multiple runs per config (Q3)~~ — **RESOLVED: YES, policy library is the model.** All training runs accumulate in the policy library; Finance picks from Eval Results Library. Not one canonical run.
+- ~~Finance residency split (Q4)~~ — **RESOLVED: CONFIRMED SPLIT.** Client-side for sliders (Class B); server-side for tax/debt (Class C). Updated in §8 and §9.2.
+- ~~Scenario selector (Q5)~~ — **RESOLVED: HIDE unactivated scenarios entirely.** No "coming soon" placeholders. v1 shows only power supply. When H₂/datacenter activate they appear. Updated §4.
+- ~~Scenario selection model~~ — **RESOLVED: multi-select composable toggles** (USER: "有可能氢和数据中心都有"). Not single-choice radio. Each activated group adds device config + revenue streams. Layout must not assume single-choice. Updated §4 and ScenarioComposer in §10.
 
-1. **Stale vs. reset on Config edit** — when a Config edit marks Algorithm (stage ②) stale, should the algorithm selection be preserved as-is (STALE) or cleared to defaults (PENDING)? Current proposal: STALE (preserve selection — the user made deliberate choices; they just need to re-confirm by re-running train). Alternative: clear to PENDING (cleaner but loses hyperparam work). USER preference?
+**Working defaults (team-lead recommendation, pending USER explicit confirmation):**
 
-2. **Auto-eval after training** — should training completion automatically trigger an eval run with the best checkpoint and default baselines, or always require explicit user action? Auto-eval is ergonomic; explicit is transparent (uses compute with consent). Proposal: offer a "Run eval automatically on completion" checkbox in the Stage 3 pre-launch screen.
+Q1. **Stale vs. reset on Config/Algorithm edit** — preserve Algorithm selection (STALE) rather than clearing to defaults (PENDING). Rationale: the user made deliberate hyperparam choices; they should re-confirm, not re-type. Working default: STALE preserves selection.
 
-3. **Multiple runs per config** — one canonical "current run" per config (v1 proposal), or side-by-side run comparison? Prior runs accessible via a collapsible Run History panel in stage ③, but Finance always uses the canonical/best checkpoint. Confirm scope for v1.
+Q6. **Raw `/training` and `/eval` routes** — preserve as power-user direct-access paths with a "← Wizard" back-link. Working default: keep both routes. The existing TrainingPanel mounts unchanged in both contexts — no duplication.
 
-4. **Scenario selector display** — Config stage shows Scenario = "Power supply" (only v1 option). Show other scenarios greyed-out with "(Coming soon)" to communicate expansion roadmap, or hide entirely? Prefer visible-but-disabled (honest about future scope); confirm with USER.
-
-5. **Raw `/training` and `/eval` routes** — preserve as power-user direct-access paths (debugging, CI runs) with a small "← Wizard" back-link? Or fully replace with wizard-only? Proposal: preserve (the existing TrainingPanel mounts unchanged inside the wizard stage and at the direct route — no duplication).
-
-6. **D32 scope** — rl-architect is writing the product-spine amendment (D32, task #64). Once it lands, it may refine some details here (e.g. validation endpoint contract shape, wizard state persistence rules). This doc will be updated to align.
+**Always pending:** D32 product-spine amendment (task #64) — once landed, it is the fixed reference and may refine details here (wizard state persistence, validation endpoint contract shape, policy-library storage).
 
 ---
 
@@ -635,4 +730,4 @@ After this flow document is reviewed and course-corrections incorporated:
 
 ---
 
-*docs/design/ux/wizard_flow.md — ui-designer, task #65, 2026-06-11*
+*docs/design/ux/wizard_flow.md — ui-designer, task #65 — v0.1 2026-06-11, v0.2 2026-06-12 (rl-architect ruling), v0.3 2026-06-12 (USER: decouple eval, policy library, composable scenarios, finance split)*
