@@ -438,20 +438,23 @@ class TestMissingAssetsValidationErrors:
     on any response that happens to have issues.
     """
 
-    @pytest.mark.skip(
+    @pytest.mark.xfail(
+        strict=True,
         reason=(
             "E-SCHEMA (required-asset rule) not implemented in config_validation v1.0.0; "
             "validate() returns errors=[] for battery-less assembled configs — "
-            "absent asset categories are silently skipped ('not in v1 scope'). "
-            "Un-skip when E-SCHEMA lands (task #8)."
-        )
+            "absent asset categories are silently skipped ('not in v1 scope', "
+            "config_validation.py ~line 161). Tracked task #8. "
+            "Un-xfail when E-SCHEMA lands (auto-XPASS→fail forces the marker removal)."
+        ),
     )
     def test_no_battery_produces_validation_error(self, client):
         """No battery in fleet → response HTTP 200 with at least one validation error.
 
-        SKIPPED: E-SCHEMA not implemented in config_validation v1.0.0 (task #8).
+        XFAIL (strict): E-SCHEMA not implemented in config_validation v1.0.0 (task #8).
         When E-SCHEMA lands, validate() will return errors for missing required
-        asset categories (battery absent → error); un-skip at that point.
+        asset categories (battery absent → error); xfail flips to XPASS→fail,
+        forcing removal of this marker.
         """
         req = {
             "fleet": [
@@ -837,8 +840,15 @@ class TestResolverRoundTrip:
         (1×300/100), solar=330 MW. resolve_site() reads tariff_region="cn-gansu",
         loads price_table from tariff_model_schema.yaml, and produces EnvParams.
         """
-        pytest.importorskip("energy_go.env.resolver")
-        from energy_go.env.resolver import resolve_site
+        # Guard: importorskip only catches ImportError/ModuleNotFoundError.
+        # On a jax-installed-but-AVX-broken env (ARM dev box, some CI runners),
+        # importing energy_go.env.resolver triggers `import jax` which raises
+        # RuntimeError — propagating past importorskip as a test ERROR, not SKIP.
+        # Use a full try/except matching D33's set instead.
+        try:
+            from energy_go.env.resolver import resolve_site
+        except (ImportError, ModuleNotFoundError, RuntimeError, AttributeError):
+            pytest.skip("resolver/JAX unavailable in this environment")
 
         import pathlib, tempfile
         yaml = pytest.importorskip("yaml")
