@@ -193,6 +193,8 @@ extended PolicyEvalResult (per dispatched year, per policy, per scenario):
 
 v1 needs only `grid_export` / `grid_import` + the quantities (power-composite); §8 streams add fields later. Intended for the **off-wire** finance path → should **not** require a telemetry bump (confirm at contract time). **D32(b) single-config invariant:** these eval-accumulator streams must be the *same* per-step stream economics the reward and the finance engine consume — one source, no dialect divergence.
 
+**v1 dependencies / sequencing (consolidated).** Finance v1 has **two hard prerequisites**: (1) the **extended `PolicyEvalResult`** above (per-stream + physical-quantity hourly accumulators; task #55) — finance cannot run on today's 5-bucket aggregate; and (2) the **§12 weather pipeline / block-bootstrap generator** — choosing **M = 50** (§13.10) promotes §12 from a design-study to a **finance critical-path dependency**, because every percentile (P90 especially) is only as valid as the §12 ensemble's statistical fidelity. **Finance v1 depends on §12's validation battery (PR #77 §4.2)** passing — it is part of D's acceptance/evidence chain. Build order: extended-eval (#55) + §12 ensemble → finance engine → `/api/finance/compare` → stage-⑤ UI.
+
 ---
 
 ### 13.8 Metrics — exact formulas (¥; on annual CF(y), y = 0…N)
@@ -234,7 +236,7 @@ output  : { M, distribution_valid,                              # distribution_v
 
 The result is the cross-product **{K deterministic price paths} × {one distribution over the M weather draws}** — the M axis is the *only* stochastic/distributional axis; price paths are a separate deterministic sensitivity axis (§13.4, INV-FINLAYER) and are **never** multiplied into the weather distribution. M = 50 grows the weather axis only.
 
-**13.10a — Exceedance percentiles + bootstrap CI.** Report **P50 / P90** as the sound headline pair, plus **P75** and **P99** with caveats, each with a **bootstrap confidence interval** (resample the M draws with replacement, default 90% CI = P5–P95 of the bootstrap distribution) so the operator sees how *converged* each estimate is at the current M. Exceedance form = "in X% of weather scenarios the project achieves *at least* this." For IRR / NPV / MIRR higher percentile-value = better; for LCOE / payback lower = better.
+**13.10a — Exceedance percentiles + bootstrap CI + per-percentile confidence.** Report **P50 / P90** as the sound headline pair, plus **P75** and **P99** with caveats. **Each percentile carries its own `bootstrap_ci` and a `confidence` tag** (`sound | indicative_low_confidence`, derived from the bootstrap CI width relative to the convergence threshold) — so the schema makes statistical confidence explicit per number and the UI **never renders a low-confidence percentile as a bare headline** (the "report honestly" rule). Bootstrap: resample the M draws with replacement, default 90% CI = P5–P95 of the bootstrap distribution. Exceedance form = "in X% of weather scenarios the project achieves *at least* this." For IRR / NPV / MIRR higher percentile-value = better; for LCOE / payback lower = better.
 - **P50 / P90 are statistically sound at M = 50** — the headline bankability pair.
 - **P99 at M = 50 is statistically weak** (≈ the single worst of 50 draws → high variance, not a credible 1-in-100). It is therefore **indicative-only, carried with its bootstrap CI and NOT hard-required** in the schema; v1 may **cap the headline at P90** or show P99-with-caveat. *(USER steer pending — §13.13-3: cap-at-P90 vs P99-with-caveat; the schema supports either — P99 is an optional, CI-annotated field, not a load-bearing number. A credible P99 would gate on M ≥ 100.)*
 - A **convergence hint** fires when a metric's CI width exceeds a threshold (default ≥ 2 pp for IRR, ≥ 20% of |P50-NPV| for NPV — locked here, not hardcoded in the frontend): *"wide range — add more weather scenarios."*
@@ -277,8 +279,9 @@ finance( ensemble:       list[ExtendedPolicyEvalResult],     # M dispatched-year
        ) -> FinanceResult {
          M, distribution_valid,                                 # false at M=1 ⇒ point estimates only, percentile fields absent (§13.10c)
          per_policy: { View I & II : { P50, P90 of {IRR, NPV(r), MIRR, LCOE, LCOS, payback},   # sound headline pair
-                                       [ P75, P99 ]: optional, CI-annotated, indicative (P99 weak at M=50, §13.10a),
-                                       bootstrap_ci, downside_risk{…},
+                                       [ P75, P99 ]: optional, indicative (P99 weak at M=50, §13.10a),
+                                       per_percentile: { value, bootstrap_ci, confidence: sound|indicative_low_confidence },
+                                       downside_risk{…},
                                        [ equity_IRR, min_DSCR ]      # debt-toggle-gated — emitted ONLY when debt ON (§13.9)
                                      } per price_path },
          cash_flow_series, npv_vs_r_curve, sensitivity_surface, provenance }   # provenance carries the shared CRN seed
