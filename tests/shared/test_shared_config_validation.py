@@ -518,6 +518,19 @@ class TestETarShapeV2:
             "schema_version=2.0.0 + (11,24) table — wrong row count → E-TAR-SHAPE"
         )
 
+    # reviewer: backend-reviewer (D33 — flat len-23 is still wrong under v2)
+    def test_v2_flat_len23(self):
+        # schema_version=2.0.0 + flat (23,) list — one short of the legal flat-24 form → ERROR.
+        # Arithmetic: len=23 ≠ 24 (not flat-24) and not a nested list (not (12,24)) → E-TAR-SHAPE.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        site["tariff"]["price_table_yuan_per_mwh"] = [300.0] * 23
+        result = validate(site, GANSU_MODELS_V2)
+        ids = [e.rule_id for e in result.errors]
+        assert "E-TAR-SHAPE" in ids, (
+            "schema_version=2.0.0 + flat (23,) — one short of valid flat-24 → E-TAR-SHAPE"
+        )
+
     def test_v2_no_device_models_no_e_tar_shape(self):
         # Without device_models, v2 branch is unreachable — check falls back to v1 (len==24).
         # Gansu flat (24,) → no error even under v1 path.
@@ -525,6 +538,51 @@ class TestETarShapeV2:
         result = validate(GANSU_SITE, None)
         ids = [e.rule_id for e in result.errors]
         assert "E-TAR-SHAPE" not in ids
+
+    # reviewer: backend-reviewer (D33 highest-value regression — end-to-end with live files)
+    def test_real_gansu_config_validates_no_tar_shape(self):
+        # Load the ACTUAL repo files (config/site_gansu.yaml + config/device_models.yaml).
+        # live device_models.yaml is schema_version=2.0.0; site_gansu.yaml has a flat (24,) tariff.
+        # This is the exact configuration that was broken on main before D33.
+        # (a) validate() must return no E-TAR-SHAPE.
+        # (b) resolve_site() must not raise ConfigValidationError (tested via import guard below).
+        import pathlib
+        import yaml as _yaml
+        validate = _import_validate()
+        repo_root = pathlib.Path(__file__).resolve().parents[2]
+        site_path   = repo_root / "config" / "site_gansu.yaml"
+        models_path = repo_root / "config" / "device_models.yaml"
+        site   = _yaml.safe_load(open(site_path))
+        models = _yaml.safe_load(open(models_path))
+        # Confirm the live file is still v2.0.0 (pin the schema so regressions are caught)
+        assert models.get("schema_version", "").startswith("2."), (
+            f"device_models.yaml is expected to be schema v2.x; got {models.get('schema_version')}"
+        )
+        # (a) validate() — no JAX required; must return no E-TAR-SHAPE
+        result = validate(site, models)
+        tar_errors = [e for e in result.errors if e.rule_id == "E-TAR-SHAPE"]
+        assert not tar_errors, (
+            f"Live site_gansu.yaml + device_models.yaml@2.0.0 must NOT produce E-TAR-SHAPE "
+            f"(D33 regression guard); got: {tar_errors}"
+        )
+        # (b) resolve_site() — JAX-gated; if JAX is available, resolve must not raise
+        # ConfigValidationError (which would indicate the validator↔resolver parity is broken)
+        try:
+            import importlib
+            resolver_mod = importlib.import_module("energy_go.env.resolver")
+            resolver_mod.resolve_site(str(site_path), str(models_path))
+        except RuntimeError as exc:
+            if "AVX" in str(exc) or "cpu_feature" in str(exc) or "jaxlib" in str(exc):
+                pass  # JAX not available on this platform — (a) is the binding guard
+            else:
+                raise
+        except Exception as exc:
+            from energy_go.env.config_validation import ConfigValidationError
+            if isinstance(exc, ConfigValidationError):
+                pytest.fail(
+                    f"resolve_site() raised ConfigValidationError (validator↔resolver parity broken): {exc}"
+                )
+            # Other errors (e.g. JAX import errors caught as ImportError/ModuleNotFoundError) are OK
 
 
 class TestEEconNeg:

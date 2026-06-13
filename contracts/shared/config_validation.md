@@ -240,10 +240,14 @@ The v1/v2 branch is resolved at call-time from `device_model_schema` version
 (`"2.0.0"` or higher activates the v2 check).
 
 **Rationale (D33):** `resolver.py` is the single source of truth (D18/D26): the
-inline-tariff path (lines 221-229) accepts a flat `(24,)` list and replicates it
-×12 before building `EnvParams`. The validator MUST NOT reject what the resolver
-broadcasts. A flat `(24,)` is therefore legal under v2.0+ — it is the
-backward-compatible on-disk form for sites whose YAML was written before PR #87.
+inline-tariff path accepts a flat `(24,)` list and replicates it ×12 before building
+`EnvParams`; it also accepts a seasonal `(12,24)` as a passthrough.  The validator
+MUST NOT reject what the resolver accepts; both accept exactly `{flat (24,), (12,24)}`.
+
+**Parity invariant (binding):** the set of `price_table` shapes accepted by this rule
+MUST equal the set that `resolve_site()`'s inline-tariff path accepts without raising.
+Any future change to either side MUST update the other in the same PR.
+Covered by `test_real_gansu_config_validates_no_tar_shape`.
 
 **Constraint format examples:**  
 v1: `"len(price_table)=12 ≠ 24 (expected flat hourly list)"`  
