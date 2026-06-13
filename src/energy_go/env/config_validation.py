@@ -1,10 +1,10 @@
 """energy_go.env.config_validation — two-tier site-config validator.
 
-Contract: contracts/shared/config_validation.md v1.0.0 (LOCKED @ c06f951)
+Contract: contracts/shared/config_validation.md v1.1.0 (LOCKED @ c06f951; v1.1.0 minor)
 Spec refs: REBUILD_SPEC §3.6; LINEAGE D26 (two-tier), D18 (single-source), D32(i)
 Owner (physics rules): jax-env-engineer
 Owner (econ rules): finance-expert
-Task: #66
+Task: #66 (v1.0.0), #8 (v1.1.0 — E-SCHEMA activated)
 
 Public API:
     validate(site_config, device_models=None) -> ValidationResult  — non-raising
@@ -13,6 +13,12 @@ Public API:
 Versioning (rl-architect, LOCK @ c06f951):
     Adding/activating gated rules = minor, no re-LOCK.
     Removing/renaming rule_id or changing ValidationResult/ValidationIssue shape = major.
+
+v1.1.0 change (task #8, MINOR):
+    E-SCHEMA activated — missing required asset section now emits a hard error.
+    Required set (v1 power-composite): assets.battery + (assets.wind OR assets.solar)
+    + assets.grid.  Configs that passed v1.0.0 validation may now return E-SCHEMA
+    errors if a required section is absent or not a dict.
 """
 from __future__ import annotations
 
@@ -138,6 +144,61 @@ def _resolve_grid_limits(
 # Rule implementations — hard errors
 # ---------------------------------------------------------------------------
 
+def _check_e_schema(site: dict, issues: list) -> None:
+    """E-SCHEMA — required asset section absent or not a dict → hard error (v1.1.0).
+
+    v1 power-composite required set (rl-architect ruling, task #8):
+      - assets.battery    — required (v1 6-dim action space assumes battery)
+      - assets.wind OR assets.solar — at least one required (grid-connected generation)
+      - assets.grid       — required (PCC export/import is v1 revenue core)
+
+    NOT gated on device_models — structural check fires even with device_models=None.
+    One E-SCHEMA ValidationIssue per failing required section.
+
+    Note: `_resolve_grid_limits()` returns (None,None) on a missing grid section and
+    E-CAP-POS guards `if max_export is not None` → skips — so E-CAP-POS does NOT
+    catch a fully-absent grid.  E-SCHEMA is the only guard for that case.
+    """
+    assets = site.get("assets") if isinstance(site, dict) else None
+
+    # --- battery required ---
+    battery = assets.get("battery") if isinstance(assets, dict) else None
+    if not isinstance(battery, dict):
+        issues.append(ValidationIssue(
+            rule_id="E-SCHEMA",
+            field="assets.battery",
+            message="assets.battery absent — battery required for v1 power-composite dispatch",
+            constraint="assets.battery absent or not a dict — required section",
+        ))
+
+    # --- at least one of wind / solar required ---
+    wind  = assets.get("wind")  if isinstance(assets, dict) else None
+    solar = assets.get("solar") if isinstance(assets, dict) else None
+    if not isinstance(wind, dict) and not isinstance(solar, dict):
+        issues.append(ValidationIssue(
+            rule_id="E-SCHEMA",
+            field="assets",
+            message=(
+                "assets.wind and assets.solar both absent — "
+                "at least one generation source required"
+            ),
+            constraint=(
+                "assets.wind and assets.solar both absent or not dicts — "
+                "at least one of {wind, solar} required"
+            ),
+        ))
+
+    # --- grid required ---
+    grid = assets.get("grid") if isinstance(assets, dict) else None
+    if not isinstance(grid, dict):
+        issues.append(ValidationIssue(
+            rule_id="E-SCHEMA",
+            field="assets.grid",
+            message="assets.grid absent — grid connection required for v1 power-composite dispatch",
+            constraint="assets.grid absent or not a dict — required section",
+        ))
+
+
 def _check_e_cap_pos(site: dict, device_models: "dict | None", issues: list) -> None:
     """E-CAP-POS — non-positive physical capacity → hard error.
 
@@ -158,7 +219,7 @@ def _check_e_cap_pos(site: dict, device_models: "dict | None", issues: list) -> 
 
     for field, val in direct_checks:
         if val is None:
-            continue  # missing field → skip (E-SCHEMA covers it; not in v1 scope)
+            continue  # missing field → skip (E-SCHEMA covers section absence; §4)
         if not _pos(val):
             issues.append(ValidationIssue(
                 rule_id="E-CAP-POS",
@@ -563,6 +624,7 @@ def validate(
     warnings: list = []
 
     # --- Hard-error rules ---
+    _check_e_schema(site_config, errors)          # v1.1.0: structural required-section check
     _check_e_cap_pos(site_config, device_models, errors)
     _check_e_tar_shape(site_config, device_models, errors)
     _check_e_load_svc(site_config, device_models, errors)
