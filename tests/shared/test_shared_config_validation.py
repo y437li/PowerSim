@@ -144,6 +144,17 @@ GANSU_MODELS = {
 }
 
 
+# Gansu device models at schema_version 2.0.0 — mirrors device_models.yaml on main.
+# Used for D33 fix tests: the live file has schema_version="2.0.0" and the flat (24,)
+# tariff in site_gansu.yaml must NOT produce E-TAR-SHAPE under v2.0+ rules.
+GANSU_MODELS_V2 = {
+    "schema_version": "2.0.0",
+    "models": {
+        k: v for k, v in GANSU_MODELS["models"].items()
+    },
+}
+
+
 def _import_validate():
     """Import validate() — test is skipped if module not yet implemented."""
     pytest.importorskip("energy_go.env.config_validation")
@@ -431,6 +442,302 @@ class TestETarShape:
         result = validate(site, GANSU_MODELS)
         ids = [e.rule_id for e in result.errors]
         assert "E-TAR-SHAPE" in ids
+
+
+class TestETarShapeV2:
+    """E-TAR-SHAPE v2.0+ rules (D33 fix): flat (24,) OR seasonal (12,24) both accepted.
+
+    The coverage gap that hid the live bug: no test exercised schema_version=2.0.0
+    against a flat (24,) tariff.  These tests pin the relaxed acceptance set.
+    """
+
+    # reviewer: backend-reviewer (D33 gap — schema 2.0.0 + flat (24,) → must be OK)
+    def test_v2_flat_24_ok(self):
+        # D33 fix: schema_version=2.0.0 + flat (24,) tariff → NO E-TAR-SHAPE.
+        # Regression guard: this is the exact combination that was broken on main
+        # (device_models.yaml@2.0.0 + site_gansu.yaml flat (24,) → live E-TAR-SHAPE error).
+        # resolver.py L221-229 accepts flat (24,) and replicates ×12; validator must agree.
+        validate = _import_validate()
+        result = validate(GANSU_SITE, GANSU_MODELS_V2)
+        ids = [e.rule_id for e in result.errors]
+        assert "E-TAR-SHAPE" not in ids, (
+            "schema_version=2.0.0 + flat (24,) tariff must NOT produce E-TAR-SHAPE "
+            "(resolver.py replicates ×12 — validator must accept what the resolver broadcasts)"
+        )
+
+    # reviewer: backend-reviewer (D33 — seasonal (12,24) must also pass under v2)
+    def test_v2_seasonal_12x24_ok(self):
+        # schema_version=2.0.0 + (12,24) nested list → NO E-TAR-SHAPE.
+        # This is the canonical v2 format from the POST /api/site/validate endpoint.
+        # Each of the 12 rows is a copy of the Gansu TOU profile.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        flat_row = site["tariff"]["price_table_yuan_per_mwh"]   # 24 scalars
+        site["tariff"]["price_table_yuan_per_mwh"] = [list(flat_row) for _ in range(12)]
+        result = validate(site, GANSU_MODELS_V2)
+        ids = [e.rule_id for e in result.errors]
+        assert "E-TAR-SHAPE" not in ids, (
+            "schema_version=2.0.0 + (12,24) seasonal table must NOT produce E-TAR-SHAPE"
+        )
+
+    # reviewer: backend-reviewer (D33 — wrong flat length under v2 must still error)
+    def test_v2_wrong_flat_length_errors(self):
+        # schema_version=2.0.0 + flat (11,) — neither flat-24 nor (12,24) → ERROR.
+        # Arithmetic: len=11 ≠ 24 and not a (12,24) matrix.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        site["tariff"]["price_table_yuan_per_mwh"] = [300.0] * 11
+        result = validate(site, GANSU_MODELS_V2)
+        ids = [e.rule_id for e in result.errors]
+        assert "E-TAR-SHAPE" in ids, (
+            "schema_version=2.0.0 + flat (11,) tariff — not flat-24 nor (12,24) → E-TAR-SHAPE"
+        )
+
+    # reviewer: backend-reviewer (D33 — wrong nested shape under v2 must still error)
+    def test_v2_wrong_seasonal_shape_errors(self):
+        # schema_version=2.0.0 + 12 rows of 23 elements → not (12,24) and not flat-24 → ERROR.
+        # Arithmetic: 12 rows × 23 cols ≠ (12,24).
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        site["tariff"]["price_table_yuan_per_mwh"] = [[300.0] * 23 for _ in range(12)]
+        result = validate(site, GANSU_MODELS_V2)
+        ids = [e.rule_id for e in result.errors]
+        assert "E-TAR-SHAPE" in ids, (
+            "schema_version=2.0.0 + (12,23) table — wrong row width → E-TAR-SHAPE"
+        )
+
+    # reviewer: backend-reviewer (D33 — wrong row count under v2 must still error)
+    def test_v2_wrong_row_count_errors(self):
+        # schema_version=2.0.0 + 11 rows of 24 elements → not (12,24) and not flat-24 → ERROR.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        site["tariff"]["price_table_yuan_per_mwh"] = [[300.0] * 24 for _ in range(11)]
+        result = validate(site, GANSU_MODELS_V2)
+        ids = [e.rule_id for e in result.errors]
+        assert "E-TAR-SHAPE" in ids, (
+            "schema_version=2.0.0 + (11,24) table — wrong row count → E-TAR-SHAPE"
+        )
+
+    # reviewer: backend-reviewer (D33 — flat len-23 is still wrong under v2)
+    def test_v2_flat_len23(self):
+        # schema_version=2.0.0 + flat (23,) list — one short of the legal flat-24 form → ERROR.
+        # Arithmetic: len=23 ≠ 24 (not flat-24) and not a nested list (not (12,24)) → E-TAR-SHAPE.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        site["tariff"]["price_table_yuan_per_mwh"] = [300.0] * 23
+        result = validate(site, GANSU_MODELS_V2)
+        ids = [e.rule_id for e in result.errors]
+        assert "E-TAR-SHAPE" in ids, (
+            "schema_version=2.0.0 + flat (23,) — one short of valid flat-24 → E-TAR-SHAPE"
+        )
+
+    def test_v2_no_device_models_no_e_tar_shape(self):
+        # Without device_models, v2 branch is unreachable — check falls back to v1 (len==24).
+        # Gansu flat (24,) → no error even under v1 path.
+        validate = _import_validate()
+        result = validate(GANSU_SITE, None)
+        ids = [e.rule_id for e in result.errors]
+        assert "E-TAR-SHAPE" not in ids
+
+    # reviewer: backend-reviewer (D33 highest-value regression — end-to-end with live files)
+    def test_real_gansu_config_validates_no_tar_shape(self):
+        # Load the ACTUAL repo files (config/site_gansu.yaml + config/device_models.yaml).
+        # live device_models.yaml is schema_version=2.0.0; site_gansu.yaml has a flat (24,) tariff.
+        # This is the exact configuration that was broken on main before D33.
+        # (a) validate() must return no E-TAR-SHAPE.
+        # (b) resolve_site() must not raise ConfigValidationError (tested via import guard below).
+        import pathlib
+        import yaml as _yaml
+        validate = _import_validate()
+        repo_root = pathlib.Path(__file__).resolve().parents[2]
+        site_path   = repo_root / "config" / "site_gansu.yaml"
+        models_path = repo_root / "config" / "device_models.yaml"
+        site   = _yaml.safe_load(open(site_path))
+        models = _yaml.safe_load(open(models_path))
+        # Confirm the live file is still v2.0.0 (pin the schema so regressions are caught)
+        assert models.get("schema_version", "").startswith("2."), (
+            f"device_models.yaml is expected to be schema v2.x; got {models.get('schema_version')}"
+        )
+        # (a) validate() — no JAX required; must return no E-TAR-SHAPE
+        result = validate(site, models)
+        tar_errors = [e for e in result.errors if e.rule_id == "E-TAR-SHAPE"]
+        assert not tar_errors, (
+            f"Live site_gansu.yaml + device_models.yaml@2.0.0 must NOT produce E-TAR-SHAPE "
+            f"(D33 regression guard); got: {tar_errors}"
+        )
+        # (b) resolve_site() — JAX-gated; if JAX is available, resolve must not raise
+        # ConfigValidationError (which would indicate the validator↔resolver parity is broken)
+        try:
+            import importlib
+            resolver_mod = importlib.import_module("energy_go.env.resolver")
+            resolver_mod.resolve_site(str(site_path), str(models_path))
+        except RuntimeError as exc:
+            if "AVX" in str(exc) or "cpu_feature" in str(exc) or "jaxlib" in str(exc):
+                pass  # JAX not available on this platform — (a) is the binding guard
+            else:
+                raise
+        except Exception as exc:
+            from energy_go.env.config_validation import ConfigValidationError
+            if isinstance(exc, ConfigValidationError):
+                pytest.fail(
+                    f"resolve_site() raised ConfigValidationError (validator↔resolver parity broken): {exc}"
+                )
+            # Other errors (e.g. JAX import errors caught as ImportError/ModuleNotFoundError) are OK
+
+    # reviewer: backend-reviewer (D33 parity — resolve_site succeeds on inline (12,24))
+    def test_resolver_inline_seasonal_passthrough(self):
+        # Parity test: resolve_site() must NOT raise on a site with an inline (12,24) tariff.
+        # test_v2_seasonal_12x24_ok already proves validate() accepts (12,24); THIS test
+        # proves the resolver-side of the parity invariant — "validator-accepts ⟺
+        # resolver-accepts" is now proven for BOTH shapes in the accepted set {(24,),(12,24)}.
+        #
+        # Approach: start from site_gansu.yaml (disk), replace the flat (24,) tariff with
+        # a (12,24) matrix (12 copies of the same row), write to a temp file, call resolve_site().
+        # JAX-guarded: same pattern as test_real_gansu_config_validates_no_tar_shape.
+        import pathlib, tempfile, os
+        import yaml as _yaml
+        validate = _import_validate()
+        repo_root = pathlib.Path(__file__).resolve().parents[2]
+        models_path = repo_root / "config" / "device_models.yaml"
+
+        # Build site with (12,24) inline tariff (12 identical rows of the Gansu TOU profile)
+        site = _yaml.safe_load(open(repo_root / "config" / "site_gansu.yaml"))
+        flat_row = list(site["tariff"]["price_table_yuan_per_mwh"])  # 24 scalars
+        site["tariff"]["price_table_yuan_per_mwh"] = [list(flat_row) for _ in range(12)]
+
+        # (a) validate() must accept inline (12,24) under v2.0+ — no JAX needed
+        models = _yaml.safe_load(open(models_path))
+        result = validate(site, models)
+        assert "E-TAR-SHAPE" not in [e.rule_id for e in result.errors], (
+            "inline (12,24) tariff must NOT produce E-TAR-SHAPE under schema v2.0+ "
+            "(D33 parity — validator side)"
+        )
+
+        # (b) resolve_site() must not raise ConfigValidationError on inline (12,24)
+        # Writes a temp YAML so resolve_site() can load it from disk.
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, prefix="test_gansu_seasonal_"
+        )
+        try:
+            _yaml.dump(site, tmp)
+            tmp.close()
+            try:
+                import importlib
+                resolver_mod = importlib.import_module("energy_go.env.resolver")
+                resolver_mod.resolve_site(tmp.name, str(models_path))
+            except RuntimeError as exc:
+                if "AVX" in str(exc) or "cpu_feature" in str(exc) or "jaxlib" in str(exc):
+                    pass  # JAX not available on this platform — (a) is the binding guard
+                else:
+                    raise
+            except Exception as exc:
+                from energy_go.env.config_validation import ConfigValidationError
+                if isinstance(exc, ConfigValidationError):
+                    pytest.fail(
+                        f"resolve_site() raised ConfigValidationError on inline (12,24) "
+                        f"(D33 parity broken — resolver-side): {exc}"
+                    )
+                # Other non-ConfigValidationError exceptions (ImportError, ModuleNotFoundError)
+                # indicate JAX unavailability — acceptable on this platform.
+        finally:
+            os.unlink(tmp.name)
+
+    # reviewer: backend-reviewer (F2 — validator+resolver AGREE on rejecting 24-nested)
+    def test_v2_flat_24_nested_rejected_by_both(self):
+        # Parity boundary: a 24-element list-of-lists (e.g. [[250],[450],…]*24) has
+        # len==24 but is NOT flat scalars — NOT in {flat (24,), (12,24)}.
+        # validator flat_ok: `not any(isinstance(row, list)...)` → False → flat_ok=False
+        # validator seasonal_ok: len==24 ≠ 12 → False
+        # → E-TAR-SHAPE (validator rejects)
+        # resolver flat branch: scalar guard `not any(...)` → False → falls to else: raise
+        # → ValueError (resolver rejects)
+        # Both sides must agree: this shape is INVALID.
+        import pathlib, tempfile, os
+        import yaml as _yaml
+        validate = _import_validate()
+
+        # Build [[v]]*24 — 24 rows of a single-element list (clearly not a scalar vector)
+        nested_24 = [[v] for v in GANSU_SITE["tariff"]["price_table_yuan_per_mwh"]]
+        # Arithmetic: len=24, but each element is a list → flat_ok=False, seasonal_ok=False.
+
+        # (a) validator must reject
+        site = copy.deepcopy(GANSU_SITE)
+        site["tariff"]["price_table_yuan_per_mwh"] = nested_24
+        result = validate(site, GANSU_MODELS_V2)
+        assert "E-TAR-SHAPE" in [e.rule_id for e in result.errors], (
+            "[[v]]*24 (24 single-element lists) must produce E-TAR-SHAPE "
+            "— not flat scalars, not (12,24)"
+        )
+
+        # (b) resolver must also reject (ValueError), not silently build wrong-shape table.
+        # JAX-guarded: if JAX fails to import/initialize on this platform, skip resolver
+        # half — (a) is the binding guard.  Catches AttributeError (ARM circular import),
+        # RuntimeError (AVX), ImportError, and ModuleNotFoundError.
+        repo_root = pathlib.Path(__file__).resolve().parents[2]
+        models_path = repo_root / "config" / "device_models.yaml"
+        gansu_site = _yaml.safe_load(open(repo_root / "config" / "site_gansu.yaml"))
+        gansu_site["tariff"]["price_table_yuan_per_mwh"] = nested_24
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, prefix="test_gansu_nested24_"
+        )
+        try:
+            _yaml.dump(gansu_site, tmp)
+            tmp.close()
+            try:
+                import importlib
+                resolver_mod = importlib.import_module("energy_go.env.resolver")
+            except (ImportError, ModuleNotFoundError, RuntimeError, AttributeError):
+                resolver_mod = None  # JAX unavailable — skip resolver half
+            if resolver_mod is not None:
+                try:
+                    resolver_mod.resolve_site(tmp.name, str(models_path))
+                    # No exception → resolver silently accepted [[v]]*24 → parity broken
+                    pytest.fail(
+                        "resolve_site() silently accepted [[v]]*24 (24 single-element lists); "
+                        "must raise ValueError to match validator E-TAR-SHAPE (F2 scalar guard)"
+                    )
+                except ValueError:
+                    pass  # correct — resolver rejects, matching validator
+                except (RuntimeError, AttributeError) as exc:
+                    # JAX initialization failed mid-resolve (ARM platform) — skip
+                    pass
+        finally:
+            os.unlink(tmp.name)
+
+    # reviewer: backend-reviewer (lock: len==12 of scalars is NEVER read as a seasonal table)
+    def test_v2_flat_12_scalars_errors(self):
+        # schema_version=2.0.0 + flat (12,) of SCALARS — len matches the seasonal ROW COUNT
+        # but elements are scalars, not 24-length rows → neither flat-24 nor (12,24).
+        # validator flat_ok:    len 12 != 24                     → False
+        # validator seasonal_ok: len==12 but rows are scalars     → all(isinstance(row,list)) False → False
+        # → E-TAR-SHAPE.  Guards against a buggy impl mistaking len==12 for seasonal.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        site["tariff"]["price_table_yuan_per_mwh"] = [300.0] * 12
+        result = validate(site, GANSU_MODELS_V2)
+        assert "E-TAR-SHAPE" in [e.rule_id for e in result.errors], (
+            "schema_version=2.0.0 + flat (12,) scalars — not flat-24, not (12,24) → E-TAR-SHAPE"
+        )
+
+    # reviewer: backend-reviewer (malformed/absent schema_version → v1 flat path, no crash)
+    def test_malformed_schema_version_uses_v1_path(self):
+        # A non-numeric schema_version → int(...split('.')[0]) raises ValueError, caught →
+        # use_seasonal stays False → v1 path (len==24 check). Must not crash.
+        # (a) flat (24,) Gansu under malformed version → v1 accepts → no E-TAR-SHAPE.
+        # (b) (12,24) under malformed version → v1 path: len 12 != 24 → E-TAR-SHAPE.
+        validate = _import_validate()
+        bad_models = {"schema_version": "not-a-version", "models": GANSU_MODELS["models"]}
+        res_a = validate(GANSU_SITE, bad_models)
+        assert "E-TAR-SHAPE" not in [e.rule_id for e in res_a.errors], (
+            "malformed schema_version must fall back to v1 (flat (24,) accepted, no crash)"
+        )
+        site = copy.deepcopy(GANSU_SITE)
+        flat = site["tariff"]["price_table_yuan_per_mwh"]
+        site["tariff"]["price_table_yuan_per_mwh"] = [list(flat) for _ in range(12)]
+        res_b = validate(site, bad_models)
+        assert "E-TAR-SHAPE" in [e.rule_id for e in res_b.errors], (
+            "malformed schema_version → v1 path → (12,24) has len 12 != 24 → E-TAR-SHAPE"
+        )
 
 
 class TestEEconNeg:

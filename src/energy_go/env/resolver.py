@@ -186,6 +186,13 @@ def resolve_site(
     #
     # Absent `tariff_region` → inline fallback: read price_table from
     # site["tariff"]["price_table_yuan_per_mwh"] (backward-compatible).
+    #
+    # Precedence note (D33): if BOTH tariff_region AND an inline price_table are
+    # present, tariff_region wins unconditionally (L192 branch taken first).  The
+    # inline table is validated by E-TAR-SHAPE but never used — not an error.
+    # tariff_region is the PREFERRED path for seasonal tariffs (carries demand_rate +
+    # sell_clamp metadata); inline (12,24) is an escape hatch for callers that have
+    # already materialized the matrix (contracts/shared/config_validation.md §4).
     # ------------------------------------------------------------------
     tariff_region_id = site.get("tariff_region")
 
@@ -218,15 +225,30 @@ def resolve_site(
         price_spread_sigma            = float(region.sell_clamp.spread_noise_std_yuan_per_mwh)
     else:
         # Inline fallback path (backward-compat; existing callers unaffected)
+        # D33 parity invariant: accepted set here must equal config_validation E-TAR-SHAPE v2.
+        # Accept flat (24,) → broadcast ×12; OR seasonal (12,24) → passthrough.
         price_table_raw = site["tariff"]["price_table_yuan_per_mwh"]
-        if len(price_table_raw) != 24:
+        _seasonal_ok = (
+            isinstance(price_table_raw, list)
+            and len(price_table_raw) == 12
+            and all(isinstance(row, list) and len(row) == 24 for row in price_table_raw)
+        )
+        if _seasonal_ok:
+            # Seasonal (12,24) passthrough — already in the correct shape for EnvParams.
+            price_table = jnp.array(price_table_raw, dtype=jnp.float32)  # shape (12, 24)
+        elif (isinstance(price_table_raw, list)
+              and len(price_table_raw) == 24
+              and not any(isinstance(row, list) for row in price_table_raw)):
+            # Flat (24,) of scalars → broadcast ×12; on-disk backward-compat form.
+            # Scalar guard mirrors config_validation flat_ok: rejects list-of-lists with
+            # len==24 (e.g. [[v]]*24 or (24,24)) so resolver and validator agree exactly.
+            _row = jnp.array(price_table_raw, dtype=jnp.float32)  # shape (24,)
+            price_table = jnp.stack([_row] * 12, axis=0)           # shape (12, 24)
+        else:
             raise ValueError(
-                f"price_table_yuan_per_mwh must have exactly 24 entries; "
-                f"got {len(price_table_raw)}"
+                f"price_table_yuan_per_mwh must be flat (24,) or seasonal (12,24); "
+                f"got len={len(price_table_raw) if isinstance(price_table_raw, list) else type(price_table_raw).__name__}"
             )
-        # v2.0.0: build (12, 24) seasonal table; flat (24,) site YAML replicated ×12.
-        _row = jnp.array(price_table_raw, dtype=jnp.float32)  # shape (24,)
-        price_table = jnp.stack([_row] * 12, axis=0)           # shape (12, 24)
         # demand_rate, spread: sourced from inline costs block
         demand_rate_yuan_per_mw_month = float(site["costs"]["demand_rate_yuan_per_mw_month"])
         price_spread_yuan_per_mwh     = float(site["costs"]["price_spread_yuan_per_mwh"])

@@ -334,18 +334,40 @@ def _check_e_tar_shape(site: dict, device_models: "dict | None", issues: list) -
             pass
 
     if use_seasonal:
-        ok = (
+        # D33 fix: accept flat (24,) OR seasonal (12,24).
+        # Flat (24,) is the on-disk backward-compat form; resolver.py replicates ×12
+        # internally (L221-229).  The validator must not reject what the resolver broadcasts
+        # (D18/D26 single-validator rule).
+        flat_ok = (
+            isinstance(price_table, list)
+            and len(price_table) == 24
+            and not any(isinstance(row, list) for row in price_table)
+        )
+        seasonal_ok = (
             isinstance(price_table, list)
             and len(price_table) == 12
             and all(isinstance(row, list) and len(row) == 24 for row in price_table)
         )
-        if not ok:
-            shape_str = f"({len(price_table)},)" if isinstance(price_table, list) else "?"
+        if not (flat_ok or seasonal_ok):
+            if isinstance(price_table, list):
+                first = price_table[0] if price_table else None
+                if isinstance(first, list):
+                    shape_str = f"({len(price_table)},{len(first) if first else '?'})"
+                else:
+                    shape_str = f"({len(price_table)},)"
+            else:
+                shape_str = "?"
             issues.append(ValidationIssue(
                 rule_id="E-TAR-SHAPE",
                 field="tariff.price_table_yuan_per_mwh",
-                message="Tariff table must be (12, 24) for device_model_schema v2.0+",
-                constraint=f"shape(price_table)={shape_str} ≠ (12, 24) (expected seasonal matrix)",
+                message=(
+                    "Tariff table must be flat (24,) or seasonal (12, 24)"
+                    " for device_model_schema v2.0+"
+                ),
+                constraint=(
+                    f"shape(price_table)={shape_str}"
+                    " — expected flat (24,) or seasonal (12,24)"
+                ),
             ))
     else:
         if not (isinstance(price_table, list) and len(price_table) == 24):
