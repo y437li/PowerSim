@@ -1186,12 +1186,33 @@ def _load_dm() -> dict:
 # ---------------------------------------------------------------------------
 
 class TestV200VersionString:
-    """schema_version is 2.0.0 after price_table reshape (PR #87, rebased on v1.1.0 economics)."""
+    """schema_version must be in the v2.x family with minor ≥ 1.
 
-    def test_schema_version_is_2_0_0(self):
+    History: 2.0.0 (PR #87, price_table reshape) → 2.1.0 (PR #103, benchmark
+    library + provenance field) → 2.2.0 (PR #104, electrolyzer INERT entries).
+    The per-feature test_schema_version in test_shared_benchmark_device_library.py
+    pins the exact version; this class is a floor-guard (major==2, minor≥1) that
+    survives §11-sanctioned minor bumps without re-breaking.
+    """
+
+    def test_schema_version_at_least_2_1_0(self):
+        """schema_version must be 2.x.y with x ≥ 1 — robust to §11-sanctioned minor bumps.
+
+        Renamed from test_schema_version_is_2_0_0 which pinned a specific version
+        and broke on the §11-sanctioned 2.0.0→2.1.0 bump (PR #103). This form
+        catches regressions (minor < 1) without re-breaking on 2.2.0 or later.
+        Version history is in the class docstring.
+        # reviewer: backend-reviewer — blessed version-floor form (PR #103)
+        """
         dm = _load_dm()
-        assert dm["schema_version"] == "2.0.0", (
-            f"expected schema_version '2.0.0' (v2.0.0 after price_table reshape), got {dm['schema_version']!r}"
+        v = dm["schema_version"]
+        parts = tuple(int(x) for x in v.split("."))
+        assert parts[0] == 2, (
+            f"schema_version {v!r} has unexpected major version (expected 2.x.y)"
+        )
+        assert parts[1] >= 1, (
+            f"schema_version {v!r} regressed below 2.1.0 — "
+            f"PR #103 benchmark library bump to 2.1.0 is missing"
         )
 
 
