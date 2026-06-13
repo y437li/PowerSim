@@ -32,3 +32,17 @@ All B1–B4 + M1–M2 resolved; verified against the actual commit + the LOCKED 
 4. **S2 — rehydrate persisted COMPLETE.** §3.2 persists `stageState`+`lastValidation`; define whether rehydrate forces a re-validate (recommended) vs trusting a stale COMPLETE; add a test.
 5. **T-SAVE-5 STALE-click** fires `onClick` is stated but not directly tested (T-SAVE-3 only checks the label).
 6. **T-MAP-6/7 wording** — reword to "enabled ONLY when `coverage.historical_available === true`" so the error/null/pending cases are unambiguously disabling (my T-MAP-COV-ERR pins this).
+
+## Round 3 — `9a9d445` — REQUEST_CHANGES (2026-06-13) — D37 re-gate
+Team-lead ruling **D37** moved fleet assembly server-side: `POST /api/site/validate` (client-assembled body) → `POST /api/site/assemble` (raw wizard form; server resolves count→fleet MW/MWh + tariff_region→table). §5.1 rewritten, PV-by-capacity row added, all 6 prior should-fixes folded in. Verified the rewrite against the actual commit + PR #105 (`/api/site/assemble`) + LOCKED config_validation — **approved in substance** (body matches #105 field-for-field; T-API-VAL-2 pins it; guard matches #105's frontend-gate; my reviewer tests intact). **One blocker:** `T-S2-REHYDRATE` injected `setState({stageState:"COMPLETE"})` then asserted `!=="COMPLETE"` — but plain setState fires no rehydrate path, so a correct `onRehydrateStorage` impl fails it; only a wrong "downgrade-on-every-setState" hack passes. Unsatisfiable by a correct impl → must-fix.
+
+## Round 4 — `a553425` — APPROVE (2026-06-13)
+- **T-S2-REHYDRATE fixed ✓** — now seeds `localStorage["energygo.stage1"]` with a persisted COMPLETE snapshot, calls `await useStageOneStore.persist.rehydrate()` (the real path that runs `onRehydrateStorage`), asserts `stageState === "IN_PROGRESS"`, cleans up. Satisfiable only by a correct rehydrate-downgrade impl. Comment nit (`fleet_capacity_mw` "¥/MWh"→"MW direct") fixed. Diff `9a9d445..a553425` is those two changes only — no other approved assertion touched.
+- **D37 §5.1 body** verified to match PR #105 `/api/site/assemble` §3 (wind/battery `{model_id,count}`, pv `{model_id,fleet_capacity_mw}`, grid `{model_id}`, `tariff_region` string, optional `site_meta`; `fleet.length>0 && tariffRegion!==""` guard). `FLEET_MIXED_MODEL` (server-side, #105) covers the v1 one-model-per-category note.
+
+### Approved suite (Round 4) = developer cases (incl. T-API-VAL-1/2, T-FLEET-PV-1/2, T-VAL-TARIFF-REQ, T-TARIFF-1, T-S1-ACK-CLEAR, T-S1-STALE-CLICK, T-S2-REHYDRATE) + the 2 reviewer cases (T-MAP-COV-ERR, T-MAP-10-LON).
+
+### Standing conditions (carried to implementation / code-audit, NOT blocking the gate)
+- **§5.1 is CONTINGENT on PR #105 (`/api/site/assemble`) locking with the same body shape.** #105 is an unlocked draft; if it diverges (field names, or `costs`/`forecast` turning out to be *required* vs server-defaulted), §5.1 + T-API-VAL-1/2 reopen through frontend-reviewer. Dev to confirm costs/forecast optionality with serving-engineer.
+- T-TARIFF-1 renders a stub `<option>`; strengthen to a real `<select>`/SiteMetaSection render at implementation.
+- D37 to be recorded in LINEAGE.md (team-lead/rl-architect).
