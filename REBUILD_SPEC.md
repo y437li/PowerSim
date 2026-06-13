@@ -31,4 +31,5 @@ The specification is split into per-section files under [`docs/spec/`](docs/spec
 | 10 | Env-logic enhancements (proposal — opt-in, parity-preserving) | [`docs/spec/section_10_env_enhancements.md`](docs/spec/section_10_env_enhancements.md) | jax-env-engineer |
 | 11 | Benchmark algorithms for RL comparison (proposal — user approval) | [`docs/spec/section_11_benchmark_algorithms.md`](docs/spec/section_11_benchmark_algorithms.md) | rl-architect |
 | 12 | Real-weather data pipeline (proposal — user approval) | [`docs/spec/section_12_weather_pipeline.md`](docs/spec/section_12_weather_pipeline.md) | env-harness-engineer (rl-architect interim until staffed) |
+| 13 | Project finance (proposal — USER approval) | [`docs/spec/section_13_project_finance.md`](docs/spec/section_13_project_finance.md) | finance-expert |
 
