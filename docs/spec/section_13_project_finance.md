@@ -94,7 +94,7 @@ revenue_s(year y, path) = m_s(y) · Σ_{t} q_{s,t}·p_{s,t}        # m normalise
 **INV-FINLAYER (named invariant — parallel to INV-BASIS).** Price paths, escalation, and contract structures (flat / indexed / spot) are a **post-hoc transform applied in the finance layer** over the dispatched-year streams, which are produced at **constant-real year-1 prices** (D31/F1). They are **structurally barred from re-entering env dispatch** — no price-path, escalation rate, or contract term may flow into the jitted `step` or alter the trained policy's observation distribution. A *uniform* path leaves relative TOU structure (hence optimal dispatch) unchanged ⇒ it is a **pure, financially-exact** finance transform. A **non-uniform / stream-specific** path genuinely changes dispatch incentives; applied post-hoc it is only an *approximation*, so it **must raise an explicit retrain flag — never a silent finance knob**. *Guard test (mandatory):* a non-uniform per-stream path → the engine sets `requires_retrain=true` in provenance and the result is badged, and a test asserts that no price-path/escalation field is reachable from the dispatch path (the env trace is independent of `price_path`). v1 default = the shared uniform path.
 
 **Two distinct distributional axes — do NOT conflate (INV-FINLAYER corollary).** The model has two orthogonal axes, and the spec keeps them separate:
-- **Weather draws `M` = the stochastic Monte-Carlo axis** — the M ensemble members are random weather realizations (§12 block-bootstrap); they produce the **P50/P75/P90/P99 exceedance distribution** and the downside-risk panel (§13.10).
+- **Weather draws `M` = the stochastic Monte-Carlo axis** — the M ensemble members are random weather realizations (§12 block-bootstrap); they produce the **P50/P75/P90/P95 exceedance distribution** and the downside-risk panel (§13.10).
 - **Price paths = DETERMINISTIC finance scenarios = a sensitivity axis** (§13.11), **not** Monte-Carlo draws.
 
 Each price path yields **its own** distribution-over-M (and its own surface); the two are **never** collapsed into a single cross-product "distribution" — doing so makes P90 meaningless. The §13.10 / §13.12 schema makes the dimensionality explicit: the exceedance distribution is over **M weather draws at a fixed price path**; sweeping price paths produces a family of such distributions.
@@ -133,17 +133,17 @@ discount_rate (levered toggle)             = WACC
 
 **13.5a — r_f selected by time (two explicit dimensions).** (1) **Valuation-date dependence:** the analysis takes a `valuation_date` and uses the CGB yield *as of that date*; `valuation_date` + the exact yield used travel in `/api/finance/compare` provenance (a stale/mismatched rate is machine-visible). (2) **Term-matching:** the risk-free tenor is matched to the project horizon — `r_f = interp( CGB_curve(snapshot ≤ valuation_date), horizon_years )`; default convention **linear interpolation** to the exact `horizon_years` (20 yr interpolates 10yr↔30yr), `nearest`-tenor a config alternative. Currency/region-keyed: CNY → CGB; future regions → the corresponding sovereign curve (task #58 currency layering).
 
-**13.5b — named, overridable defaults (cited; confirm at the USER gate).**
+**13.5b — named, overridable defaults — ⚠ PROVISIONAL, pending USER methodology discussion (provenance `USER-provided, pending`).** The CAPM **methodology** (§13.5/§13.5a) is USER-confirmed; the specific default **values** below are **PROVISIONAL** and **must not be locked until the USER discussion concludes** (a separate CAPM methodology decision brief is in flight). The engine carries them with a `provisional: true` provenance flag so any result computed on them is machine-visible as pre-discussion; the §13 *structure* is not blocked by the pending values.
 
-| Field | Proposed default | Basis (to confirm) |
+| Field | Provisional default | Basis (pending USER discussion) |
 |---|---|---|
-| `beta_unlevered` | **0.55** | utility-scale renewable IPP asset beta ~0.5–0.6 (Damodaran "Green & Renewable Energy") |
+| `beta_unlevered` | **0.55** *(provisional)* | utility-scale renewable IPP asset beta ~0.5–0.6 (Damodaran "Green & Renewable Energy") — China renewables+storage β under discussion |
 | beta levering | Hamada `β_L = β_U·(1+(1−tax)·D/E)` | `= β_U` in the all-equity base |
-| `equity_risk_premium` (ERP) | **0.060** | China total ERP ≈ mature ERP ~4.5–5% + China country premium ~1–1.5% (Damodaran) |
-| `country_risk_premium` (CRP) | **0.0** (CNY/CGB base) | sovereign risk already in the CGB r_f; non-zero only cross-border |
-| `cost_of_debt` | **5yr LPR + 125 bps** | LPR-anchored (PBoC), time-selected like r_f; spread = project credit margin |
-| `target_de_ratio` (D/E) | **0.0** base · **1.5** (60/40) levered toggle | D31 base = all-equity; renewable PF gearing ~60% for the levered case |
-| `tax_rate` | **0.25** (15% renewable-preferential alt) | only used in the debt tax-shield + levered WACC |
+| `equity_risk_premium` (ERP) | **0.060** *(provisional)* | China-vs-global ERP basis under discussion (mature ~4.5–5% + China premium ~1–1.5%, Damodaran) |
+| `country_risk_premium` (CRP) | **0.0** *(provisional)* | CRP treatment under discussion; CNY/CGB base ⇒ sovereign risk already in r_f |
+| `cost_of_debt` | **5yr LPR + 125 bps** *(provisional)* | LPR benchmark + spread + tenor under discussion; time-selected like r_f |
+| `target_de_ratio` (D/E) | **0.0** base · **1.5** (60/40) levered *(provisional)* | unlevered-vs-levered base case under discussion |
+| `tax_rate` | **0.25** *(provisional; 15% renewable alt; VAT treatment open)* | tax/VAT treatment under discussion |
 
 **13.5c — sensitivity sweeps anchor on the CAPM base** (§13.10): the NPV-vs-rate curve's base point is `r_e` (or WACC); the swept band is `r_f ± Δ` (e.g. ±100 bps on the term-matched CGB) and `ERP ± Δ` (e.g. ±150 bps) — anchored and parameter-meaningful, not an arbitrary `[3%,12%]` band.
 
@@ -152,6 +152,8 @@ discount_rate (levered toggle)             = WACC
 ### 13.6 CAPEX, OPEX, lifecycle replacements, asset-management, terminal value
 
 **CAPEX** per device-model instance, summed over the site, keyed by the **same device-model ID** as the physics facet (`device_models.yaml` econ block, task #57). **Fleet sizing is configurable** (D32(h)): `CAPEX = unit_count × unit_price`.
+
+**Econ defaults — SHIP the #63 China benchmark library (USER decision §13.13-10).** The default CAPEX / OPEX / lifecycle *values* on each device-model ID are **sourced from finance-engineer's #63 device benchmark library** (the 2024/25 China market benchmarks — wind ¥/kW, PV ¥/kW + inverter, LFP battery ¥/kWh + ¥/kW, grid lump-sum, O&M, replacement/residual fractions, lifetimes). Each shipped value carries its #63 provenance/citation; all remain overridable. **§13's econ layer depends on #63** (named in the §13.7 dependencies note); the **fields** are fixed here, the **numbers** come from #63 verbatim. (Distinct from the CAPM discount-rate values, which stay PROVISIONAL pending the USER methodology discussion, §13.5b.)
 
 ```
 generators:  CAPEX_i = capacity_mw_i · 1000 · capex_per_kw_yuan_i
@@ -193,7 +195,7 @@ extended PolicyEvalResult (per dispatched year, per policy, per scenario):
 
 v1 needs only `grid_export` / `grid_import` + the quantities (power-composite); §8 streams add fields later. Intended for the **off-wire** finance path → should **not** require a telemetry bump (confirm at contract time). **D32(b) single-config invariant:** these eval-accumulator streams must be the *same* per-step stream economics the reward and the finance engine consume — one source, no dialect divergence.
 
-**v1 dependencies / sequencing (consolidated).** Finance v1 has **two hard prerequisites**: (1) the **extended `PolicyEvalResult`** above (per-stream + physical-quantity hourly accumulators; task #55) — finance cannot run on today's 5-bucket aggregate; and (2) the **§12 weather pipeline / block-bootstrap generator** — choosing **M = 50** (§13.10) promotes §12 from a design-study to a **finance critical-path dependency**, because every percentile (P90 especially) is only as valid as the §12 ensemble's statistical fidelity. **Finance v1 depends on §12's validation battery (PR #77 §4.2)** passing — it is part of D's acceptance/evidence chain. Build order: extended-eval (#55) + §12 ensemble → finance engine → `/api/finance/compare` → stage-⑤ UI.
+**v1 dependencies / sequencing (consolidated).** Finance v1 has **three hard prerequisites**: (1) the **extended `PolicyEvalResult`** above (per-stream + physical-quantity hourly accumulators; task #55) — finance cannot run on today's 5-bucket aggregate; (2) the **§12 weather pipeline / block-bootstrap generator** — choosing **M = 50** (§13.10) promotes §12 from a design-study to a **finance critical-path dependency**, because every percentile (P90/P95 especially) is only as valid as the §12 ensemble's statistical fidelity (**depends on §12's validation battery, PR #77 §4.2**, passing — part of D's acceptance/evidence chain); and (3) the **#63 China device benchmark library** — supplies the shipped CAPEX/OPEX/lifecycle econ defaults (§13.6, USER decision §13.13-10). Build order: extended-eval (#55) + §12 ensemble + #63 econ defaults → finance engine → `/api/finance/compare` → stage-⑤ UI.
 
 ---
 
@@ -223,7 +225,7 @@ Base = **pre-tax, all-equity (unlevered project IRR)** (D31) ⇒ the base discou
 
 ### 13.10 Distributions, downside risk, and confidence (the centerpiece)
 
-The finance interface takes an **ENSEMBLE of M dispatched-year results** (M weather draws from §12 block-bootstrap) and outputs **DISTRIBUTIONS** of every metric. **Default M = 50** (USER directive, §13.13-1). **§12 block-bootstrap is a v1 PREREQUISITE** at M = 50, and the §12 generator's validation battery (PR #77 §4.2) is part of D's acceptance/evidence chain — the percentile numbers (especially P90) are only as valid as the ensemble's statistical fidelity (marginals, cross-correlation, ramp/persistence tails).
+The finance interface takes an **ENSEMBLE of M dispatched-year results** (M weather draws from §12 block-bootstrap) and outputs **DISTRIBUTIONS** of every metric. **Default M = 50 (USER-confirmed, D34).** **§12 block-bootstrap is a v1 PREREQUISITE** at M = 50, and the §12 generator's validation battery (PR #77 §4.2) is part of D's acceptance/evidence chain — the percentile numbers (especially the P90/P95 tail) are only as valid as the ensemble's statistical fidelity (marginals, cross-correlation, ramp/persistence tails).
 
 **Common Random Numbers (CRN) — binding.** All policies in a single comparison consume the **same M weather draws** (shared seed / identical ensemble), so per-policy metric deltas are **pure dispatch** (P2), not weather noise. The shared seed travels in provenance.
 
@@ -231,14 +233,13 @@ The finance interface takes an **ENSEMBLE of M dispatched-year results** (M weat
 input   : ensemble = { dispatched_year_m : m = 1…M }            # M weather draws (default 50), SAME draws ∀ policies (CRN)
 per draw: cash_flow_m (after §13.4 price path) → { NPV_m(r), IRR_m, MIRR_m, LCOE_m, LCOS_m, payback_m }
 output  : { M, distribution_valid,                              # distribution_valid=false ⇒ point estimates only (§13.10c)
-            per-metric exceedance distribution + downside-risk panel + bootstrap CI }
+            per-metric exceedance distribution {P50,P75,P90,P95} + downside-risk panel + bootstrap CI }
 ```
 
 The result is the cross-product **{K deterministic price paths} × {one distribution over the M weather draws}** — the M axis is the *only* stochastic/distributional axis; price paths are a separate deterministic sensitivity axis (§13.4, INV-FINLAYER) and are **never** multiplied into the weather distribution. M = 50 grows the weather axis only.
 
-**13.10a — Exceedance percentiles + bootstrap CI + per-percentile confidence.** Report **P50 / P90** as the sound headline pair, plus **P75** and **P99** with caveats. **Each percentile carries its own `bootstrap_ci` and a `confidence` tag** (`sound | indicative_low_confidence`, derived from the bootstrap CI width relative to the convergence threshold) — so the schema makes statistical confidence explicit per number and the UI **never renders a low-confidence percentile as a bare headline** (the "report honestly" rule). Bootstrap: resample the M draws with replacement, default 90% CI = P5–P95 of the bootstrap distribution. Exceedance form = "in X% of weather scenarios the project achieves *at least* this." For IRR / NPV / MIRR higher percentile-value = better; for LCOE / payback lower = better.
-- **P50 / P90 are statistically sound at M = 50** — the headline bankability pair.
-- **P99 at M = 50 is statistically weak** (≈ the single worst of 50 draws → high variance, not a credible 1-in-100). It is therefore **indicative-only, carried with its bootstrap CI and NOT hard-required** in the schema; v1 may **cap the headline at P90** or show P99-with-caveat. *(USER steer pending — §13.13-3: cap-at-P90 vs P99-with-caveat; the schema supports either — P99 is an optional, CI-annotated field, not a load-bearing number. A credible P99 would gate on M ≥ 100.)*
+**13.10a — Exceedance percentiles + bootstrap CI + per-percentile confidence (USER-decided percentile set).** The headline exceedance set is **P50 / P75 / P90 / P95** (USER decision §13.13-3); **P95 is the decision tail** at M = 50 (≈ the 2.5th-worst of 50 draws — defensible). **P99 is dropped from the headline** (≈ the 0.5th-worst of 50 → not credible); it may be retained **only** as an optional `indicative_low_confidence` field with its bootstrap CI if cheap, never as a bare headline. A credible P99 would gate on M ≥ 100. **Each percentile carries its own `bootstrap_ci` and a `confidence` tag** (`sound | indicative_low_confidence`, derived from the bootstrap CI width relative to the convergence threshold) — so the schema makes statistical confidence explicit per number and the UI **never renders a low-confidence percentile as a bare headline** (the "report honestly" rule). Bootstrap: resample the M draws with replacement, default 90% CI = P5–P95 of the bootstrap distribution. Exceedance form = "in X% of weather scenarios the project achieves *at least* this." For IRR / NPV / MIRR higher percentile-value = better; for LCOE / payback lower = better.
+- **P50 / P75 / P90 / P95 are the sound, USER-decided headline set at M = 50** — P90/P95 are the bankability/stress tail.
 - A **convergence hint** fires when a metric's CI width exceeds a threshold (default ≥ 2 pp for IRR, ≥ 20% of |P50-NPV| for NPV — locked here, not hardcoded in the frontend): *"wide range — add more weather scenarios."*
 
 **13.10b — Downside-risk panel (the centerpiece — what the USER shows investors/lenders).** The downside is the headline, the upside is context. Six metrics:
@@ -254,7 +255,7 @@ The result is the cross-product **{K deterministic price paths} × {one distribu
 
 **13.10c — M = 1 honesty (binding; carried in the schema by `distribution_valid`).** M = 1 is a **valid fast-iteration mode** but the probabilistic / distributional metrics are then **undefined and must be SUPPRESSED, never shown as proxies**: P(NPV<0)/P(IRR<hurdle) would collapse to binary 0%/100% (reads as "no chance of loss" — affirmatively misleading); CVaR-5%, "worst-case NPV", and the percentiles collapse to the single draw. The `FinanceResult` carries `M` and **`distribution_valid`** (= false whenever M = 1); when `distribution_valid` is false the engine emits **point estimates only** and the percentile / downside-distribution fields are **explicitly absent (a represented "no distribution available"), never fabricated** as P50 = P90 = the single draw. The schema is **identical** to the M = 50 case — an honest collapse, not a silent relabel. At M = 1 the UI shows only the **single-trajectory well-defined** metrics — single-scenario NPV (labelled `"NPV (single scenario)"`, not "worst-case"/"P50"), max cumulative drawdown + year, worst single-year CF — under a prominent non-dismissable banner reproduced on export: *"M = 1 — single scenario; risk distribution requires an ensemble (M ≥ 50)."* **Relative policy ranking is robust at M = 1** under CRN (shared draw), so M = 1 is legitimate for quick comparison; bankability-grade risk needs M ≥ 50.
 
-> **M = 50 default is a USER-authorized OVERRIDE of D31's M = 1 guard (flagged for re-confirm, §13.13-1).** The USER's recorded decision — distributions / CI / downside-risk / price-paths in v1 — is an **explicit override** of D31's "v1 ships M = 1" provision, *not* a soft reconciliation. §13 therefore sets **M = 50 as the v1 default**, retaining **M = 1 as a valid fast-iteration mode** where distributional metrics are suppressed (the §13.10c honesty rule). The schema is identical across M (M = 1 is the M-collapsed case), so no architecture changes — only the *default* and the v1 guard change. **This requires a LINEAGE amendment to D31** (co-authored with rl-architect, landed consistently with this spec PR on USER sign-off). Carried as a named OPEN QUESTION (§13.13-1) so the USER explicitly re-confirms the override at the gate.
+> **M = 50 default is a USER-CONFIRMED override of D31's M = 1 guard (records as LINEAGE D34).** The USER's decision — real distributions / CI / downside-risk / price-paths in v1 — is an **explicit, confirmed override** of D31's "v1 ships M = 1" provision (supersedes D31's M=1 clauses only; the rest of D31 stands). §13 sets **M = 50 as the v1 default**, retaining **M = 1 as a valid fast-iteration mode** where distributional metrics are suppressed (the §13.10c honesty rule). The schema is identical across M (M = 1 is the M-collapsed case), so no architecture changes — only the *default* and the v1 guard change. **Recorded as LINEAGE D34** (co-authored rl-architect + finance-expert; lands with this spec PR on merge).
 
 ---
 
@@ -278,8 +279,8 @@ finance( ensemble:       list[ExtendedPolicyEvalResult],     # M dispatched-year
          finance_config:  FinanceConfig                        # discount (CAPM/curve), tax/debt toggles, horizon, escalation, flags
        ) -> FinanceResult {
          M, distribution_valid,                                 # false at M=1 ⇒ point estimates only, percentile fields absent (§13.10c)
-         per_policy: { View I & II : { P50, P90 of {IRR, NPV(r), MIRR, LCOE, LCOS, payback},   # sound headline pair
-                                       [ P75, P99 ]: optional, indicative (P99 weak at M=50, §13.10a),
+         per_policy: { View I & II : { P50, P75, P90, P95 of {IRR, NPV(r), MIRR, LCOE, LCOS, payback},   # USER headline set
+                                       [ P99 ]: optional, indicative_low_confidence only (dropped from headline, §13.10a),
                                        per_percentile: { value, bootstrap_ci, confidence: sound|indicative_low_confidence },
                                        downside_risk{…},
                                        [ equity_IRR, min_DSCR ]      # debt-toggle-gated — emitted ONLY when debt ON (§13.9)
@@ -287,13 +288,13 @@ finance( ensemble:       list[ExtendedPolicyEvalResult],     # M dispatched-year
          cash_flow_series, npv_vs_r_curve, sensitivity_surface, provenance }   # provenance carries the shared CRN seed
 ```
 
-The two input lists are the two orthogonal axes of §13.4: `ensemble` (the **M** weather draws under CRN → the *one* exceedance distribution) and `price_paths` (deterministic → a sensitivity family); the result is `{K price-paths} × {distribution over M draws}`, never a cross-product distribution. The REST resource below is a thin wrapper over this pure function. **`distribution_valid` is load-bearing** (§13.10c): at M = 1 the percentile/downside-distribution fields are absent, not fabricated. **P50/P90 are the required headline; P75/P99 are optional, CI-annotated, indicative** (§13.10a — P99 weak at M = 50). **DSCR and equity-IRR are debt-toggle-gated** (§13.9): base case pre-tax / all-equity / unlevered → **no DSCR**; these fields are absent (not zero/null) unless the debt toggle is ON — no contract may mark them required.
+The two input lists are the two orthogonal axes of §13.4: `ensemble` (the **M** weather draws under CRN → the *one* exceedance distribution) and `price_paths` (deterministic → a sensitivity family); the result is `{K price-paths} × {distribution over M draws}`, never a cross-product distribution. The REST resource below is a thin wrapper over this pure function. **`distribution_valid` is load-bearing** (§13.10c): at M = 1 the percentile/downside-distribution fields are absent, not fabricated. **P50/P75/P90/P95 are the required headline set; P99 is optional, indicative-only** (dropped from the headline — weak at M = 50, §13.10a). **DSCR and equity-IRR are debt-toggle-gated** (§13.9): base case pre-tax / all-equity / unlevered → **no DSCR**; these fields are absent (not zero/null) unless the debt toggle is ON — no contract may mark them required.
 
 **Delivery — off-wire REST resource.** Finance is an **off-wire batch artifact**: a new REST resource
 
 ```
 GET /api/finance/compare?policies=…&scenario=…
-→ { per policy π : { View I & II : { P50/P90 (sound) + P75/P99 (optional, CI/confidence-annotated, §13.10a) of {NPV(r_base), IRR, MIRR, LCOE, LCOS, payback},
+→ { per policy π : { View I & II : { P50/P75/P90/P95 (headline, CI/confidence-annotated, §13.10a) [+ P99 indicative-only] of {NPV(r_base), IRR, MIRR, LCOE, LCOS, payback},
                                      downside_risk:{ worst_npv, max_drawdown+year, p_npv_neg, p_irr_below_hurdle, cvar5, worst_year_cf },
                                      bootstrap_ci, [equity IRR, min DSCR] },
                      cash_flow_series (per draw, pre-price-path baseline §13.4), npv_vs_r_fan, sensitivity_surface },
@@ -306,20 +307,20 @@ Composes **on top of** the LOCKED D13 identity; does **not** touch the LOCKED `e
 
 ---
 
-### 13.13 Decisions requested at the USER gate
+### 13.13 USER gate decisions — RESOLVED (one item in follow-up discussion)
 
-These are the §13 sign-off items (REBUILD_SPEC change → human-gated). Items 1–9 fold in or refine the master-plan §5.13 list under the later USER directives:
+The §13 sign-off items (REBUILD_SPEC change → human-gated). **The USER reviewed the package and decided** (2026-06-13); statuses below. One item — the CAPM default *values* — is in a separate methodology discussion (the §13 structure is not blocked; values are PROVISIONAL).
 
-1. **Ensemble default M (§13.10) — re-confirm the override:** the USER's recorded decision authorizes **M = 50 default** (with M = 1 as an honest fast-iteration mode, distributional metrics suppressed) as an **explicit override of D31's "v1 M = 1" guard**. Confirm the override stands → **records as LINEAGE D34 on sign-off** (co-authored rl-architect + finance-expert; supersedes D31's M=1 clauses only; lands with this PR, human-gated).
-2. **Downside-risk centerpiece (§13.10b):** confirm the six metrics (worst-case NPV / max loss, max drawdown + year, P(NPV<0), P(IRR<hurdle), CVaR-5%, worst single-year CF) as the headline, upside as context.
-3. **CI & percentiles (§13.10a) — P99 steer:** confirm **P50/P90 as the sound headline pair** at M = 50, with bootstrap CI on each + the convergence-hint thresholds (IRR ≥ 2 pp, NPV ≥ 20% of |P50|). **USER steer requested:** P99 at M = 50 is statistically weak (≈ worst-of-50) — **cap the headline at P90**, or show **P99 indicative-only with its CI** (a credible P99 gates on M ≥ 100)? The schema supports either (P99 is an optional, CI-annotated field).
-4. **Price-path library + INV-FINLAYER (§13.4):** confirm the 5 presets + editable custom curve as a **finance-layer-only** post-hoc transform (the new **INV-FINLAYER** invariant — barred from re-entering dispatch; non-uniform paths raise an explicit retrain flag, never a silent knob), the two-axis separation (M weather draws = Monte-Carlo; price paths = deterministic sensitivity — never conflated), constant-real default, and shared-uniform path default with advanced per-stream paths.
-5. **Discount rate = CAPM (§13.5):** confirm CAPM with time-selected, term-matched CGB r_f; the §13.5b default *values* (β_U 0.55, ERP 6.0%, CRP 0, LPR+125bps, D/E, tax 25%); and the v1 static user-updatable treasury-curve config (live fetch deferred to v2).
-6. **Horizon (§13.6):** **20-yr primary + 10-yr variant** — confirm both.
-7. **Lifecycle replacement (§13.6):** confirm battery replacement at **first-of(10-yr calendar, cycle-life)**; PV-inverter subsystem replacement; cost-side scenario-completeness (non-power devices schema-present, not built); asset-management lines (insurance / grid fee / land / admin) named, none dropped.
-8. **v1 revenue = COMPOSITE (§13.3):** confirm v1 prices the composite of active power-supply streams (export net of import + demand charge), with h2/avoided-cost/token design-proven config-only.
-9. **Carried-over base rulings (D31, confirm unchanged):** D13→cash-flow memo-vs-cash mapping + INV-BASIS/INV-DEG/INV-CURT/INV-VOLL (§13.2); pre-tax all-equity base, tax/debt default-off toggles (§13.9); dual View I/II, View II per-policy headline (§13.1); MIRR alongside IRR (§13.8); ¥-nominal basis with real-year-1 dispatch (D31/F1); extended `PolicyEvalResult` prerequisite (§13.7, task #55); off-wire `/api/finance/compare` (§13.12).
-10. **Econ defaults (§13.6, open §9-4):** ship Chinese 2024/25 benchmark CAPEX/OPEX/lifecycle *values* (cited; task #63 device benchmark library) or leave configurable with no defaults? — the **fields** are fixed here; the **numbers** are this decision.
+1. **✅ RESOLVED — Ensemble default M (§13.10):** **M = 50 confirmed**, with M = 1 retained as an honest fast-iteration mode (distributional metrics suppressed). An explicit override of D31's "v1 M = 1" guard → **records as LINEAGE D34** (co-authored rl-architect + finance-expert; supersedes D31's M=1 clauses only; lands with this PR on merge).
+2. **✅ RESOLVED — Downside-risk centerpiece (§13.10b):** the six metrics confirmed as the headline (worst-case NPV / max loss, max drawdown + year, P(NPV<0), P(IRR<hurdle), CVaR-5%, worst single-year CF), upside as context.
+3. **✅ RESOLVED — Tail percentile (§13.10a):** **headline set = P50/P75/P90/P95** + bootstrap CI on each; **P95 is the decision tail** (≈ 2.5th-worst of 50, defensible). **P99 dropped from the headline** (≈ 0.5th-worst, not credible at M = 50); retained only as optional indicative/low-confidence with CI. Convergence-hint thresholds (IRR ≥ 2 pp, NPV ≥ 20% of |P50|).
+4. **✅ RESOLVED — Price-path library + INV-FINLAYER (§13.4):** the 5 presets + editable custom curve as a **finance-layer-only** post-hoc transform (INV-FINLAYER — barred from dispatch; non-uniform → retrain flag); two-axis separation; constant-real default; shared-uniform path default with advanced per-stream paths.
+5. **🟡 IN DISCUSSION — CAPM default VALUES (§13.5b):** the CAPM **methodology** (r_e = r_f + β·ERP + CRP, time-matched CGB r_f, unlevered base) is **confirmed**; the specific default **values** (β_U, ERP, CRP, cost-of-debt benchmark/tenor, D/E, tax/VAT) are **PROVISIONAL pending a USER methodology discussion** (a separate CAPM decision brief is in flight). The v1 static user-updatable treasury-curve config (live fetch v2) stands. Values carry a `provisional` provenance flag; not locked until the discussion concludes.
+6. **✅ RESOLVED — Horizon (§13.6):** **20-yr primary + 10-yr variant** confirmed.
+7. **✅ RESOLVED — Lifecycle replacement (§13.6):** battery replacement at **first-of(10-yr calendar, cycle-life)**; PV-inverter subsystem replacement; cost-side scenario-completeness; asset-management lines named, none dropped.
+8. **✅ RESOLVED — v1 revenue = COMPOSITE (§13.3):** v1 prices the composite of active power-supply streams (export net of import + demand charge); h2/avoided-cost/token design-proven config-only.
+9. **✅ RESOLVED — Carried-over base rulings (D31, unchanged):** D13→cash-flow memo-vs-cash mapping + INV-BASIS/INV-DEG/INV-CURT/INV-VOLL (§13.2); pre-tax all-equity base, tax/debt default-off toggles (§13.9); dual View I/II, View II per-policy headline (§13.1); MIRR alongside IRR (§13.8); ¥-nominal basis with real-year-1 dispatch (D31/F1); extended `PolicyEvalResult` prerequisite (§13.7, task #55); off-wire `/api/finance/compare` (§13.12).
+10. **✅ RESOLVED — Econ defaults (§13.6):** **SHIP the #63 China benchmark library** CAPEX/OPEX/lifecycle values as cited defaults (overridable). §13's econ layer depends on #63.
 
 ---
 
@@ -334,4 +335,5 @@ These are the §13 sign-off items (REBUILD_SPEC change → human-gated). Items 1
 7. **Replacement = discrete EOL param-reset** — continuous augmentation modeled as a step.
 8. **Static treasury curve in v1** (§13.5/§13.6) — reproducible; live fetch is v2.
 9. **Real-option value ignored** (v2).
-10. **Ensemble fidelity & tail resolution (§13.10).** v1 prices **M = 50** weather draws via §12 block-bootstrap (a v1 prerequisite); P50/P90 are sound, **P99 is indicative-only** (≈ worst-of-50 → high variance), and every percentile is only as valid as the §12 ensemble's statistical fidelity (cited via PR #77 §4.2). Weather is the **only** stochastic axis priced; price paths are deterministic scenarios, not draws.
+10. **Ensemble fidelity & tail resolution (§13.10).** v1 prices **M = 50** weather draws via §12 block-bootstrap (a v1 prerequisite); the headline tail is **P95** (decision percentile; P50/P75/P90/P95 sound), **P99 dropped from the headline** (≈ 0.5th-worst of 50 → not credible; indicative-only if shown), and every percentile is only as valid as the §12 ensemble's statistical fidelity (cited via PR #77 §4.2). Weather is the **only** stochastic axis priced; price paths are deterministic scenarios, not draws.
+11. **CAPM default values PROVISIONAL (§13.5b).** The CAPM methodology is fixed, but β / ERP / CRP / cost-of-debt / D-E / tax default *values* are provisional pending a USER methodology discussion — results computed pre-discussion carry a `provisional` flag.
