@@ -36,3 +36,25 @@ Audited gap: T7-T10 select models by **hardcoded ID lists**, not the `type` fiel
 - **finance-expert APPROVE** — the economics *values* (CAPEX/OPEX/lifetime benchmarks) are finance-expert's domain, not audited here.
 - **rl-architect** — electrolyzer device-type ruling (held) + shared-contract lock + notes C/D.
 - **QA** — qa-engineer verdict closes the task.
+
+---
+
+## D35 electrolyzer follow-up (PR #104) — backend-reviewer
+
+**Reviewer:** backend-reviewer · **Date:** 2026-06-13 · **Scope:** schema (device_model_schema v2.2.0 electrolyzer type) + electrolyzer physics + tests. Economics values (capex/stack_life) = finance-expert's gate.
+
+### Verified sound
+- **Schema (device_model_schema.md v2.2.0):** `electrolyzer` added to the type enum + §1.2 physics catalogue (6 fields, invariants `0<min_load≤1`, `0≤standby<min_load`, …); resolver-INERT note; v2.2.0 versioning row. Additive-minor, no re-LOCK (D35). Clean.
+- **§8.2-verbatim (ALK/PEM):** ALK `min_load=0.20, standby=0.02, e_spec=52, degrad=4, rated=20` and PEM `0.05, 0.01, 55, 8, rated=10` — match the §8.2 (PEM|Alkaline) table **exactly** (rated_mw is a sizing field, not a §8.2 table value; warmup_minutes provisional per D35 cond. 1).
+- **AEM/SOEC (benchmark-sourced):** all 6 invariants hold; IDs match rated MW (`-aem-2.4mw`, `-soec-5mw`); provenance `public; Enapter…` / `public; Sunfire/Bloom…`.
+- **D35 guardrails:** all 4 under the `# H₂ SCENARIO — GATED, INERT REFERENCE DATA (LINEAGE D35)` subsection; `type: electrolyzer`; all provenance `public;`; resolver.py + site_gansu.yaml **untouched** (INERT preserved; no site `assets:` reference).
+- **T11/T12:** restored; hand-computed invariants + monotonics (e_spec SOEC 40 < ALK 52 < PEM 55; degrad 4<8<10<15; ALK min_load 0.20 > PEM 0.05) match the YAML.
+
+### Reviewer-added test updates (this PR; CLAUDE.md — I own these)
+- `test_every_model_has_valid_type`: `VALID_TYPES += "electrolyzer"` (D35).
+- `test_per_type_coverage_exhaustive`: `covered |= set(ELY_IDS)` — the 4 electrolyzer entries now covered (exhaustive coverage preserved; `dangling` guard confirms all 4 IDs exist). Suite 118/118.
+
+### REQUEST_CHANGES — contract-text staleness (contract contradicts shipped YAML/tests)
+1. **L363** — T2 `EXPECTED_IDS` lists `"electrolyzer-aem-1mw"`, a non-existent id; the entry + `ELY_IDS` + YAML use `electrolyzer-aem-2.4mw`. Fix to `-2.4mw`.
+2. **L345** — T1 says `schema_version: "2.1.0"`, but `test_schema_version` asserts `"2.2.0"`. Fix to `2.2.0`.
+3. **L37** — "schema_version bumps from `2.0.0` to `2.1.0`" is stale (this PR is `2.1.0`→`2.2.0`). Fix the range.
