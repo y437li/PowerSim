@@ -31,36 +31,41 @@ import userEvent from "@testing-library/user-event";
 
 // ── Dynamic imports so tests fail gracefully (red-first) before implementation ──
 
+// @vite-ignore comments below: vite:import-analysis resolves dynamic imports
+// statically at transform time, which fails for not-yet-implemented modules.
+// These directives let the import fall through to runtime so each test fails
+// with a "module not found" error (red-first intent) rather than a transform
+// error that prevents the entire test file from loading.
 async function loadStageOneConfig() {
-  const mod = await import("../../src/components/wizard/StageOneConfig");
+  const mod = await import(/* @vite-ignore */ "../../src/components/wizard/StageOneConfig");
   return mod.StageOneConfig;
 }
 async function loadMapPicker() {
-  const mod = await import("../../src/components/wizard/MapPicker");
+  const mod = await import(/* @vite-ignore */ "../../src/components/wizard/MapPicker");
   return mod.MapPicker;
 }
 async function loadDeviceFleetTable() {
-  const mod = await import("../../src/components/wizard/DeviceFleetTable");
+  const mod = await import(/* @vite-ignore */ "../../src/components/wizard/DeviceFleetTable");
   return mod.DeviceFleetTable;
 }
 async function loadScenarioComposer() {
-  const mod = await import("../../src/components/wizard/ScenarioComposer");
+  const mod = await import(/* @vite-ignore */ "../../src/components/wizard/ScenarioComposer");
   return mod.ScenarioComposer;
 }
 async function loadValidationPanel() {
-  const mod = await import("../../src/components/wizard/ValidationPanel");
+  const mod = await import(/* @vite-ignore */ "../../src/components/wizard/ValidationPanel");
   return mod.ValidationPanel;
 }
 async function loadStageSaveButton() {
-  const mod = await import("../../src/components/wizard/StageSaveButton");
+  const mod = await import(/* @vite-ignore */ "../../src/components/wizard/StageSaveButton");
   return mod.StageSaveButton;
 }
 async function loadUseSiteMetaForm() {
-  const mod = await import("../../src/hooks/useSiteMetaForm");
+  const mod = await import(/* @vite-ignore */ "../../src/hooks/useSiteMetaForm");
   return mod.useSiteMetaForm;
 }
 async function loadTypes() {
-  return await import("../../src/types/stageConfig");
+  return await import(/* @vite-ignore */ "../../src/types/stageConfig");
 }
 
 // ── Shared API mock helpers ──
