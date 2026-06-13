@@ -342,6 +342,75 @@ def test_sst_stub_economics_empty(models):
     )
 
 
+# ── Reviewer-added cases (backend-reviewer) ──────────────────────────────────
+# Gap audited: the per-type tests T7-T10 select models by HARDCODED ID lists, not by
+# the `type` field. Consequences: (a) `type` (the schema discriminator) is never
+# validated, and (b) a future benchmark entry added to the YAML but omitted from a
+# per-type ID list silently escapes ALL physics validation — the same fixture-drift
+# class flagged on PR #101. These cases pin `type`, make per-type coverage exhaustive,
+# enforce the §1 provenance-format standard, and add an MW/kW unit-slip guard.
+
+VALID_TYPES = {"wind_turbine", "pv_panel", "battery", "grid_connection"}
+# electrolyzer is HELD (contract §2/§7) — no electrolyzer entries should ship until
+# rl-architect rules on the new device type; excluded from the valid set on purpose.
+
+
+# reviewer: backend-reviewer (type discriminator is untested by T7-T10)
+def test_every_model_has_valid_type(models):
+    """Every model must declare a `type` in the valid enum. electrolyzer must NOT
+    appear yet (held). Hand-check: 13 entries, all in
+    {wind_turbine, pv_panel, battery, grid_connection}."""
+    for mid, e in models.items():
+        assert "type" in e, f"{mid!r} missing 'type' field"
+        assert e["type"] in VALID_TYPES, (
+            f"{mid!r} type={e.get('type')!r} not in {sorted(VALID_TYPES)} "
+            "(electrolyzer is HELD pending rl-architect; no electrolyzer entry should ship)"
+        )
+
+
+# reviewer: backend-reviewer (close the per-type coverage drift gap)
+def test_per_type_coverage_exhaustive(models):
+    """The per-type ID lists must EXHAUSTIVELY cover every model in the YAML, so no
+    entry escapes T7-T10 physics validation. Fails if a future entry is added to the
+    YAML (or EXPECTED_IDS) without being added to the matching per-type list.
+    Hand-check: WIND(4)+PV(3)+BAT(3)+GRID(3) = 13 = len(models)."""
+    covered = set(WIND_IDS) | set(PV_IDS) | set(BAT_IDS) | set(GRID_IDS)
+    all_ids = set(models.keys())
+    uncovered = all_ids - covered
+    assert not uncovered, (
+        f"models present in YAML but covered by NO per-type physics test: {sorted(uncovered)}. "
+        "Add each to the matching WIND_IDS/PV_IDS/BAT_IDS/GRID_IDS list — otherwise it ships "
+        "physics-unvalidated (the PR #101 fixture-drift class)."
+    )
+    dangling = covered - all_ids
+    assert not dangling, f"per-type ID lists reference absent models: {sorted(dangling)}"
+
+
+# reviewer: backend-reviewer (§1 provenance format, not just non-empty per T4)
+def test_provenance_access_keyword(models):
+    """§1: provenance MUST start with a valid access keyword. Hand-check: all public
+    entries start 'public; …'; the SST stub is exactly 'USER-provided, pending'."""
+    for mid, e in models.items():
+        prov = e.get("provenance", "")
+        assert prov.startswith("public") or prov == "USER-provided, pending", (
+            f"{mid!r} provenance must start with access keyword 'public' or be exactly "
+            f"'USER-provided, pending' (contract §1); got {prov!r}"
+        )
+
+
+# reviewer: backend-reviewer (MW/kW unit-slip guard; §6 silent-unit-mismatch class)
+def test_wind_rated_mw_unit_sanity(models):
+    """A single onshore turbine's rated power is O(1-15) MW; a kW value (e.g. 6000)
+    would pass T7c (>0) silently. Guard 0 < rated_mw_per_unit < 50.
+    Hand-check: vestas 4.2, goldwind 6.0, envision 3.6, windey 3.0 — all in (0,50)."""
+    for mid in WIND_IDS:
+        r = models[mid]["physics"]["rated_mw_per_unit"]
+        assert 0 < r < 50, (
+            f"{mid}: rated_mw_per_unit={r} outside plausible single-turbine MW range (0,50) — "
+            "likely a kW/MW unit error"
+        )
+
+
 # ── T15 — Gansu entries have provenance (reviewer:) ───────────────────────────
 
 GANSU_IDS = ["vestas-v150-4.2", "trina-vertex-n-670w", "catl-lmp-300mwh", "pcc-substation-945mw"]
