@@ -234,7 +234,7 @@ The finance interface takes, **per policy, an ENSEMBLE of M weather draws — ea
 **Common Random Numbers (CRN) — binding.** All policies in a single comparison consume the **same M weather draws** (shared seed / identical ensemble), so per-policy metric deltas are **pure dispatch** (P2), not weather noise. The shared seed travels in provenance.
 
 ```
-input   : ensembles[policy_id] = { draw_m : m = 1…M },          # per policy: M weather draws, SAME draws ∀ policies (CRN);
+input   : ensemble.runs[policy_id] = { draw_m : m = 1…M },       # per policy: M draws; index m = SAME draw ∀ policies (CRN, seed on ensemble)
           draw_m = [ ExtendedPolicyEvalResult(year n) : n = 1…N ]   # each draw = C's full N-year degraded trajectory (§13.7, F-B)
 per draw: cash_flow_m (N-year, after §13.4 price path) → { NPV_m(r), IRR_m, MIRR_m, LCOE_m, LCOS_m, payback_m }
 output  : { M, distribution_valid,                              # distribution_valid=false ⇒ point estimates only (§13.10c)
@@ -278,19 +278,15 @@ The result is the cross-product **{K deterministic price paths} × {one distribu
 **Pure cash-flow-engine function boundary (the contract surface backend-reviewer gates).** The finance engine is a **pure function** of explicit inputs — no I/O, no network, no hidden global state (the treasury curve is passed in via `finance_config`, §13.6):
 
 ```
-finance( ensembles:      dict[policy_id, list[ M draws of (N-year ExtendedPolicyEvalResult trajectory) ]],
-                                                              # the POLICY axis (P policies) × the STOCHASTIC axis (M weather draws,
-                                                              #   CRN: the SAME M draws ∀ policies). MUST include the §11 NoBattery
-                                                              #   baseline policy so View II (incremental) is computed internally.
-                                                              #   Each draw = workstream-C's full N-year DEGRADED-physics trajectory
-                                                              #   (N ExtendedPolicyEvalResult, one per project year) — §13.7/F-B.
+finance( ensemble:       PolicyEnsemble,                      # the POLICY axis + the STOCHASTIC (M) axis, typed so CRN is structural
          price_paths:     list[PricePath],                    # deterministic finance scenarios, the sensitivity axis (§13.4)
-         econ:            DeviceEconParams,                    # per-device CAPEX/OPEX/lifecycle (§13.6, device_models.yaml)
-         finance_config:  FinanceConfig                        # discount (CAPM/curve), tax/debt toggles, horizon, escalation, flags
+         econ:            DeviceEconParams,                    # SHARED across policies — NOT per-policy (P2: same CAPEX/scenario, §13.1)
+         finance_config:  FinanceConfig                        # discount (CAPM/curve), tax/debt toggles, horizon, escalation, flags,
+                                                              #   + baseline_policy_id (the no-battery ref for View II)
        ) -> FinanceResult {
          M, distribution_valid,                                 # false at M=1 ⇒ point estimates only, distributional fields absent (§13.10c)
          requires_retrain,                                      # true if any non-uniform/stream-specific price_path applied (INV-FINLAYER, §13.4)
-         per_policy: { View I & II : { P50, P75, P90, P95 of {IRR, NPV(r), MIRR, LCOE, LCOS, payback},   # USER headline set
+         per_policy: { policy_id -> { View I & II : { P50, P75, P90, P95 of {IRR, NPV(r), MIRR, LCOE, LCOS, payback},   # USER set
                                        [ P99 ]: optional, indicative_low_confidence only (dropped from headline, §13.10a),
                                        per_percentile: { value, bootstrap_ci, confidence: sound|indicative_low_confidence },
                                        downside_risk: {
@@ -299,11 +295,23 @@ finance( ensembles:      dict[policy_id, list[ M draws of (N-year ExtendedPolicy
                                          distributional:    { worst_case_npv_yuan, p_npv_neg, p_irr_below_hurdle, cvar5_yuan } },
                                                                                           # ABSENT when distribution_valid=false (M=1)
                                        [ equity_IRR, min_DSCR ]      # debt-toggle-gated — emitted ONLY when debt ON (§13.9)
-                                     } per price_path },
-         cash_flow_series, npv_vs_r_curve, sensitivity_surface, provenance }   # provenance carries the shared CRN seed
+                                     } per price_path } },
+         cash_flow_series, npv_vs_r_curve, sensitivity_surface, provenance }   # provenance carries seed + M (CRN)
+
+PolicyEnsemble = {
+    seed: int,                       # the shared CRN seed — structural, travels into provenance
+    M:    int,                       # ensemble size (default 50, D34)
+    runs: dict[policy_id -> list[ length-M; each = an N-year ExtendedPolicyEvalResult trajectory (§13.7/F-B) ]]
+}
 ```
 
-**Input axes (three, kept distinct).** (1) **POLICY** — `ensembles` is keyed by `policy_id` (P policies), so the `per_policy{}` output, **CRN** (the dict's value-lists share the same M weather draws), and **View II** (incremental-vs-no-battery) all fall out of one well-typed input — the dict **must include the §11 NoBattery baseline policy** so View II is computed internally, not passed separately. (2) **STOCHASTIC** — the **M** weather draws under CRN → the *one* exceedance distribution (§13.10). (3) **DETERMINISTIC** — `price_paths` → a sensitivity family (§13.4); the result is `{K price-paths} × {distribution over M draws}`, **never** a cross-product distribution. *(Alternative implementation: keep `finance()` single-policy + an explicit `baseline_ensemble` and fan over policies in the REST wrapper; the dict form is preferred so CRN/View-II are type-enforced — backend-reviewer F-A.)* The REST resource below is a thin wrapper over this pure function. **`distribution_valid` is load-bearing** (§13.10c): at M = 1 only the `single_trajectory` downside metrics + point estimates are present; the `distributional` block and the percentiles are **absent, not fabricated**. **P50/P75/P90/P95 are the required headline set; P99 is optional, indicative-only.** **DSCR and equity-IRR are debt-toggle-gated** (§13.9): absent (not zero/null) unless the debt toggle is ON — no contract may mark them required.
+**Binding invariants on the `finance()` boundary (the load-bearing part — settle dict-vs-typed-struct with backend-reviewer; the typed `PolicyEnsemble` is preferred so the CRN seed is structural, not implicit):**
+1. **CRN (D34):** every policy's list in `runs` has length `M`, and **index `m` = the SAME weather draw** (generated from `ensemble.seed`) across **all** policies. That index-alignment is what makes per-policy deltas pure dispatch (P2); the shared `seed` lives on the ensemble (not `finance_config`) so CRN is structurally visible and travels into `provenance`.
+2. **Shared econ/scenario (P2, §13.1):** `econ`, `price_paths`, and the M weather draws are **identical across policies**; only the dispatched results (the `ExtendedPolicyEvalResult` contents) differ. `econ` is a single shared arg — **not** per-policy (all §11 policies share CAPEX + scenario, differ only in dispatch).
+3. **View II:** requires `finance_config.baseline_policy_id ∈ ensemble.runs.keys()` (the no-battery reference). If absent → only **View I** (absolute) is produced and View II is **omitted, never fabricated**.
+4. **Three distinct dimensions; axis separation preserved (INV-FINLAYER):** **policy** (side-by-side comparison) × **M weather** (the ONE stochastic/distributional axis) × **price_paths** (deterministic sensitivity family). The distribution is still over **M only** (`{K price-paths} × {one distribution over M draws}`, never cross-producted); F-A adds the policy axis but does **not** touch the M-only-is-stochastic rule.
+
+`per_policy` falls out of `runs`' keys; View II from `baseline_policy_id`; CRN from the shared `seed` + index-alignment; the exceedance distribution still over M. The REST resource below is a thin wrapper over this pure function. **`distribution_valid` is load-bearing** (§13.10c): at M = 1 only the `single_trajectory` downside metrics + point estimates are present; the `distributional` block and percentiles are **absent, not fabricated**. **DSCR/equity-IRR are debt-toggle-gated** (§13.9): absent (not zero/null) unless the debt toggle is ON.
 
 **Delivery — off-wire REST resource.** Finance is an **off-wire batch artifact**: a new REST resource
 
