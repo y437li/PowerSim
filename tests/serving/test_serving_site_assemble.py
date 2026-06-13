@@ -38,12 +38,17 @@ def client():
 
 
 # Canonical Gansu wizard request matching site_gansu.yaml fleet.
+# Fleet entry shapes (§3.1):
+#   wind_turbine:    { model_id, count }            — count required
+#   pv_panel:        { model_id, fleet_capacity_mw } — count absent (no per-unit MW in schema)
+#   battery:         { model_id, count }            — count required
+#   grid_connection: { model_id }                   — count absent (always one per site)
 GANSU_FLEET_REQUEST = {
     "fleet": [
-        {"model_id": "vestas-v150-4.2",     "count": 146},
-        {"model_id": "trina-vertex-n-670w",  "count": 1, "fleet_capacity_mw": 330.0},
-        {"model_id": "catl-lmp-300mwh",      "count": 1},
-        {"model_id": "pcc-substation-945mw", "count": 1},
+        {"model_id": "vestas-v150-4.2",    "count": 146},
+        {"model_id": "trina-vertex-n-670w", "fleet_capacity_mw": 330.0},
+        {"model_id": "catl-lmp-300mwh",    "count": 1},
+        {"model_id": "pcc-substation-945mw"},
     ],
     "tariff_region": "cn-gansu",
 }
@@ -190,6 +195,7 @@ class TestSiteConfigAlwaysPresent:
         req = {
             "fleet": [
                 {"model_id": "vestas-v150-4.2", "count": 10},
+                {"model_id": "pcc-substation-945mw"},
             ],
             "tariff_region": "cn-gansu",
         }
@@ -208,6 +214,7 @@ class TestSiteConfigAlwaysPresent:
         req = {
             "fleet": [
                 {"model_id": "vestas-v150-4.2", "count": 50},
+                {"model_id": "pcc-substation-945mw"},
             ],
             "tariff_region": "cn-gansu",
         }
@@ -334,8 +341,9 @@ class TestHttp400Codes:
         """§I4-PV_FLEET_CAPACITY_REQUIRED: pv_panel entry with no fleet_capacity_mw → 400."""
         resp = client.post("/api/site/assemble", json={
             "fleet": [
-                {"model_id": "trina-vertex-n-670w", "count": 1},
-                # No fleet_capacity_mw — pv_panel has no panel_mw_per_unit in schema
+                # pv_panel entry with no fleet_capacity_mw and no count — device model
+                # has no panel_mw_per_unit so capacity cannot be inferred
+                {"model_id": "trina-vertex-n-670w"},
             ],
             "tariff_region": "cn-gansu",
         })
@@ -365,8 +373,8 @@ class TestFleetMerge:
                 {"model_id": "vestas-v150-4.2", "count": 100},
                 {"model_id": "vestas-v150-4.2", "count": 46},
                 {"model_id": "catl-lmp-300mwh", "count": 1},
-                {"model_id": "pcc-substation-945mw", "count": 1},
-                {"model_id": "trina-vertex-n-670w", "count": 1, "fleet_capacity_mw": 330.0},
+                {"model_id": "pcc-substation-945mw"},
+                {"model_id": "trina-vertex-n-670w", "fleet_capacity_mw": 330.0},
             ],
             "tariff_region": "cn-gansu",
         }
@@ -381,10 +389,10 @@ class TestFleetMerge:
         # 200 + 130 = 330.0 MW
         req = {
             "fleet": [
-                {"model_id": "trina-vertex-n-670w", "count": 1, "fleet_capacity_mw": 200.0},
-                {"model_id": "trina-vertex-n-670w", "count": 1, "fleet_capacity_mw": 130.0},
+                {"model_id": "trina-vertex-n-670w", "fleet_capacity_mw": 200.0},
+                {"model_id": "trina-vertex-n-670w", "fleet_capacity_mw": 130.0},
                 {"model_id": "catl-lmp-300mwh", "count": 1},
-                {"model_id": "pcc-substation-945mw", "count": 1},
+                {"model_id": "pcc-substation-945mw"},
             ],
             "tariff_region": "cn-gansu",
         }
@@ -406,8 +414,8 @@ class TestMissingAssetsValidationErrors:
         req = {
             "fleet": [
                 {"model_id": "vestas-v150-4.2", "count": 146},
-                {"model_id": "trina-vertex-n-670w", "count": 1, "fleet_capacity_mw": 330.0},
-                {"model_id": "pcc-substation-945mw", "count": 1},
+                {"model_id": "trina-vertex-n-670w", "fleet_capacity_mw": 330.0},
+                {"model_id": "pcc-substation-945mw"},
             ],
             "tariff_region": "cn-gansu",
         }
@@ -422,7 +430,7 @@ class TestMissingAssetsValidationErrors:
         req = {
             "fleet": [
                 {"model_id": "vestas-v150-4.2", "count": 146},
-                {"model_id": "pcc-substation-945mw", "count": 1},
+                {"model_id": "pcc-substation-945mw"},
             ],
             "tariff_region": "cn-gansu",
         }
@@ -613,12 +621,12 @@ class TestPvFleetCapacity:
 
     def test_pv_capacity_direct(self, client):
         """fleet_capacity_mw = 250.0 → assets.solar.fleet_capacity_mw = 250.0 MW."""
-        # Direct: 250.0 MW PV
+        # Direct: 250.0 MW PV (no count — pv_panel has no per-unit MW in schema)
         req = {
             "fleet": [
-                {"model_id": "trina-vertex-n-670w", "count": 1, "fleet_capacity_mw": 250.0},
+                {"model_id": "trina-vertex-n-670w", "fleet_capacity_mw": 250.0},
                 {"model_id": "catl-lmp-300mwh", "count": 1},
-                {"model_id": "pcc-substation-945mw", "count": 1},
+                {"model_id": "pcc-substation-945mw"},
             ],
             "tariff_region": "cn-gansu",
         }
@@ -627,11 +635,11 @@ class TestPvFleetCapacity:
         solar_mw = resp.json()["site_config"]["assets"]["solar"]["fleet_capacity_mw"]
         assert math.isclose(solar_mw, 250.0, rel_tol=1e-9), f"Expected 250.0 MW; got {solar_mw}"
 
-    def test_pv_zero_fleet_capacity_produces_400_not_200(self, client):
-        """fleet_capacity_mw = 0.0 for PV → 400 (invalid, must be > 0)."""
+    def test_pv_zero_fleet_capacity_produces_400(self, client):
+        """fleet_capacity_mw = 0.0 for PV → 400 (capacity must be > 0 MW)."""
         req = {
             "fleet": [
-                {"model_id": "trina-vertex-n-670w", "count": 1, "fleet_capacity_mw": 0.0},
+                {"model_id": "trina-vertex-n-670w", "fleet_capacity_mw": 0.0},
             ],
             "tariff_region": "cn-gansu",
         }
@@ -639,23 +647,23 @@ class TestPvFleetCapacity:
         assert resp.status_code == 400
 
     def test_pv_negative_fleet_capacity_produces_400(self, client):
-        """fleet_capacity_mw = -10.0 → 400 FLEET_COUNT_INVALID or similar."""
+        """fleet_capacity_mw = -10.0 → 400 (negative capacity is invalid)."""
         req = {
             "fleet": [
-                {"model_id": "trina-vertex-n-670w", "count": 1, "fleet_capacity_mw": -10.0},
+                {"model_id": "trina-vertex-n-670w", "fleet_capacity_mw": -10.0},
             ],
             "tariff_region": "cn-gansu",
         }
         resp = client.post("/api/site/assemble", json=req)
         assert resp.status_code == 400
 
-    def test_pv_no_count_does_not_crash(self, client):
-        """pv_panel entry with count=1 and fleet_capacity_mw is valid."""
+    def test_pv_with_fleet_capacity_mw_valid(self, client):
+        """pv_panel entry with fleet_capacity_mw (no count) is accepted."""
         req = {
             "fleet": [
-                {"model_id": "trina-vertex-n-670w", "count": 1, "fleet_capacity_mw": 100.0},
+                {"model_id": "trina-vertex-n-670w", "fleet_capacity_mw": 100.0},
                 {"model_id": "catl-lmp-300mwh", "count": 1},
-                {"model_id": "pcc-substation-945mw", "count": 1},
+                {"model_id": "pcc-substation-945mw"},
             ],
             "tariff_region": "cn-gansu",
         }
@@ -692,9 +700,9 @@ class TestEdgeCases:
         """Fleet list order does not affect assembly result (wind still goes to wind category)."""
         req_reversed = {
             "fleet": [
-                {"model_id": "pcc-substation-945mw", "count": 1},
+                {"model_id": "pcc-substation-945mw"},
                 {"model_id": "catl-lmp-300mwh", "count": 1},
-                {"model_id": "trina-vertex-n-670w", "count": 1, "fleet_capacity_mw": 330.0},
+                {"model_id": "trina-vertex-n-670w", "fleet_capacity_mw": 330.0},
                 {"model_id": "vestas-v150-4.2", "count": 146},
             ],
             "tariff_region": "cn-gansu",
@@ -708,7 +716,7 @@ class TestEdgeCases:
         req = {
             "fleet": [
                 {"model_id": "catl-lmp-300mwh", "count": 2},
-                {"model_id": "pcc-substation-945mw", "count": 1},
+                {"model_id": "pcc-substation-945mw"},
             ],
             "tariff_region": "cn-gansu",
         }

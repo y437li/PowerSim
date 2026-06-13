@@ -66,9 +66,9 @@ and immediately validate it, returning the result in one response.
 {
   "fleet": [
     { "model_id": "vestas-v150-4.2",     "count": 146 },
-    { "model_id": "trina-vertex-n-670w",  "count": 1,  "fleet_capacity_mw": 330.0 },
+    { "model_id": "trina-vertex-n-670w",  "fleet_capacity_mw": 330.0 },
     { "model_id": "catl-lmp-300mwh",      "count": 1  },
-    { "model_id": "pcc-substation-945mw", "count": 1  }
+    { "model_id": "pcc-substation-945mw" }
   ],
   "tariff_region": "cn-gansu",
   "site_meta": {
@@ -96,11 +96,18 @@ A non-empty list of fleet entries. Each entry:
 | Field | Type | Required | Constraint |
 |---|---|---|---|
 | `model_id` | string | yes | must exist in device_models.yaml |
-| `count` | int | yes | ≥ 1 |
+| `count` | int | **required for `wind_turbine` and `battery`** | ≥ 1; absent for `pv_panel` and `grid_connection` |
 | `fleet_capacity_mw` | float | **required for `pv_panel`** | > 0; MW; see §3.1.1 |
 
+**`count` by device type:**
+- `wind_turbine`: required (server computes `fleet_rated_mw = count × rated_mw_per_unit`)
+- `battery`: required (server computes `fleet_capacity_mwh = count × capacity_mwh_per_unit`,
+  `fleet_power_mw = count × power_mw_per_unit`)
+- `pv_panel`: absent or ignored — fleet is specified by `fleet_capacity_mw` directly
+- `grid_connection`: absent or ignored — model implies max_export/import; always one per site
+
 **Merge rule:** multiple entries with the SAME `model_id` are merged before assembly
-(their `count` values and, for `pv_panel`, `fleet_capacity_mw` values are summed).
+(`count` values summed for wind/battery; `fleet_capacity_mw` values summed for PV).
 Merged before type-conflict checking.
 
 **Type-conflict rule (`FLEET_MIXED_MODEL`):** after merging by `model_id`, each
@@ -111,18 +118,22 @@ is category-keyed (one model per asset category) per device_model_schema §3.3.
 
 #### 3.1.1 `fleet_capacity_mw` for `pv_panel`
 
-The current `pv_panel` device model schema has NO `panel_mw_per_unit` physics field
-(device_model_schema.md §1.2 confirmed — only `k_T_per_c`, `eta_inverter`,
-`degradation_yr1`). Utility-scale PV fleets are specified as a total MW capacity,
-not as individual panel counts. Therefore:
+The `pv_panel` device model schema has NO `panel_mw_per_unit` physics field —
+device_model_schema.md §1.2 lists only `k_T_per_c`, `eta_inverter`,
+`degradation_yr1`. Utility-scale PV fleets are specified as a total MW capacity,
+not as individual panel counts (spec-intentional; see device_model_schema §3.2:
+"Required at site — fleet_capacity_mw"). Therefore:
 - For `pv_panel` fleet entries: `fleet_capacity_mw` (MW, float > 0) is **required**.
-- `count` is still required (≥ 1) for display/audit purposes (e.g., number of
-  string arrays), but it is NOT used in the MW computation.
+- `count` is **absent** — there is no meaningful unit count for PV (unlike wind
+  turbines or battery BESS units). The wizard UI shows "Fleet capacity (MWp)"
+  instead of "Count" for PV rows.
 - If a future `pv_panel` model adds `panel_mw_per_unit`, the server uses
-  `fleet_capacity_mw` from the entry when provided; falls back to
-  `count × panel_mw_per_unit` only if `fleet_capacity_mw` is absent.
-- If `fleet_capacity_mw` is absent AND the model has no `panel_mw_per_unit` →
-  HTTP 400 `PV_FLEET_CAPACITY_REQUIRED`.
+  `fleet_capacity_mw` when provided; may fall back to `count × panel_mw_per_unit`
+  only if `fleet_capacity_mw` is absent. That extension is out of scope here.
+- If `fleet_capacity_mw` is absent for a `pv_panel` entry → HTTP 400
+  `PV_FLEET_CAPACITY_REQUIRED`.
+- `fleet_capacity_mw = 0` or negative → HTTP 400 `FLEET_COUNT_INVALID` (capacity
+  must be > 0 MW).
 
 ### 3.2 `tariff_region` (required)
 
@@ -242,12 +253,12 @@ request omitted `site_meta` entirely.
 
 ### 4.2 Assembly rules (single-source in `site_assembly.py`)
 
-| Device type | `assets` key | Assembled fields |
-|---|---|---|
-| `wind_turbine` | `wind` | `model`: first model_id; `fleet_rated_mw` = Σ(`count` × `physics.rated_mw_per_unit`) across merged entries; unit: MW |
-| `pv_panel` | `solar` | `model`: first model_id; `fleet_capacity_mw` = Σ `fleet_capacity_mw` across merged entries; unit: MW |
-| `battery` | `battery` | `model`: first model_id; `fleet_capacity_mwh` = Σ(`count` × `physics.capacity_mwh_per_unit`) MWh; `fleet_power_mw` = Σ(`count` × `physics.power_mw_per_unit`) MW |
-| `grid_connection` | `grid` | `model`: first model_id; NO `max_export_mw`/`max_import_mw` in assembled dict (resolver reads from model physics directly) |
+| Device type | `assets` key | Input | Assembled fields |
+|---|---|---|---|
+| `wind_turbine` | `wind` | `count` (required) | `model`: first model_id; `fleet_rated_mw` = Σ(`count` × `physics.rated_mw_per_unit`) MW |
+| `pv_panel` | `solar` | `fleet_capacity_mw` (required; no count) | `model`: first model_id; `fleet_capacity_mw` = Σ `fleet_capacity_mw` across merged entries; MW |
+| `battery` | `battery` | `count` (required) | `model`: first model_id; `fleet_capacity_mwh` = Σ(`count` × `physics.capacity_mwh_per_unit`) MWh; `fleet_power_mw` = Σ(`count` × `physics.power_mw_per_unit`) MW |
+| `grid_connection` | `grid` | `model_id` only (no count) | `model`: model_id only; NO `max_export_mw`/`max_import_mw` in assembled dict (resolver reads from model physics directly) |
 
 **Device type absent from fleet:** that asset category key is omitted from
 `site_config.assets`. Example: no battery in fleet → `assets.battery` absent.
