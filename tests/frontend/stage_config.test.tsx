@@ -1202,7 +1202,7 @@ describe("§T9 API call debounce and race-condition guard", () => {
     // PV entry: { model_id, fleet_capacity_mw } — NO count
     const pvEntry = body.fleet.find(e => e.model_id === "trina-vertex-n-670w");
     expect(pvEntry).toBeDefined();
-    expect(pvEntry!.fleet_capacity_mw).toBe(330.0);  // ¥/MWh direct — no panel_mw_per_unit
+    expect(pvEntry!.fleet_capacity_mw).toBe(330.0);  // MW direct — no panel_mw_per_unit in schema
     expect(pvEntry!.count).toBeUndefined();           // must NOT appear for PV
 
     // Battery entry: { model_id, count }
@@ -1721,27 +1721,45 @@ describe("§T15 S1 ack-clearing + S2 rehydrate-COMPLETE", () => {
   });
 
   it("[T-S2-REHYDRATE] rehydrating COMPLETE immediately transitions to IN_PROGRESS", async () => {
-    // §3.2 S2: a persisted COMPLETE state is treated as stale on rehydrate.
-    // The store must transition to IN_PROGRESS and NOT allow Continue until fresh assemble.
+    // §3.2 S2: a persisted COMPLETE state must NOT enable Continue without a fresh assemble.
+    // The implementation hooks onRehydrateStorage (or a StageOneConfig mount effect) to
+    // downgrade COMPLETE → IN_PROGRESS on rehydrate.
+    //
+    // IMPORTANT: use the persist.rehydrate() path — NOT useStageOneStore.setState(). Direct
+    // setState bypasses Zustand persist's onRehydrateStorage entirely; a correct impl that
+    // only hooks rehydration would leave stageState === COMPLETE after a plain setState,
+    // making a setState-based test passable only by a wrong "downgrade-on-every-setState" hack.
+
     const { useStageOneStore } = await import("../../src/stores/stageOneStore");
 
-    // Simulate rehydration by directly injecting COMPLETE state
-    await act(async () => {
-      useStageOneStore.setState({
+    // Seed localStorage with a COMPLETE state (simulates data written by a prior session save).
+    const persistedSnapshot = {
+      state: {
         stageState: "COMPLETE",
         lastValidation: { errors: [], warnings: [] },
         acknowledgedWarnings: [],
         fleet: [{ id: "vestas-v150-4.2", count: 1, valid: true }],
-      });
+        tariffRegion: "cn-gansu",
+        siteName: "Gansu demo",
+        province: "Gansu",
+        location: { lat: 38.5, lon: 102.0 },
+        weatherMode: "synthetic",
+      },
+      version: 0,
+    };
+    localStorage.setItem("energygo.stage1", JSON.stringify(persistedSnapshot));
+
+    // Trigger Zustand persist rehydration (equivalent to a page reload).
+    // onRehydrateStorage fires during this call and must downgrade COMPLETE → IN_PROGRESS.
+    await act(async () => {
+      await useStageOneStore.persist.rehydrate();
     });
 
-    // The store's rehydrate logic (or StageOneConfig mount effect) must downgrade to IN_PROGRESS
-    // before rendering: the button should be enabled only after a fresh assemble confirms clean.
-    // Render the button with the store's current state:
-    const StageSaveButton = await loadStageSaveButton();
-    const state = useStageOneStore.getState();
-    // After rehydrate hook fires, stageState must be IN_PROGRESS (not COMPLETE)
-    expect(state.stageState).not.toBe("COMPLETE");
+    // S2: stageState must have been downgraded — fresh assemble needed before Continue is enabled.
+    expect(useStageOneStore.getState().stageState).toBe("IN_PROGRESS");
+
+    // Clean up
+    localStorage.removeItem("energygo.stage1");
   });
 });
 
