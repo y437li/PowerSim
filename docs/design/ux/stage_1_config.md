@@ -173,9 +173,34 @@ Selecting Historical/Bootstrap while the coverage check is still loading shows a
 |--------|-------|------|-----------|
 | Device ID | flex | Autocomplete text input | Queries `GET /api/devices?q=…` (debounced 200 ms); shows dropdown of matching IDs from device_models.yaml |
 | Type | 2rem | Read-only icon | Resolved from device model: W=wind, S=solar, B=battery, G=grid |
-| Count | 5rem | Integer input | min=1, max=999; spinner ↑↓; keyboard arrows |
-| Capacity | flex | Read-only text | `n × capacity_mw MW` or `n × capacity_mwh MWh / peak_mw MW` (from model); highlighted amber if count×capacity nears a physical limit |
+| Count *(non-PV)* | 5rem | Integer input | min=1, max=999; spinner ↑↓; keyboard arrows. **Not rendered for `pv_panel` rows** — see PV variant below. |
+| Fleet capacity *(PV only)* | 5rem | Float input (MWp) | Editable total installed PV capacity in MWp. **Replaces Count for `pv_panel` rows.** |
+| Capacity | flex | Read-only text | Non-PV: `n × capacity_mw MW` or `n × capacity_mwh MWh / peak_mw MW`. PV: `{fleet_capacity_mw} MWp`. Highlighted amber if near a physical limit. |
 | Remove | 2.5rem | [✕] button | Removes row immediately; triggers revalidation |
+
+**PV device row variant:**
+
+`pv_panel` devices are sized by total installed site capacity (MWp), not unit count. This reflects
+a hard constraint in `device_model_schema` v2.0 — the schema has no `panel_mw_per_unit` field, so
+a "count × per-panel MW" formula is not possible. Combined with D37 server-side assembly, the wizard
+sends `fleet_capacity_mw` directly to `/api/site/assemble` for PV entries (no count).
+
+The fleet table adapts for PV rows:
+- **Count column hidden** — replaced by the Fleet capacity (MWp) input
+- **Fleet capacity (MWp) column** — editable float; operator enters the total MWp for this PV array
+- **Capacity column** — read-only `{fleet_capacity_mw} MWp`
+
+Example with a PV row:
+```
+┌────────────────────────────────────────────────────────────────────────────────┐
+│  Device ID                │ Type │ Count │ Capacity (from model)       │      │
+│  ─────────────────────────┼──────┼───────┼─────────────────────────────┼───── │
+│  vestas-v150-4.2          │ 🌬 W  │  100  │ 100 × 4.2 MW = 420 MW       │ [✕]  │
+│  trina-vertex-n-670w      │ ☀ S  │ [330] │ 330 MWp                     │ [✕]  │
+│                           │      │  MWp  │ ← float input, not count    │      │
+│  catl-lmp-300mwh          │ 🔋 B  │   1   │ 1 × 300 MWh / 90 MW         │ [✕]  │
+└────────────────────────────────────────────────────────────────────────────────┘
+```
 
 **Autocomplete dropdown (Device ID):**
 ```
@@ -188,10 +213,21 @@ Selecting Historical/Bootstrap while the coverage check is still loading shows a
 - If the API call is in flight: shows a spinner in the Device ID cell; row is not validated until response arrives.
 
 **Add device flow:**
-`[+ Add device ▼]` opens a small inline form (new row at the bottom):
+
+`[+ Add device ▼]` opens a small inline form that adapts to the resolved device type:
+
+Non-PV (wind_turbine / battery / grid_connection):
 ```
   Device ID [              ]   Count [  1  ]   [Add ✓]  [Cancel ✕]
 ```
+
+PV (pv_panel — shown once the search resolves the type):
+```
+  Device ID [trina-vertex-n-670w  ]   Fleet capacity (MWp) [      ]   [Add ✓]  [Cancel ✕]
+```
+- Count is replaced by "Fleet capacity (MWp)" with no default
+- `[Add ✓]` disabled until a positive MWp value is entered
+
 On `[Add ✓]`: validates device ID against the library, resolves capacity, appends to table, triggers revalidation.
 
 **Site totals strip:**
