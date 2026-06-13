@@ -1406,3 +1406,36 @@ class TestESchema:
         assert not schema_errors, (
             f"battery+wind+grid (no solar) must not produce E-SCHEMA; got {schema_errors}"
         )
+
+    # reviewer: backend-reviewer (at-least-one boundary: a non-dict generation key must
+    # not trip E-SCHEMA when the OTHER generation source is a valid dict)
+    def test_wind_none_but_solar_valid_no_e_schema(self):
+        # assets.wind = None (present but NOT a dict) + assets.solar a valid dict + battery + grid.
+        # Rule: "at least one of {wind, solar} present AND is a dict." wind=None fails its own
+        # check, but solar is a valid dict → at-least-one satisfied → NO E-SCHEMA.
+        # Guards against an impl that fires on ANY non-dict generation key instead of requiring
+        # BOTH to be absent/non-dict. Green both pre- and post-impl (E-SCHEMA must not fire).
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        site["assets"]["wind"] = None  # present but non-dict; solar stays valid
+        result = validate(site, GANSU_MODELS)
+        schema_errors = [e for e in result.errors if e.rule_id == "E-SCHEMA"]
+        assert not schema_errors, (
+            f"wind=None with a valid solar dict must NOT fire E-SCHEMA "
+            f"(at-least-one-of-{{wind,solar}} satisfied by solar); got {schema_errors}"
+        )
+
+    # reviewer: backend-reviewer (grid type-check: present-but-not-dict must fire, parallel
+    # to test_battery_string_fires_e_schema; the 3 grid tests cover absent + None but not str)
+    def test_grid_string_fires_e_schema(self):
+        # assets.grid = "pcc-substation-945mw" (model-ID string, not a dict) → E-SCHEMA on
+        # assets.grid. "present AND is a dict" — a string is present but not a dict → fire.
+        # RED pre-impl (E-SCHEMA unimplemented), GREEN post-impl. Mirrors battery=str.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        site["assets"]["grid"] = "pcc-substation-945mw"
+        result = validate(site, GANSU_MODELS)
+        err_ids = [e.rule_id for e in result.errors]
+        assert "E-SCHEMA" in err_ids, (
+            f"assets.grid=str (present, not a dict) must fire E-SCHEMA; got {err_ids}"
+        )
