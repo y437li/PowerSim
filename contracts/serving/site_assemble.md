@@ -142,12 +142,19 @@ String. Must match a key in `config/tariff_model_schema.yaml`.
 - Absent or empty string → HTTP 400 `TARIFF_REGION_REQUIRED`.
 - Present but not found in the schema → HTTP 400 `TARIFF_REGION_NOT_FOUND`.
 
-**Rationale for required:** `_check_e_tar_shape` in `config_validation.py` returns
-early (silently skips) when there is no `tariff.price_table_yuan_per_mwh` in the
-site_config. An assembled config without tariff would therefore pass validation
-with no tariff error, yielding a silently incomplete config that would fail at
-training runtime. Requiring `tariff_region` at the API boundary prevents this
-silent failure.
+**Rationale for required:** An assembled `site_config` always uses `tariff_region`
+(never an inline `price_table`). At training time, `resolve_site()` goes through
+the region-keyed path which calls `load_tariff_schema()` and sources the
+`price_table` from the region definition. Without a valid `tariff_region`, that
+path fails at the resolver — the assembled config is not usable for training.
+Requiring `tariff_region` at the API boundary catches this early with a clear 400.
+
+**Note on `_check_e_tar_shape` (E-TAR-SHAPE):** since assembled configs never
+include an inline `tariff.price_table_yuan_per_mwh`, the validator's E-TAR-SHAPE
+rule silently skips for ALL assembled configs regardless of whether `tariff_region`
+is valid. E-TAR-SHAPE is **not** the safety net here; it is N/A for region-keyed
+configs. The actual enforcement is: `TARIFF_REGION_NOT_FOUND` at the 400 boundary
+plus the resolver's region-path requirement at training time.
 
 **Frontend gate:** the wizard MUST NOT call `POST /api/site/assemble` until
 `tariffRegion !== ""`. Before tariff selection, the wizard shows an inline hint
@@ -421,7 +428,7 @@ source of truth. Do NOT re-open the geo_site_api validate contract.
 | Item | Expected | Deviation | Reason |
 |---|---|---|---|
 | `fleet` flat list → category-keyed assembly | client computes fleet MW/MWh | server computes from count × per-unit physics | D37: assembly is one Python implementation |
-| `tariff_region` required (400 if absent) | could be optional with E-TAR-SHAPE fallback | required | `_check_e_tar_shape` silently skips when no inline price_table — absent tariff would produce an incomplete config that passes validation but fails at training runtime |
+| `tariff_region` required (400 if absent) | could be optional with E-TAR-SHAPE fallback | required | assembled configs always use region-keyed tariff (no inline price_table); `resolve_site()` region path fails without valid tariff_region; E-TAR-SHAPE always skips for assembled configs (never an inline price_table to check — N/A) |
 | `pv_panel` requires `fleet_capacity_mw` | derived from count × panel_mw_per_unit | direct field required | pv_panel has no panel_mw_per_unit in device_model_schema v2.0.0 |
 | Grid overrides not in wizard input | max_export/import could be user-specified | not supported in v1 wizard form | Grid model physics defaults cover all known sites; wizard v1 doesn't expose grid configuration |
 | `costs` always includes tariff-sourced fields | demand_rate/spread are tariff config | included in costs response | transparency for the wizard totals strip |
@@ -445,8 +452,13 @@ source of truth. Do NOT re-open the geo_site_api validate contract.
 `tests/serving/test_serving_site_assemble.py`
 
 Key invariants tested:
-1. Gansu fleet → site_config matches site_gansu.yaml values bit-exactly (MW, MWh)
-2. Gansu site_config → 0 errors, 0 warnings (parity with existing validation tests)
+1. Gansu fleet → assembled site_config has count×per-unit values (wind: 146×4.2 = 613.2 MW;
+   battery: 1×300 = 300.0 MWh, 1×100 = 100.0 MW; solar: 330.0 MW direct). These differ from
+   site_gansu.yaml's sub-nominal overrides (615.0 MW, 294.5 MWh, 98.16 MW) which wizard assembly
+   cannot reproduce — parity-critical sites require direct YAML config, not wizard assembly.
+2. Gansu assembled config → 0 errors, 0 warnings (validation clean)
+10b. Resolver round-trip: assembled Gansu config resolves without error via tariff_region path
+   (guards: importorskip; skips if JAX/resolver unavailable)
 3. `site_config` present in response even when `errors` non-empty
 4. All HTTP 400 codes fire on their respective trigger conditions
 5. Fleet merge: two same-model_id entries sum counts correctly

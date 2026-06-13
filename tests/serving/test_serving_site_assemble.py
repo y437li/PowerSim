@@ -767,3 +767,69 @@ class TestEdgeCases:
         """Response Content-Type is application/json."""
         resp = client.post("/api/site/assemble", json=GANSU_FLEET_REQUEST)
         assert "application/json" in resp.headers.get("content-type", "")
+
+
+# ---------------------------------------------------------------------------
+# §F3 (reviewer) — resolve_site() round-trip: assembled config resolves via region path
+# ---------------------------------------------------------------------------
+
+class TestResolverRoundTrip:
+    """§F3 (reviewer): assembled Gansu config resolves through the tariff_region path.
+
+    This is the real end-to-end guard. validate()-passing ≠ resolver-accepting
+    (the D33 bug class). This test proves the tariff_region-only assembled config
+    (no inline price_table) actually resolves through the region path in resolve_site().
+
+    Guards: importorskip(energy_go.env.resolver) — skips if JAX/resolver not installed.
+    """
+
+    def test_assembled_gansu_resolves_via_region_path(self, client):
+        """resolve_site() on the assembled Gansu config must not raise.
+
+        Step 1: assemble via POST /api/site/assemble → site_config dict.
+        Step 2: confirm no inline price_table (tariff_region string only).
+        Step 3: write to temp YAML file, call resolve_site() — must not raise
+                ConfigValidationError, DeviceModelError, or ValueError.
+
+        Arithmetic: assembled config has wind=613.2 MW (146×4.2), batt=300 MWh/100 MW
+        (1×300/100), solar=330 MW. resolve_site() reads tariff_region="cn-gansu",
+        loads price_table from tariff_model_schema.yaml, and produces EnvParams.
+        """
+        pytest.importorskip("energy_go.env.resolver")
+        from energy_go.env.resolver import resolve_site
+
+        import pathlib, tempfile
+        yaml = pytest.importorskip("yaml")
+
+        # Step 1: assemble Gansu config
+        resp = client.post("/api/site/assemble", json=GANSU_FLEET_REQUEST)
+        assert resp.status_code == 200
+        site_config = resp.json()["site_config"]
+
+        # Step 2: confirm region-only (no inline price_table)
+        assert site_config.get("tariff_region") == "cn-gansu", (
+            "Assembled config must carry tariff_region string"
+        )
+        tariff_section = site_config.get("tariff")
+        if tariff_section is not None:
+            assert "price_table_yuan_per_mwh" not in tariff_section, (
+                "Assembled config must NOT have inline price_table — resolver region path only"
+            )
+
+        # Step 3: write to temp YAML and resolve
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+        ) as f:
+            yaml.dump(site_config, f, allow_unicode=True)
+            tmp_path = f.name
+
+        try:
+            # Must not raise ConfigValidationError, DeviceModelError, ValueError, or ImportError.
+            # On success returns (EnvParams, obs_dim, action_dim) — we only check it doesn't raise.
+            result = resolve_site(tmp_path)
+            assert result is not None, "resolve_site() must return a non-None result"
+        except ImportError:
+            # JAX not available in this environment (e.g., CPU-only CI without JAX)
+            pytest.skip("JAX not available in this environment")
+        finally:
+            pathlib.Path(tmp_path).unlink(missing_ok=True)
