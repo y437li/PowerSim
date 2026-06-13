@@ -1,60 +1,82 @@
-schema_version: "2.0.0"
+schema_version: "2.1.0"
 # Device model library — physics constants keyed by LOCKED registry.json IDs (D23).
-# Non-overridable constants (see contracts/shared/device_model_schema.md §3.1):
-#   wind_turbine: v_cutin_mps, v_rated_mps, v_cutout_mps
-#   pv_panel:     k_T_per_c, eta_inverter
-#   battery:      eta_ch, eta_dis, soc_min, soc_max
+#
+# Contract: contracts/shared/device_model_schema.md v2.0.0 (LOCKED)
+#           contracts/shared/benchmark_device_library.md v1.0.0 (task #4)
+#
+# Schema version history:
+#   "2.0.0" — price_table (24,)→(12,24) seasonal reshape (PR #87)
+#   "2.1.0" — multi-brand China benchmark library: wind/PV/BESS/grid/electrolyzer (task #4)
+#
+# Non-overridable constants (device_model_schema.md §3.1):
+#   wind_turbine:  v_cutin_mps, v_rated_mps, v_cutout_mps
+#   pv_panel:      k_T_per_c, eta_inverter
+#   battery:       eta_ch, eta_dis, soc_min, soc_max
+#   electrolyzer:  ALL physics fields (min_load_fraction, standby_fraction,
+#                  e_spec_kwh_per_kg, degradation_yuan_per_mwh, rated_mw_per_unit,
+#                  warmup_minutes)
 # Site-overridable and fleet params come from config/site_<name>.yaml.
-# economics: consumed by finance workstream (Workstreams C/D); resolver ignores all economics fields.
-# Source: 2024/25 Chinese utility-scale market benchmarks (IRENA/NEA public data).
-# Values are initial estimates — to be refined by task #63 benchmark library.
+# economics: consumed by Workstreams C/D (finance); resolver ignores all economics fields.
+# provenance: public source citations; resolver ignores; required for PUBLIC REPO compliance.
+#
+# PUBLIC REPO (CLAUDE.md, D32): all committed values use public sources only.
+# Proprietary/partner-confidential data lives in the gitignored private overlay only
+# (ENERGY_GO_PRIVATE_CONFIG env var). Stubs carry provenance: "USER-provided, pending".
 
 models:
 
-  # ---- Wind ----
+  # ============================================================
+  #  GANSU PARITY SET — 4 LOCKED models (device_model_schema.md §6)
+  #  Physics untouched; provenance field added for public-repo compliance.
+  # ============================================================
+
+  # ---- Wind — Gansu ----
   vestas-v150-4.2:
     type: wind_turbine
+    provenance: "public; device_model_schema.md v2.0.0 §6 initial estimates; IRENA Renewable Power Generation Costs 2023; NEA China Wind Energy Development Report 2024"
     physics:
-      v_cutin_mps:       3.0    # m/s  — cut-in  (§3.1, non-overridable)
-      v_rated_mps:      12.0    # m/s  — rated   (§3.1, non-overridable)
-      v_cutout_mps:     25.0    # m/s  — cut-out (§3.1, non-overridable)
+      v_cutin_mps:       3.0    # m/s  — cut-in  (§3.1, non-overridable, LOCKED)
+      v_rated_mps:      12.0    # m/s  — rated   (§3.1, non-overridable, LOCKED)
+      v_cutout_mps:     25.0    # m/s  — cut-out (§3.1, non-overridable, LOCKED)
       hub_height_m:    105.0    # m    — model default; site-overridable
       rated_mw_per_unit: 4.2    # MW   — nameplate per turbine
     economics:
-      capex_per_kw_yuan:             5800.0   # ¥/kW  — ≈800 USD/kW; onshore wind China 2024
-      opex_fixed_per_kw_year_yuan:    180.0   # ¥/kW·yr — ≈25 USD/kW·yr
-      opex_var_per_mwh_yuan:            0.0   # ¥/MWh — negligible at this scale; captured in fixed
-      lifetime_years:                  25.0   # yr    — IEC Class III design life
-      replacement_cost_fraction:        0.15  # —     — major overhaul (not full replacement) at EOL
-      residual_value_fraction:          0.05  # —     — scrap value
-      construction_months:             18.0   # months
+      capex_per_kw_yuan:              5800.0  # ¥/kW  — ≈800 USD/kW; onshore wind China 2024
+      opex_fixed_per_kw_year_yuan:     180.0  # ¥/kW·yr — ≈25 USD/kW·yr
+      opex_var_per_mwh_yuan:             0.0  # ¥/MWh — negligible at this scale; captured in fixed
+      lifetime_years:                   25.0  # yr    — IEC Class III design life
+      replacement_cost_fraction:         0.15 # —     — major overhaul (not full replacement) at EOL
+      residual_value_fraction:           0.05 # —     — scrap value
+      construction_months:              18.0  # months
       decommissioning_cost_per_kw_yuan: 100.0 # ¥/kW
 
-  # ---- Solar PV ----
+  # ---- Solar PV — Gansu ----
   trina-vertex-n-670w:
     type: pv_panel
+    provenance: "public; device_model_schema.md v2.0.0 §6 initial estimates; IRENA Renewable Power Generation Costs 2023; Trina Solar product datasheet (public)"
     physics:
-      k_T_per_c:        -0.003  # /°C  — temperature coefficient (§3.2, non-overridable)
-      eta_inverter:      0.97   # —    — inverter efficiency (non-overridable)
+      k_T_per_c:        -0.003  # /°C  — temperature coefficient (§3.2, non-overridable, LOCKED)
+      eta_inverter:      0.97   # —    — inverter efficiency (non-overridable, LOCKED)
       degradation_yr1:   0.98   # —    — year-1 output fraction; site-overridable
     economics:
-      capex_per_kw_yuan:             3200.0   # ¥/kW  — ≈450 USD/kW; utility PV China 2024
-      opex_fixed_per_kw_year_yuan:     80.0   # ¥/kW·yr — ≈11 USD/kW·yr
-      opex_var_per_mwh_yuan:            0.0   # ¥/MWh
-      lifetime_years:                  25.0   # yr
-      replacement_cost_fraction:        0.20  # —     — inverter replacement
-      residual_value_fraction:          0.02  # —
-      construction_months:             12.0   # months
+      capex_per_kw_yuan:              3200.0  # ¥/kW  — ≈450 USD/kW; utility PV China 2024
+      opex_fixed_per_kw_year_yuan:      80.0  # ¥/kW·yr — ≈11 USD/kW·yr
+      opex_var_per_mwh_yuan:             0.0  # ¥/MWh
+      lifetime_years:                   25.0  # yr
+      replacement_cost_fraction:         0.20 # —     — inverter replacement
+      residual_value_fraction:           0.02 # —
+      construction_months:              12.0  # months
       decommissioning_cost_per_kw_yuan:  60.0 # ¥/kW
 
-  # ---- Battery ----
+  # ---- Battery — Gansu ----
   catl-lmp-300mwh:
     type: battery
+    provenance: "public; device_model_schema.md v2.0.0 §6 initial estimates; IRENA Renewable Power Generation Costs 2023; CNESA 2024 energy storage market report; CATL LMP product data (public)"
     physics:
-      eta_ch:               0.97    # —   — charge efficiency  (§3.3, non-overridable)
-      eta_dis:              0.97    # —   — discharge efficiency (non-overridable)
-      soc_min:              0.2     # —   — min SOC fraction (D4, non-overridable)
-      soc_max:              0.9     # —   — max SOC fraction (D4, non-overridable)
+      eta_ch:               0.97    # —   — charge efficiency  (§3.3, non-overridable, LOCKED; D4)
+      eta_dis:              0.97    # —   — discharge efficiency (non-overridable, LOCKED; D4)
+      soc_min:              0.2     # —   — min SOC fraction (D4 binding, non-overridable, LOCKED)
+      soc_max:              0.9     # —   — max SOC fraction (D4 binding, non-overridable, LOCKED)
       capacity_mwh_per_unit: 300.0  # MWh — nameplate energy per unit
       power_mw_per_unit:    100.0   # MW  — nameplate charge/discharge power per unit
     economics:
@@ -71,15 +93,338 @@ models:
       construction_months:               6.0  # months
       decommissioning_cost_per_kwh_yuan: 30.0 # ¥/kWh
 
-  # ---- Grid connection ----
+  # ---- Grid connection — Gansu ----
   pcc-substation-945mw:
     type: grid_connection
+    provenance: "public; device_model_schema.md v2.0.0 §6 initial estimates; D5 (max_export 945 MW), D12 (max_import 400 MW); NEA grid construction cost guidelines"
     physics:
-      max_export_mw: 945.0  # MW — PCC export limit (D5); site-overridable
-      max_import_mw: 400.0  # MW — grid import limit (D12); site-overridable
+      max_export_mw: 945.0  # MW — PCC export limit (D5, LOCKED); site-overridable
+      max_import_mw: 400.0  # MW — grid import limit (D12, LOCKED); site-overridable
     economics:
       capex_lump_sum_yuan:          0.0     # ¥ — site-specific; sunk cost at Gansu; operators override per-site
       opex_fixed_per_mw_year_yuan:  5000.0  # ¥/MW·yr — ≈700 USD/MW·yr; transmission service fee
       lifetime_years:               40.0    # yr
       residual_value_fraction:       0.10   # —
       decommissioning_cost_yuan:     0.0    # ¥
+
+  # ============================================================
+  #  BENCHMARK LIBRARY — v2.1.0 additions (task #4)
+  #  All values: public China 2024/25 market benchmarks.
+  #  Sources cited in provenance field and contract §3–§4.
+  # ============================================================
+
+  # --------------------------------------------------------
+  #  WIND TURBINES — China onshore 2024 benchmark models
+  # --------------------------------------------------------
+
+  goldwind-gw165-6.0:
+    # Goldwind GW165-6.0 — 6.0 MW onshore; ~25% China market share 2023; 165m rotor
+    type: wind_turbine
+    provenance: "public; Goldwind Science & Technology 2024 product datasheet GW165-6.0; CNREC China Wind Energy Development Report 2023; IRENA Renewable Power Generation Costs 2023; Wood Mackenzie China Wind Market Report 2024 public summary"
+    physics:
+      v_cutin_mps:       3.0    # m/s  — cut-in speed (non-overridable)
+      v_rated_mps:      10.5    # m/s  — rated speed; Goldwind GW165-6.0 public spec (IEC Class II)
+      v_cutout_mps:     22.0    # m/s  — cut-out speed; Goldwind GW165-6.0 public spec
+      hub_height_m:    120.0    # m    — typical for GW165 in moderate-wind inland sites; site-overridable
+      rated_mw_per_unit: 6.0    # MW   — nameplate per turbine
+    economics:
+      # CAPEX: IRENA 2023 China onshore wind 6MW class ≈ $670 USD/kW → ~¥4800/kW
+      # (CNREC 2023 installed cost range: ¥4500-5200/kW for 5-6MW class; CNY/USD ≈ 7.2)
+      capex_per_kw_yuan:              4800.0  # ¥/kW — economy-of-scale advantage vs smaller turbines
+      opex_fixed_per_kw_year_yuan:     150.0  # ¥/kW·yr — ≈21 USD/kW·yr; CNREC 2024 O&M benchmark (6MW class)
+      opex_var_per_mwh_yuan:             0.0  # ¥/MWh — captured in fixed O&M
+      lifetime_years:                   25.0  # yr    — IEC Class II/III 25-year design life
+      replacement_cost_fraction:         0.12 # —     — major overhaul (blades, gearbox); lower than smaller turbines
+      residual_value_fraction:           0.05 # —     — scrap steel value
+      construction_months:              18.0  # months
+      decommissioning_cost_per_kw_yuan:  90.0 # ¥/kW
+
+  envision-en136-3.6:
+    # Envision Energy EN136-3.6 — 3.6 MW onshore; ~12% China market share 2023; 136m rotor
+    type: wind_turbine
+    provenance: "public; Envision Energy 2024 product brochure EN136-3.6; IRENA Renewable Power Generation Costs 2023; CNREC China Wind Energy Development Report 2023"
+    physics:
+      v_cutin_mps:       3.0    # m/s  — cut-in speed (non-overridable)
+      v_rated_mps:      11.0    # m/s  — rated speed; Envision EN136-3.6 public spec
+      v_cutout_mps:     20.0    # m/s  — cut-out speed; Envision EN136-3.6 public spec
+      hub_height_m:     90.0    # m    — typical for EN136 in Class II sites; site-overridable
+      rated_mw_per_unit: 3.6    # MW   — nameplate per turbine
+    economics:
+      # CAPEX: IRENA 2023 China onshore 3-4MW class ≈ $725 USD/kW → ~¥5200/kW
+      capex_per_kw_yuan:              5200.0  # ¥/kW — mid-tier 3.6 MW; IRENA 2023 midpoint
+      opex_fixed_per_kw_year_yuan:     170.0  # ¥/kW·yr — ≈24 USD/kW·yr; slightly higher per-kW than 6MW class
+      opex_var_per_mwh_yuan:             0.0  # ¥/MWh
+      lifetime_years:                   25.0  # yr
+      replacement_cost_fraction:         0.15 # —
+      residual_value_fraction:           0.05 # —
+      construction_months:              15.0  # months — smaller unit allows faster installation
+      decommissioning_cost_per_kw_yuan:  95.0 # ¥/kW
+
+  windey-wd156-3.0:
+    # Windey (Sichuan Tianyi) WD156-3.0 — 3.0 MW onshore; economy class; used as cost floor
+    type: wind_turbine
+    provenance: "public; Windey (Sichuan Tianyi Renewable Energy) WD156-3.0 product specs (public); IRENA Renewable Power Generation Costs 2023 lower-bound estimate"
+    physics:
+      v_cutin_mps:       3.0    # m/s  — cut-in speed (non-overridable)
+      v_rated_mps:      11.5    # m/s  — rated speed; Windey WD156 public spec
+      v_cutout_mps:     20.0    # m/s  — cut-out speed; Windey WD156 public spec
+      hub_height_m:     80.0    # m    — typical for 3.0 MW class; site-overridable
+      rated_mw_per_unit: 3.0    # MW   — nameplate per turbine
+    economics:
+      # CAPEX: IRENA 2023 lower bound for 3MW class China; budget-tier domestic OEM
+      capex_per_kw_yuan:              5400.0  # ¥/kW — ≈750 USD/kW; budget-tier 3 MW (higher per-kW than larger turbines)
+      opex_fixed_per_kw_year_yuan:     160.0  # ¥/kW·yr — ≈22 USD/kW·yr
+      opex_var_per_mwh_yuan:             0.0  # ¥/MWh
+      lifetime_years:                   20.0  # yr    — shorter design life for economy-class turbines
+      replacement_cost_fraction:         0.15 # —
+      residual_value_fraction:           0.03 # —     — lower scrap value (economy components)
+      construction_months:              12.0  # months
+      decommissioning_cost_per_kw_yuan:  80.0 # ¥/kW
+
+  # --------------------------------------------------------
+  #  SOLAR PV — n-type TOPCon benchmark models (China 2024)
+  # --------------------------------------------------------
+
+  longi-hi-mo-x6-610w:
+    # LONGi Hi-MO X6 LR5-72HIH-610M — 610W n-type TOPCon bifacial; cost-leader pricing
+    type: pv_panel
+    provenance: "public; LONGi Green Energy Hi-MO X6 product datasheet LR5-72HIH-610M (2024); IRENA Renewable Power Generation Costs 2023 China utility PV; CNESA 2024"
+    physics:
+      k_T_per_c:        -0.0029  # /°C  — temperature coefficient; LONGi Hi-MO X6: -0.29%/°C
+                                  #        n-type TOPCon advantage vs PERC (-0.35%/°C typical)
+                                  #        (non-overridable)
+      eta_inverter:       0.985   # —    — modern string inverter 2024 (Huawei/Sungrow/SMA)
+                                  #        (non-overridable)
+      degradation_yr1:    0.98    # —    — year-1 output fraction; LONGi spec 2% yr-1; site-overridable
+    economics:
+      # CAPEX: LONGi drives China utility PV floor; IRENA 2023 ≈ $420 USD/kW → ¥3000/kW
+      capex_per_kw_yuan:               3000.0  # ¥/kW — ≈420 USD/kW; LONGi cost-leader pricing 2024
+      opex_fixed_per_kw_year_yuan:       75.0  # ¥/kW·yr — ≈10.5 USD/kW·yr; IRENA 2023 benchmark
+      opex_var_per_mwh_yuan:              0.0  # ¥/MWh
+      lifetime_years:                    30.0  # yr    — n-type TOPCon rated 30 yr at ≥80% output
+      replacement_cost_fraction:          0.10 # —     — inverter mid-life replacement (~year 15)
+      residual_value_fraction:            0.02 # —
+      construction_months:                9.0  # months
+      decommissioning_cost_per_kw_yuan:  50.0  # ¥/kW
+
+  jasolar-deepblue4-615w:
+    # JA Solar DeepBlue 4.0 Pro JAM72D42-615/MB — 615W n-type TOPCon bifacial
+    type: pv_panel
+    provenance: "public; JA Solar DeepBlue 4.0 Pro product datasheet JAM72D42-615/MB (2024); IRENA Renewable Power Generation Costs 2023 China utility PV"
+    physics:
+      k_T_per_c:        -0.0028  # /°C  — temperature coefficient; JA Solar spec: -0.28%/°C (n-type TOPCon)
+                                  #        (non-overridable)
+      eta_inverter:       0.985   # —    — modern string inverter 2024 (non-overridable)
+      degradation_yr1:    0.98    # —    — year-1 output fraction; JA Solar spec; site-overridable
+    economics:
+      capex_per_kw_yuan:               3100.0  # ¥/kW — ≈430 USD/kW; slightly above LONGi
+      opex_fixed_per_kw_year_yuan:       78.0  # ¥/kW·yr — ≈11 USD/kW·yr
+      opex_var_per_mwh_yuan:              0.0  # ¥/MWh
+      lifetime_years:                    30.0  # yr
+      replacement_cost_fraction:          0.10 # —
+      residual_value_fraction:            0.02 # —
+      construction_months:                9.0  # months
+      decommissioning_cost_per_kw_yuan:  52.0  # ¥/kW
+
+  # --------------------------------------------------------
+  #  BESS — LFP grid-scale benchmark models (China 2024)
+  # --------------------------------------------------------
+
+  byd-mc-cube-lfp:
+    # BYD MC Cube — modular LFP container (314 Ah blade battery cells)
+    # 2 MWh per 20ft module; 90% DoD; 8000-cycle design life
+    type: battery
+    provenance: "public; BYD MC Cube product data (2024); CNESA China Energy Storage Market Report 2024; IRENA Utility-Scale Batteries Innovation Outlook 2023"
+    physics:
+      eta_ch:               0.965  # —   — charge efficiency; BYD system round-trip ~93.1%;
+                                    #       split 0.965×0.965=0.931 (non-overridable)
+      eta_dis:              0.965  # —   — discharge efficiency (non-overridable)
+      soc_min:              0.10   # —   — min SOC; BYD MC Cube 90% DoD → 10-90% (non-overridable)
+      soc_max:              0.90   # —   — max SOC (non-overridable)
+      capacity_mwh_per_unit: 2.0   # MWh — 20ft container module: 2.0 MWh (BYD public spec)
+      power_mw_per_unit:     1.0   # MW  — 0.5C rate default; 1 MW per 2 MWh module
+    economics:
+      # CAPEX: CNESA 2024 LFP benchmark ¥900-1000/kWh; BYD market pricing 2024
+      capex_energy_per_kwh_yuan:       950.0  # ¥/kWh — ≈133 USD/kWh; BYD economy-of-scale pricing 2024
+      capex_power_per_kw_yuan:           0.0  # ¥/kW  — bundled into energy CAPEX
+      opex_fixed_per_kwh_year_yuan:     18.0  # ¥/kWh·yr — ≈2.5 USD/kWh·yr
+      opex_var_per_mwh_yuan:             0.0  # ¥/MWh
+      lifetime_years:                   15.0  # yr    — BYD warranty: 15 yr at ≥70% SOH
+      cycle_life_full_equiv:          8000.0  # cycles — BYD LFP blade battery public spec (8000 at 90% DoD)
+      eol_soh_threshold:                 0.80 # —     — 80% remaining capacity triggers replacement
+      replacement_cost_fraction:         0.65 # —     — cell+BMS module replacement; learning-curve pricing
+      residual_value_fraction:           0.05 # —
+      construction_months:               6.0  # months
+      decommissioning_cost_per_kwh_yuan: 25.0 # ¥/kWh
+
+  sungrow-lfp-lc:
+    # Sungrow PowerTitan ST2752UX — LFP liquid-cooled 5 MWh container system
+    type: battery
+    provenance: "public; Sungrow PowerTitan ST2752UX product datasheet (2024); Sungrow investor presentations 2024 (public); CNESA China Energy Storage Market Report 2024"
+    physics:
+      eta_ch:               0.970  # —   — charge efficiency; Sungrow PowerTitan round-trip ~94.1%;
+                                    #       split 0.970×0.970=0.941 (non-overridable)
+      eta_dis:              0.970  # —   — discharge efficiency (non-overridable)
+      soc_min:              0.05   # —   — min SOC; Sungrow ST2752UX 95% usable DoD (5-100%)
+                                    #       (non-overridable)
+      soc_max:              0.95   # —   — max SOC (non-overridable)
+      capacity_mwh_per_unit: 5.0   # MWh — ST2752UX 40ft container: 5.0 MWh (Sungrow public spec)
+      power_mw_per_unit:     2.5   # MW  — 0.5C rate; 2.5 MW per 5 MWh module
+    economics:
+      capex_energy_per_kwh_yuan:       920.0  # ¥/kWh — ≈128 USD/kWh; Sungrow PowerTitan 2024 pricing
+      capex_power_per_kw_yuan:           0.0  # ¥/kW  — bundled
+      opex_fixed_per_kwh_year_yuan:     17.0  # ¥/kWh·yr — liquid cooling reduces cooling O&M vs air-cooled
+      opex_var_per_mwh_yuan:             0.0  # ¥/MWh
+      lifetime_years:                   15.0  # yr    — Sungrow 15-year warranty basis
+      cycle_life_full_equiv:          8000.0  # cycles — Sungrow public spec; liquid cooling enables higher cycle count
+      eol_soh_threshold:                 0.80 # —
+      replacement_cost_fraction:         0.60 # —
+      residual_value_fraction:           0.05 # —
+      construction_months:               6.0  # months
+      decommissioning_cost_per_kwh_yuan: 22.0 # ¥/kWh
+
+  # --------------------------------------------------------
+  #  GRID CONNECTIONS — traditional benchmark + SST stub
+  # --------------------------------------------------------
+
+  pcc-traditional-220kv:
+    # Generic 220kV AC substation — traditional grid connection benchmark
+    # Representative cost for China utility-scale farm grid connection
+    type: grid_connection
+    provenance: "public; NEA China Grid Construction Cost Guidelines 2023; China Electric Power Planning & Engineering Institute (EPPEI) 2023 substation cost benchmarks"
+    physics:
+      max_export_mw: 200.0  # MW — typical 220kV line capacity; site-overridable (D5)
+      max_import_mw: 200.0  # MW — symmetric for 220kV; site-overridable (D12)
+    economics:
+      # CAPEX: NEA/EPPEI 2023 China 220kV substation lump sum ≈ ¥15M (highly site-specific)
+      capex_lump_sum_yuan:        15000000.0  # ¥ — ≈$2.1M; standard 220kV substation China; NEA guidelines
+      opex_fixed_per_mw_year_yuan:    5000.0  # ¥/MW·yr — ≈700 USD/MW·yr; transmission service fee
+      lifetime_years:                   40.0  # yr
+      residual_value_fraction:           0.10 # —
+      decommissioning_cost_yuan:      500000.0  # ¥ — ¥500k decommissioning lump sum
+
+  pcc-sst-stub:
+    # Smart Substation Technology (SST) — STUB ONLY
+    # PAUSED by USER: company-specific SST proprietary data not yet provided.
+    # This stub lets site configs reference the model without breaking the resolver.
+    # Physics mirrors pcc-traditional-220kv defaults; all econ values are placeholders.
+    # DO NOT add proprietary values here — see CLAUDE.md public-repo rule (D32).
+    type: grid_connection
+    provenance: "USER-provided, pending"
+    physics:
+      max_export_mw: 200.0  # MW — placeholder (same as traditional 220kV default); site-overridable
+      max_import_mw: 200.0  # MW — placeholder; site-overridable
+    economics: {}
+
+  # --------------------------------------------------------
+  #  ELECTROLYZERS — §8.2 four technology types (new in v2.1.0)
+  #  New device type: `electrolyzer`
+  #  Physics fields: min_load_fraction, standby_fraction, e_spec_kwh_per_kg,
+  #    degradation_yuan_per_mwh, rated_mw_per_unit, warmup_minutes
+  #  All physics fields non-overridable (benchmark_device_library.md §2.1).
+  #  Resolver ignores electrolyzer type until contracts/env/electrolyzer.md lands.
+  # --------------------------------------------------------
+
+  electrolyzer-alk-20mw:
+    # Alkaline Electrolyzer — 20 MW class reference
+    # Reference models: PERIC HG-Alk, Suzhou Jingli JQL-1000, Longi H2 L-ALK
+    # Best maturity; lowest CAPEX; limited turndown (20–100%); Chinese market dominant
+    # §8.2: operating range 20–100%; standby 2%; e_spec 52 kWh/kg
+    type: electrolyzer
+    provenance: "public; PERIC Hydrogen Technologies HG-Alk product series (public); Suzhou Jingli Hydrogen JQL-1000 specs (public); IRENA Green Hydrogen Cost Reduction 2020; IEA The Future of Hydrogen 2019; IEA Electrolysers Tracking Clean Energy Progress 2023; Hydrogen Council Hydrogen Insights 2023"
+    physics:
+      min_load_fraction:         0.20   # —      — minimum operating load as fraction of P_max (§8.2: "20–100%")
+      standby_fraction:          0.02   # —      — standby power as fraction of P_max (§8.2: "2%"); < min_load ✓
+      e_spec_kwh_per_kg:        52.0    # kWh/kg — system-level specific energy (§8.2; IEA 2023: ALK 50-55 kWh/kg)
+      degradation_yuan_per_mwh:  4.0    # ¥/MWh  — degradation cost per MWh throughput (§8.2 reference)
+      rated_mw_per_unit:        20.0    # MW     — P_max per unit (§8.2 reference: "P_max_ely 20 MW")
+      warmup_minutes:           30.0    # min    — cold-start warm-up; ALK 15-60 min; informational at Δt=1h
+    economics:
+      # CAPEX: IRENA 2023 ALK mid-case ≈ $490 USD/kW; China domestic ¥2500-4000/kW (PERIC/Longi H2 2024)
+      capex_per_kw_yuan:           3500.0  # ¥/kW — ≈490 USD/kW; IRENA 2023 ALK mid-case
+      opex_fixed_per_kw_year_yuan:   90.0  # ¥/kW·yr — ~2.5% of CAPEX; IEA 2023 benchmark
+      opex_var_per_mwh_yuan:          0.0  # ¥/MWh
+      stack_life_years:               8.0  # yr   — ALK stack: 80,000-100,000 hrs; IEA 2023
+      replacement_cost_fraction:      0.30 # —    — stack replacement ~30% CAPEX; IEA/IRENA estimate
+      lifetime_years:                20.0  # yr   — system design life; IEA 2023
+      residual_value_fraction:        0.05 # —
+      construction_months:           12.0  # months
+
+  electrolyzer-pem-10mw:
+    # PEM Electrolyzer — 10 MW class reference
+    # Reference models: Siemens Silyzer 300, Nel M-Series, ITM Power HGas3SP
+    # Best dynamic response; lowest min-load (5%); higher CAPEX than ALK
+    # §8.2: operating range 5–100%; standby 1%; e_spec 55 kWh/kg
+    type: electrolyzer
+    provenance: "public; Siemens Energy Silyzer 300 product datasheet (public); Nel Hydrogen M-Series product data (public); ITM Power HGas3SP specs (public); IRENA Green Hydrogen Cost Reduction 2020; IEA Electrolysers Tracking Clean Energy Progress 2023"
+    physics:
+      min_load_fraction:         0.05   # —      — minimum operating load (§8.2: "5–100%"); PEM advantage over ALK
+      standby_fraction:          0.01   # —      — standby power (§8.2: "1%"); < min_load ✓ (0.01 < 0.05)
+      e_spec_kwh_per_kg:        55.0    # kWh/kg — system-level specific energy (§8.2; IEA 2023: PEM 52-58 kWh/kg)
+      degradation_yuan_per_mwh:  8.0    # ¥/MWh  — degradation cost (§8.2: PEM "8"; Pt catalyst; higher than ALK)
+      rated_mw_per_unit:        10.0    # MW     — P_max per unit (Siemens Silyzer 300 module ≈ 10 MW)
+      warmup_minutes:            5.0    # min    — PEM rapid response advantage (5-10 min); informational
+    economics:
+      # CAPEX: IRENA 2023 PEM mid-case ≈ $910 USD/kW; China domestic PEM ¥5000-8000/kW (2024)
+      capex_per_kw_yuan:           6500.0  # ¥/kW — ≈910 USD/kW; PEM premium over ALK; IRENA 2023 mid-case
+      opex_fixed_per_kw_year_yuan:  130.0  # ¥/kW·yr — ~2% of CAPEX; IEA 2023 benchmark
+      opex_var_per_mwh_yuan:          0.0  # ¥/MWh
+      stack_life_years:               5.0  # yr   — PEM membrane+catalyst: 60,000-80,000 hrs; IEA 2023
+      replacement_cost_fraction:      0.40 # —    — PEM membrane/catalyst stack ~40% CAPEX
+      lifetime_years:                15.0  # yr   — system life with stack replacements; IEA 2023
+      residual_value_fraction:        0.05 # —
+      construction_months:            9.0  # months
+
+  electrolyzer-aem-1mw:
+    # AEM (Anion Exchange Membrane) Electrolyzer — 2.4 MW class reference
+    # Reference model: Enapter EL 4.0 (leading commercial AEM product 2024)
+    # Combines PEM-like turndown with ALK-like materials; emerging technology
+    # NOTE: limited commercial scale deployments as of 2024; higher cost uncertainty
+    type: electrolyzer
+    provenance: "public; Enapter EL 4.0 product datasheet (2024); IEA Electrolysers Tracking Clean Energy Progress 2023; IEA Energy Technology Perspectives 2023 AEM projections; Nature Energy 'Anion Exchange Membrane Water Electrolysis' 2022 (doi:10.1038/s41560-022-01087-4)"
+    physics:
+      min_load_fraction:         0.05   # —      — minimum operating load; AEM similar to PEM (5-100%)
+      standby_fraction:          0.01   # —      — standby power; < min_load ✓ (0.01 < 0.05)
+      e_spec_kwh_per_kg:        53.0    # kWh/kg — system-level (Enapter EL 4.0 ~53 kWh/kg; IEA range: 50-55)
+      degradation_yuan_per_mwh: 10.0    # ¥/MWh  — higher than PEM/ALK; less mature membrane technology
+      rated_mw_per_unit:         2.4    # MW     — Enapter EL 4.0 unit = 2.4 MW (360 Nm³/h)
+      warmup_minutes:            5.0    # min    — rapid response similar to PEM; informational
+    economics:
+      # CAPEX: Enapter EL 4.0 commercial pricing 2024 (public); IEA AEM 2023 projections
+      capex_per_kw_yuan:           8500.0  # ¥/kW — ≈1190 USD/kW; current AEM commercial pricing (Enapter)
+      opex_fixed_per_kw_year_yuan:  200.0  # ¥/kW·yr — higher O&M for emerging technology
+      opex_var_per_mwh_yuan:          0.0  # ¥/MWh
+      stack_life_years:               3.0  # yr   — AEM membrane: ~30,000-40,000 hrs (shorter than PEM/ALK)
+      replacement_cost_fraction:      0.50 # —    — membrane stack dominates costs
+      lifetime_years:                10.0  # yr   — system life; shorter due to membrane degradation
+      residual_value_fraction:        0.03 # —
+      construction_months:            6.0  # months
+
+  electrolyzer-soec-5mw:
+    # SOEC (Solid Oxide Electrolysis Cell) — 5 MW class reference
+    # Reference models: Sunfire Refuel, Bloom Energy Electrolyzer, Haldor Topsoe eSOEC
+    # Highest system efficiency (uses 800°C heat input); highest CAPEX; 4h cold-start
+    # Best fit for baseload operation with co-located industrial heat source
+    # NOTE: uses net ELECTRICAL e_spec (40 kWh/kg); total energy input higher when heat included
+    type: electrolyzer
+    provenance: "public; Sunfire Refuel product data (2024); Bloom Energy Electrolyzer product overview (public); Haldor Topsoe eSOEC technology paper 2023 (public); IEA Electrolysers Tracking Clean Energy Progress 2023; IRENA Green Hydrogen Cost Reduction 2020"
+    physics:
+      min_load_fraction:         0.20   # —      — minimum operating load; SOEC limited turndown (20-100%)
+      standby_fraction:          0.05   # —      — standby (5% P_max; high-temp maintenance); < min_load ✓
+      e_spec_kwh_per_kg:        40.0    # kWh/kg — net ELECTRICAL specific energy (with heat integration;
+                                         #          Sunfire: ~37 kWh/kg; IEA 2023: 37-45 kWh/kg)
+                                         #          Lower e_spec = higher electrical efficiency with heat input
+      degradation_yuan_per_mwh: 15.0    # ¥/MWh  — highest: thermal cycling + ceramic cell degradation
+      rated_mw_per_unit:         5.0    # MW     — typical SOEC module (Sunfire Refuel, Bloom: 1-5 MW modular)
+      warmup_minutes:          240.0    # min    — cold-start: 4h heat-up from room temp (Sunfire public; IEA)
+                                         #          CRITICAL dispatch constraint; informational at Δt=1h
+    economics:
+      # CAPEX: IEA 2023 SOEC ≈ $1960 USD/kW; high-temp ceramic materials premium (Sunfire public)
+      capex_per_kw_yuan:          14000.0  # ¥/kW — ≈1960 USD/kW; SOEC premium (ceramic + thermal system)
+      opex_fixed_per_kw_year_yuan:   350.0  # ¥/kW·yr — ~2.5% of CAPEX; complex thermal management
+      opex_var_per_mwh_yuan:           0.0  # ¥/MWh
+      stack_life_years:                2.0  # yr   — SOEC cells: 15,000-20,000 hrs; frequent replacement; IEA 2023
+      replacement_cost_fraction:       0.60 # —    — ceramic stack most expensive replacement component
+      lifetime_years:                 10.0  # yr   — system design life (with frequent stack replacements)
+      residual_value_fraction:         0.03 # —
+      construction_months:            18.0  # months — complex heat integration; longest construction lead time
