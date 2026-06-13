@@ -825,7 +825,8 @@ class TestResolverRoundTrip:
     (the D33 bug class). This test proves the tariff_region-only assembled config
     (no inline price_table) actually resolves through the region path in resolve_site().
 
-    Guards: importorskip(energy_go.env.resolver) — skips if JAX/resolver not installed.
+    Guards: guarded try/except (ImportError, ModuleNotFoundError, RuntimeError, AttributeError)
+    — skips if JAX/resolver not installed or AVX-broken (D33 pattern).
     """
 
     def test_assembled_gansu_resolves_via_region_path(self, client):
