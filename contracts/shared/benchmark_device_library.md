@@ -5,7 +5,7 @@
 **Schema file:** `config/device_models.yaml` (additive entries; schema_version "2.0.0" → "2.1.0")  
 **Test file:** `tests/shared/test_shared_benchmark_device_library.py`  
 **Spec sections:** §8.2 (electrolyzer asset model), §8.3 (composable assets), D32(h) (fleet sizing; CAPEX = units × unit-price)  
-**Decisions:** D2 (§8 composable assets), D23 (asset IDs = registry keys), D31 (B foundational, D keystone), D32 (product spine), D35 (electrolyzer entries land as INERT reference data; H₂ scenario stays gated; schema_version 2.0.0→2.1.0 additive minor, no re-LOCK)  
+**Decisions:** D2 (§8 composable assets), D23 (asset IDs = registry keys), D31 (B foundational, D keystone), D32 (product spine)  
 **Plan:** `docs/design/master_plan_geo_finance.md` §5.6 (CAPEX/OPEX/lifetime benchmarks, Workstream D)  
 **Owner:** finance-engineer  
 **Version:** v1.0.0  
