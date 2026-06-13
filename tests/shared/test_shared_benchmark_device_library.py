@@ -7,10 +7,14 @@ Verifies:
 - ID format invariant (T3)
 - Provenance fields (T4-T5, T15)
 - Existing Gansu entries untouched (T6)
-- Per-type physics field completeness and invariants (T7-T11)
-- Electrolyzer technology monotonics (T12)
+- Per-type physics field completeness and invariants (T7-T10)
 - Non-negative economics (T13)
 - SST stub shape (T14)
+
+NOTE — Electrolyzer entries (T11/T12) are HELD pending rl-architect ruling
+on whether adding the new `electrolyzer` device type to device_model_schema
+is a minor additive extension (no re-LOCK) or requires a superseding DECISION.
+Those tests and data entries ship in a follow-up commit once rl-architect clears.
 """
 import re
 from pathlib import Path
@@ -68,11 +72,10 @@ EXPECTED_IDS = [
     # Grid benchmark + SST stub
     "pcc-traditional-220kv",
     "pcc-sst-stub",
-    # Electrolyzer benchmark (§8.2 four types)
-    "electrolyzer-alk-20mw",
-    "electrolyzer-pem-10mw",
-    "electrolyzer-aem-1mw",
-    "electrolyzer-soec-5mw",
+    # ELECTROLYZER entries HELD — pending rl-architect ruling on whether
+    # adding the `electrolyzer` device type to device_model_schema is a minor
+    # additive extension (no re-LOCK) or requires a superseding DECISION.
+    # IDs ship in a follow-up commit once rl-architect clears (contract §2/§7).
 ]
 
 
@@ -288,119 +291,13 @@ def test_grid_physics_non_negative(models, model_id):
     assert p["max_import_mw"] >= 0, f"{model_id}: max_import_mw must be ≥ 0"
 
 
-# ── T11 — Electrolyzer physics ───────────────────────────────────────────────
-
-ELY_IDS = [
-    "electrolyzer-alk-20mw",
-    "electrolyzer-pem-10mw",
-    "electrolyzer-aem-1mw",
-    "electrolyzer-soec-5mw",
-]
-
-ELY_REQUIRED_FIELDS = [
-    "min_load_fraction", "standby_fraction", "e_spec_kwh_per_kg",
-    "degradation_yuan_per_mwh", "rated_mw_per_unit", "warmup_minutes",
-]
-
-
-@pytest.mark.parametrize("model_id", ELY_IDS)
-def test_electrolyzer_type(models, model_id):
-    """T11a: Electrolyzer entries must have type 'electrolyzer'."""
-    assert models[model_id]["type"] == "electrolyzer", (
-        f"{model_id}: type must be 'electrolyzer'"
-    )
-
-
-@pytest.mark.parametrize("model_id", ELY_IDS)
-def test_electrolyzer_required_fields(models, model_id):
-    """T11b: Electrolyzers must have all §8.2 physics fields."""
-    p = models[model_id]["physics"]
-    missing = [f for f in ELY_REQUIRED_FIELDS if f not in p]
-    assert not missing, f"{model_id!r} missing electrolyzer physics fields: {missing}"
-
-
-@pytest.mark.parametrize("model_id", ELY_IDS)
-def test_electrolyzer_physics_invariants(models, model_id):
-    """T11c: Electrolyzer physics invariants (contract §2.1).
-    Hand-computed per model:
-      ALK: min_load=0.20 ∈(0,1] ✓; standby=0.02 ∈[0,min) ✓ (0.02<0.20);
-           e_spec=52.0>0 ✓; degrad=4.0≥0 ✓; rated=20.0>0 ✓; warmup=30.0≥0 ✓.
-      PEM: min_load=0.05 ∈(0,1] ✓; standby=0.01 ∈[0,min) ✓ (0.01<0.05);
-           e_spec=55.0>0 ✓; degrad=8.0≥0 ✓; rated=10.0>0 ✓; warmup=5.0≥0 ✓.
-      AEM: min_load=0.05; standby=0.01 (0.01<0.05 ✓); e_spec=53.0; degrad=10.0; rated=2.4; warmup=5.0.
-      SOEC: min_load=0.20; standby=0.05 (0.05<0.20 ✓); e_spec=40.0; degrad=15.0; rated=5.0; warmup=240.0.
-    """
-    p = models[model_id]["physics"]
-    assert 0 < p["min_load_fraction"] <= 1.0, (
-        f"{model_id}: min_load_fraction must be in (0, 1]; got {p['min_load_fraction']}"
-    )
-    assert 0 <= p["standby_fraction"] < p["min_load_fraction"], (
-        f"{model_id}: standby_fraction={p['standby_fraction']} must be < "
-        f"min_load_fraction={p['min_load_fraction']} (standby < operating minimum)"
-    )
-    assert p["e_spec_kwh_per_kg"] > 0, f"{model_id}: e_spec_kwh_per_kg must be > 0"
-    assert p["degradation_yuan_per_mwh"] >= 0, f"{model_id}: degradation_yuan_per_mwh must be ≥ 0"
-    assert p["rated_mw_per_unit"] > 0, f"{model_id}: rated_mw_per_unit must be > 0"
-    assert p["warmup_minutes"] >= 0, f"{model_id}: warmup_minutes must be ≥ 0"
-
-
-# ── T12 — Electrolyzer technology monotonics ──────────────────────────────────
-
-def test_electrolyzer_e_spec_monotonics(models):
-    """T12a: SOEC < ALK specific energy (SOEC uses heat input; lower net electrical e_spec).
-    Hand-computed: SOEC 40.0 < ALK 52.0 — SOEC net electrical energy lower because
-    high-temp heat input supplements; ALK system losses yield 52 kWh/kg (IEA 2023).
-    """
-    soec = models["electrolyzer-soec-5mw"]["physics"]["e_spec_kwh_per_kg"]
-    alk = models["electrolyzer-alk-20mw"]["physics"]["e_spec_kwh_per_kg"]
-    # 40.0 < 52.0 ✓
-    assert soec < alk, (
-        f"SOEC e_spec ({soec}) should be < ALK e_spec ({alk}): "
-        "SOEC uses heat input so net electrical kWh/kg is lower"
-    )
-
-
-def test_electrolyzer_degradation_monotonics(models):
-    """T12b: ALK < PEM < AEM < SOEC degradation (increasing technology immaturity).
-    Hand-computed: 4.0 < 8.0 < 10.0 < 15.0 ✓ — all are ¥/MWh throughput (§8.2).
-    """
-    alk = models["electrolyzer-alk-20mw"]["physics"]["degradation_yuan_per_mwh"]
-    pem = models["electrolyzer-pem-10mw"]["physics"]["degradation_yuan_per_mwh"]
-    aem = models["electrolyzer-aem-1mw"]["physics"]["degradation_yuan_per_mwh"]
-    soec = models["electrolyzer-soec-5mw"]["physics"]["degradation_yuan_per_mwh"]
-    # 4.0 < 8.0 < 10.0 < 15.0
-    assert alk < pem < aem < soec, (
-        f"Degradation order violated: ALK={alk}, PEM={pem}, AEM={aem}, SOEC={soec}. "
-        "Expected ALK < PEM < AEM < SOEC (increasing immaturity of technology)"
-    )
-
-
-def test_electrolyzer_min_load_alk_gt_pem(models):
-    """T12c: ALK min_load > PEM min_load — defining characteristic of alkaline technology.
-    Hand-computed: ALK 0.20 > PEM 0.05 ✓ (§8.2 states "20–100%" vs "5–100%").
-    """
-    alk = models["electrolyzer-alk-20mw"]["physics"]["min_load_fraction"]
-    pem = models["electrolyzer-pem-10mw"]["physics"]["min_load_fraction"]
-    # 0.20 > 0.05
-    assert alk > pem, (
-        f"ALK min_load_fraction ({alk}) must be > PEM ({pem}): "
-        "alkaline electrolyzer limited turndown is the defining §8.2 characteristic"
-    )
-
-
-def test_electrolyzer_capex_order(models):
-    """T12d: ALK CAPEX < PEM CAPEX < AEM CAPEX < SOEC CAPEX (2024 market pricing order).
-    Hand-computed: 3500 < 6500 < 8500 < 14000 ¥/kW ✓ (IRENA 2023 / IEA 2023 order).
-    """
-    alk = models["electrolyzer-alk-20mw"]["economics"]["capex_per_kw_yuan"]
-    pem = models["electrolyzer-pem-10mw"]["economics"]["capex_per_kw_yuan"]
-    aem = models["electrolyzer-aem-1mw"]["economics"]["capex_per_kw_yuan"]
-    soec = models["electrolyzer-soec-5mw"]["economics"]["capex_per_kw_yuan"]
-    # 3500 < 6500 < 8500 < 14000
-    assert alk < pem < aem < soec, (
-        f"CAPEX order violated: ALK={alk}, PEM={pem}, AEM={aem}, SOEC={soec}. "
-        "Expected ALK < PEM < AEM < SOEC (established public market pricing hierarchy)"
-    )
+# ── T11/T12 — Electrolyzer physics + monotonics (HELD) ──────────────────────
+# These tests are HELD pending rl-architect ruling on whether adding the new
+# `electrolyzer` device type to device_model_schema is a minor additive bump
+# (no re-LOCK) or requires a superseding DECISION + re-LOCK.
+# Tests and data entries will be added in a follow-up commit once cleared.
+# Spec reference: §8.2 (electrolyzer model parameters); §8.5 (H2 scenario gate).
+# Proposed values documented in contract §2–§4 for rl-architect review.
 
 
 # ── T13 — Non-negative economics ─────────────────────────────────────────────
