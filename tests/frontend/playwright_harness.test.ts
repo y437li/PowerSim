@@ -12,15 +12,16 @@ import { describe, it, expect } from "vitest";
 // Dynamic import so this file doesn't hard-fail if playwright.config.ts doesn't
 // exist yet (the file is red until implementation — correct per contract-first-dev).
 async function loadConfig() {
-  const mod = await import("../../playwright.config");
+  const mod = await import("../frontend_e2e/playwright.config");
   return mod.default;
 }
 
 describe("playwright.config.ts shape (contract: playwright_harness.md §4)", () => {
-  it("testDir is ./tests/frontend_e2e", async () => {
+  it("testDir is '.'", async () => {
     const config = await loadConfig();
     // Contract invariant: testDir must point at the E2E area, not the unit-test tree
-    expect(config.testDir).toBe("./tests/frontend_e2e");
+    // Config is co-located at tests/frontend_e2e/ so '.' = that directory (same area)
+    expect(config.testDir).toBe(".");
   });
 
   it("projects contains exactly one entry with name 'chromium'", async () => {
@@ -62,7 +63,8 @@ describe("playwright.config.ts shape (contract: playwright_harness.md §4)", () 
     const reporters = config.reporter as Array<[string, Record<string, unknown>]>;
     const jsonEntry = reporters.find(([name]) => name === "json");
     // Contract: machine-readable output path for QA automation
-    expect(jsonEntry?.[1]?.outputFile).toBe("playwright-report/results.json");
+    // Path is relative to the config file's location (tests/frontend_e2e/) — climbs to repo root
+    expect(jsonEntry?.[1]?.outputFile).toBe("../../playwright-report/results.json");
   });
 
   // reviewer: trace must be retained on failure — QA needs the trace to diagnose a
