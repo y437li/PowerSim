@@ -144,6 +144,17 @@ GANSU_MODELS = {
 }
 
 
+# Gansu device models at schema_version 2.0.0 — mirrors device_models.yaml on main.
+# Used for D33 fix tests: the live file has schema_version="2.0.0" and the flat (24,)
+# tariff in site_gansu.yaml must NOT produce E-TAR-SHAPE under v2.0+ rules.
+GANSU_MODELS_V2 = {
+    "schema_version": "2.0.0",
+    "models": {
+        k: v for k, v in GANSU_MODELS["models"].items()
+    },
+}
+
+
 def _import_validate():
     """Import validate() — test is skipped if module not yet implemented."""
     pytest.importorskip("energy_go.env.config_validation")
@@ -431,6 +442,89 @@ class TestETarShape:
         result = validate(site, GANSU_MODELS)
         ids = [e.rule_id for e in result.errors]
         assert "E-TAR-SHAPE" in ids
+
+
+class TestETarShapeV2:
+    """E-TAR-SHAPE v2.0+ rules (D33 fix): flat (24,) OR seasonal (12,24) both accepted.
+
+    The coverage gap that hid the live bug: no test exercised schema_version=2.0.0
+    against a flat (24,) tariff.  These tests pin the relaxed acceptance set.
+    """
+
+    # reviewer: backend-reviewer (D33 gap — schema 2.0.0 + flat (24,) → must be OK)
+    def test_v2_flat_24_ok(self):
+        # D33 fix: schema_version=2.0.0 + flat (24,) tariff → NO E-TAR-SHAPE.
+        # Regression guard: this is the exact combination that was broken on main
+        # (device_models.yaml@2.0.0 + site_gansu.yaml flat (24,) → live E-TAR-SHAPE error).
+        # resolver.py L221-229 accepts flat (24,) and replicates ×12; validator must agree.
+        validate = _import_validate()
+        result = validate(GANSU_SITE, GANSU_MODELS_V2)
+        ids = [e.rule_id for e in result.errors]
+        assert "E-TAR-SHAPE" not in ids, (
+            "schema_version=2.0.0 + flat (24,) tariff must NOT produce E-TAR-SHAPE "
+            "(resolver.py replicates ×12 — validator must accept what the resolver broadcasts)"
+        )
+
+    # reviewer: backend-reviewer (D33 — seasonal (12,24) must also pass under v2)
+    def test_v2_seasonal_12x24_ok(self):
+        # schema_version=2.0.0 + (12,24) nested list → NO E-TAR-SHAPE.
+        # This is the canonical v2 format from the POST /api/site/validate endpoint.
+        # Each of the 12 rows is a copy of the Gansu TOU profile.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        flat_row = site["tariff"]["price_table_yuan_per_mwh"]   # 24 scalars
+        site["tariff"]["price_table_yuan_per_mwh"] = [list(flat_row) for _ in range(12)]
+        result = validate(site, GANSU_MODELS_V2)
+        ids = [e.rule_id for e in result.errors]
+        assert "E-TAR-SHAPE" not in ids, (
+            "schema_version=2.0.0 + (12,24) seasonal table must NOT produce E-TAR-SHAPE"
+        )
+
+    # reviewer: backend-reviewer (D33 — wrong flat length under v2 must still error)
+    def test_v2_wrong_flat_length_errors(self):
+        # schema_version=2.0.0 + flat (11,) — neither flat-24 nor (12,24) → ERROR.
+        # Arithmetic: len=11 ≠ 24 and not a (12,24) matrix.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        site["tariff"]["price_table_yuan_per_mwh"] = [300.0] * 11
+        result = validate(site, GANSU_MODELS_V2)
+        ids = [e.rule_id for e in result.errors]
+        assert "E-TAR-SHAPE" in ids, (
+            "schema_version=2.0.0 + flat (11,) tariff — not flat-24 nor (12,24) → E-TAR-SHAPE"
+        )
+
+    # reviewer: backend-reviewer (D33 — wrong nested shape under v2 must still error)
+    def test_v2_wrong_seasonal_shape_errors(self):
+        # schema_version=2.0.0 + 12 rows of 23 elements → not (12,24) and not flat-24 → ERROR.
+        # Arithmetic: 12 rows × 23 cols ≠ (12,24).
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        site["tariff"]["price_table_yuan_per_mwh"] = [[300.0] * 23 for _ in range(12)]
+        result = validate(site, GANSU_MODELS_V2)
+        ids = [e.rule_id for e in result.errors]
+        assert "E-TAR-SHAPE" in ids, (
+            "schema_version=2.0.0 + (12,23) table — wrong row width → E-TAR-SHAPE"
+        )
+
+    # reviewer: backend-reviewer (D33 — wrong row count under v2 must still error)
+    def test_v2_wrong_row_count_errors(self):
+        # schema_version=2.0.0 + 11 rows of 24 elements → not (12,24) and not flat-24 → ERROR.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        site["tariff"]["price_table_yuan_per_mwh"] = [[300.0] * 24 for _ in range(11)]
+        result = validate(site, GANSU_MODELS_V2)
+        ids = [e.rule_id for e in result.errors]
+        assert "E-TAR-SHAPE" in ids, (
+            "schema_version=2.0.0 + (11,24) table — wrong row count → E-TAR-SHAPE"
+        )
+
+    def test_v2_no_device_models_no_e_tar_shape(self):
+        # Without device_models, v2 branch is unreachable — check falls back to v1 (len==24).
+        # Gansu flat (24,) → no error even under v1 path.
+        validate = _import_validate()
+        result = validate(GANSU_SITE, None)
+        ids = [e.rule_id for e in result.errors]
+        assert "E-TAR-SHAPE" not in ids
 
 
 class TestEEconNeg:

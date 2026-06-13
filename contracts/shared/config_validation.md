@@ -229,19 +229,27 @@ For `device_model_schema` **v1.x** (flat `(24,)` price table):
 HARD ERROR iff len(price_table_yuan_per_mwh) != 24
 ```
 
-For `device_model_schema` **v2.0+** (seasonal `(12,24)` price table — post-PR #87):
+For `device_model_schema` **v2.0+** (seasonal or flat — post-PR #87, D33 fix):
 ```
-HARD ERROR iff shape(price_table_yuan_per_mwh) != (12, 24)
+ACCEPT  flat list of exactly 24 scalars  → resolver.py replicates ×12 internally
+ACCEPT  nested list of shape (12, 24)    → seasonal table, passed as-is
+HARD ERROR iff neither form is matched
 ```
 
-The v1/v2 branch is resolved at import time from `device_model_schema` version
-(`"2.0.0"` or higher activates the `(12,24)` check).
+The v1/v2 branch is resolved at call-time from `device_model_schema` version
+(`"2.0.0"` or higher activates the v2 check).
+
+**Rationale (D33):** `resolver.py` is the single source of truth (D18/D26): the
+inline-tariff path (lines 221-229) accepts a flat `(24,)` list and replicates it
+×12 before building `EnvParams`. The validator MUST NOT reject what the resolver
+broadcasts. A flat `(24,)` is therefore legal under v2.0+ — it is the
+backward-compatible on-disk form for sites whose YAML was written before PR #87.
 
 **Constraint format examples:**  
 v1: `"len(price_table)=12 ≠ 24 (expected flat hourly list)"`  
-v2: `"shape(price_table)=(24,) ≠ (12, 24) (expected seasonal matrix)"`
+v2: `"shape(price_table)=(11,) — expected flat (24,) or seasonal (12,24)"`
 
-**Gansu:** 24-entry flat list → no error (v1).
+**Gansu:** 24-entry flat list → no error (v1 and v2).
 
 ### E-ECON-WACC — WACC outside valid range
 
@@ -378,7 +386,7 @@ WARNING iff (wind.fleet_rated_mw < 1.0
 | `E-BAT-CRATE` | ERROR | device_models | OK (0.333C ≤ 0.333C) |
 | `E-BAT-UNIT` | ERROR | explicit unit_count | SKIP (not set) |
 | `E-LOAD-SVC` | ERROR | load_peak_mw field | SKIP (not set) |
-| `E-TAR-SHAPE` | ERROR | — | OK (24 entries) |
+| `E-TAR-SHAPE` | ERROR | — | OK (flat (24,) accepted v1 and v2) |
 | `E-ECON-WACC` | ERROR | finance.wacc_pct field | SKIP (not set) |
 | `E-ECON-NEG` | ERROR | economics blocks present | OK |
 | `W-BAT-CRATE-2C` | WARNING | device_models | OK (0.333C) |
@@ -445,13 +453,23 @@ Rules implemented: `E-CAP-POS`, `E-BAT-CRATE`, `E-BAT-UNIT`, `E-TAR-SHAPE` (v1),
 Gated/skipped v1: `E-LOAD-SVC` (needs `load_peak_mw`), `E-TAR-SHAPE` v2 (needs PR #87),
 `E-ECON-WACC` (needs `finance.wacc_pct`), `W-H2-GT-GEN` (needs §8 electrolyzer).
 
-### Post-PR #87 (device_model_schema v2.0.0)
-`E-TAR-SHAPE` switches to `(12,24)` check.  Implementation is version-gated:
+### Post-PR #87 (device_model_schema v2.0.0) + D33 fix
+`E-TAR-SHAPE` under v2.0+ accepts **flat `(24,)` OR seasonal `(12,24)`**.
+A flat `(24,)` list is the on-disk backward-compatible form; `resolver.py` replicates
+it ×12 to `(12,24)` before building `EnvParams` (D18/D26 single-validator rule).
+Implementation is version-gated:
 ```python
 if device_model_schema_version >= (2, 0, 0):
-    expected_shape = (12, 24)
+    # Accept flat (24,) OR nested (12,24) — resolver broadcasts the flat form ×12.
+    flat_ok     = isinstance(price_table, list) and len(price_table) == 24
+                  and not any(isinstance(row, list) for row in price_table)
+    seasonal_ok = (isinstance(price_table, list) and len(price_table) == 12
+                   and all(isinstance(row, list) and len(row) == 24 for row in price_table))
+    if not (flat_ok or seasonal_ok):
+        # ERROR
 else:
-    expected_shape = (24,)
+    if len(price_table) != 24:
+        # ERROR
 ```
 
 ### Post-tariff_model_schema (task #58 Step B)
