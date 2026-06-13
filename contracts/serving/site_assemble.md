@@ -269,11 +269,19 @@ request omitted `site_meta` entirely.
 
 **Device type absent from fleet:** that asset category key is omitted from
 `site_config.assets`. Example: no battery in fleet → `assets.battery` absent.
-The validator will catch missing required assets as validation errors (not 400).
-**Note:** missing-category validation is deferred to the E-SCHEMA rule in
-`config_validation.md §4`; E-SCHEMA is not implemented in v1.0.0 ("not in v1
-scope") — absent sections are silently skipped by `validate()`. Tracked in
-task #8. Two xfail tests assert the contracted behavior for when E-SCHEMA lands.
+**The validator does NOT fire errors for missing asset categories in v1.0.0** —
+the E-SCHEMA rule (required-asset check) is not implemented; `validate()` silently
+skips absent sections ("not in v1 scope", config_validation.py). Missing battery →
+`errors == []`. Tracked in task #8.
+
+**Validation issues in practice (v1.0.0):**
+- Hard errors via assembled configs: rare — E-CAP-POS requires capacity ≤ 0
+  (impossible from count×per-unit with count ≥ 1), E-TAR-SHAPE skips (no inline
+  price_table), E-LOAD-SVC skips (no load section in assembled dict), E-BAT-CRATE
+  cannot fire (fleet_crate = device_crate by construction), E-BAT-UNIT skips (no
+  unit_count emitted).
+- Warnings via assembled configs: W-PCC-CURTAIL fires when installed generation
+  > 5× PCC max_export (oversized wind+solar relative to grid connection).
 
 **Costs assembly:**
 ```python
