@@ -489,37 +489,36 @@ def test_sst_stub_economics_empty(models):
 # class flagged on PR #101. These cases pin `type`, make per-type coverage exhaustive,
 # enforce the §1 provenance-format standard, and add an MW/kW unit-slip guard.
 
-VALID_TYPES = {"wind_turbine", "pv_panel", "battery", "grid_connection"}
-# electrolyzer is HELD (contract §2/§7) — no electrolyzer entries should ship until
-# rl-architect rules on the new device type; excluded from the valid set on purpose.
+VALID_TYPES = {"wind_turbine", "pv_panel", "battery", "grid_connection", "electrolyzer"}
+# electrolyzer added by LINEAGE D35 (rl-architect cleared the hold) — 4 INERT reference
+# entries ship in PR #104; resolver ignores type=electrolyzer until the H₂ scenario gate lifts.
 
 
-# reviewer: backend-reviewer (type discriminator is untested by T7-T10)
+# reviewer: backend-reviewer (type discriminator is untested by T7-T11)
 def test_every_model_has_valid_type(models):
-    """Every model must declare a `type` in the valid enum. electrolyzer must NOT
-    appear yet (held). Hand-check: 13 entries, all in
-    {wind_turbine, pv_panel, battery, grid_connection}."""
+    """Every model must declare a `type` in the valid enum.
+    Hand-check: 17 entries (13 wind/PV/BESS/grid + 4 electrolyzer, D35), all in
+    {wind_turbine, pv_panel, battery, grid_connection, electrolyzer}."""
     for mid, e in models.items():
         assert "type" in e, f"{mid!r} missing 'type' field"
         assert e["type"] in VALID_TYPES, (
-            f"{mid!r} type={e.get('type')!r} not in {sorted(VALID_TYPES)} "
-            "(electrolyzer is HELD pending rl-architect; no electrolyzer entry should ship)"
+            f"{mid!r} type={e.get('type')!r} not in {sorted(VALID_TYPES)}"
         )
 
 
 # reviewer: backend-reviewer (close the per-type coverage drift gap)
 def test_per_type_coverage_exhaustive(models):
     """The per-type ID lists must EXHAUSTIVELY cover every model in the YAML, so no
-    entry escapes T7-T10 physics validation. Fails if a future entry is added to the
+    entry escapes T7-T11 physics validation. Fails if a future entry is added to the
     YAML (or EXPECTED_IDS) without being added to the matching per-type list.
-    Hand-check: WIND(4)+PV(3)+BAT(3)+GRID(3) = 13 = len(models)."""
-    covered = set(WIND_IDS) | set(PV_IDS) | set(BAT_IDS) | set(GRID_IDS)
+    Hand-check: WIND(4)+PV(3)+BAT(3)+GRID(3)+ELY(4) = 17 = len(models) (D35)."""
+    covered = set(WIND_IDS) | set(PV_IDS) | set(BAT_IDS) | set(GRID_IDS) | set(ELY_IDS)
     all_ids = set(models.keys())
     uncovered = all_ids - covered
     assert not uncovered, (
         f"models present in YAML but covered by NO per-type physics test: {sorted(uncovered)}. "
-        "Add each to the matching WIND_IDS/PV_IDS/BAT_IDS/GRID_IDS list — otherwise it ships "
-        "physics-unvalidated (the PR #101 fixture-drift class)."
+        "Add each to the matching WIND_IDS/PV_IDS/BAT_IDS/GRID_IDS/ELY_IDS list — otherwise it "
+        "ships physics-unvalidated (the PR #101 fixture-drift class)."
     )
     dangling = covered - all_ids
     assert not dangling, f"per-type ID lists reference absent models: {sorted(dangling)}"
