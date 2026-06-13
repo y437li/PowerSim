@@ -186,6 +186,13 @@ def resolve_site(
     #
     # Absent `tariff_region` → inline fallback: read price_table from
     # site["tariff"]["price_table_yuan_per_mwh"] (backward-compatible).
+    #
+    # Precedence note (D33): if BOTH tariff_region AND an inline price_table are
+    # present, tariff_region wins unconditionally (L192 branch taken first).  The
+    # inline table is validated by E-TAR-SHAPE but never used — not an error.
+    # tariff_region is the PREFERRED path for seasonal tariffs (carries demand_rate +
+    # sell_clamp metadata); inline (12,24) is an escape hatch for callers that have
+    # already materialized the matrix (contracts/shared/config_validation.md §4).
     # ------------------------------------------------------------------
     tariff_region_id = site.get("tariff_region")
 

@@ -244,6 +244,14 @@ inline-tariff path accepts a flat `(24,)` list and replicates it ×12 before bui
 `EnvParams`; it also accepts a seasonal `(12,24)` as a passthrough.  The validator
 MUST NOT reject what the resolver accepts; both accept exactly `{flat (24,), (12,24)}`.
 
+**Preferred path for seasonal tariffs:** `tariff_region` (§7, `resolver.py` L192) is
+the PREFERRED route for seasonal pricing — it carries demand_rate, sell_clamp, and
+currency metadata that inline tables cannot express.  Inline `(12,24)` is a valid
+escape hatch (e.g. API callers that have already materialized the matrix) but carries
+no metadata side-channel.  If `tariff_region` and an inline `price_table` coexist on
+the same site, `tariff_region` wins and the inline table is validated but unused
+(pre-existing resolver precedence at L192; noted here so future readers are not confused).
+
 **Parity invariant (binding):** the set of `price_table` shapes accepted by this rule
 MUST equal the set that `resolve_site()`'s inline-tariff path accepts without raising.
 Any future change to either side MUST update the other in the same PR.
