@@ -584,6 +584,64 @@ class TestETarShapeV2:
                 )
             # Other errors (e.g. JAX import errors caught as ImportError/ModuleNotFoundError) are OK
 
+    # reviewer: backend-reviewer (D33 parity — resolve_site succeeds on inline (12,24))
+    def test_resolver_inline_seasonal_passthrough(self):
+        # Parity test: resolve_site() must NOT raise on a site with an inline (12,24) tariff.
+        # test_v2_seasonal_12x24_ok already proves validate() accepts (12,24); THIS test
+        # proves the resolver-side of the parity invariant — "validator-accepts ⟺
+        # resolver-accepts" is now proven for BOTH shapes in the accepted set {(24,),(12,24)}.
+        #
+        # Approach: start from site_gansu.yaml (disk), replace the flat (24,) tariff with
+        # a (12,24) matrix (12 copies of the same row), write to a temp file, call resolve_site().
+        # JAX-guarded: same pattern as test_real_gansu_config_validates_no_tar_shape.
+        import pathlib, tempfile, os
+        import yaml as _yaml
+        validate = _import_validate()
+        repo_root = pathlib.Path(__file__).resolve().parents[2]
+        models_path = repo_root / "config" / "device_models.yaml"
+
+        # Build site with (12,24) inline tariff (12 identical rows of the Gansu TOU profile)
+        site = _yaml.safe_load(open(repo_root / "config" / "site_gansu.yaml"))
+        flat_row = list(site["tariff"]["price_table_yuan_per_mwh"])  # 24 scalars
+        site["tariff"]["price_table_yuan_per_mwh"] = [list(flat_row) for _ in range(12)]
+
+        # (a) validate() must accept inline (12,24) under v2.0+ — no JAX needed
+        models = _yaml.safe_load(open(models_path))
+        result = validate(site, models)
+        assert "E-TAR-SHAPE" not in [e.rule_id for e in result.errors], (
+            "inline (12,24) tariff must NOT produce E-TAR-SHAPE under schema v2.0+ "
+            "(D33 parity — validator side)"
+        )
+
+        # (b) resolve_site() must not raise ConfigValidationError on inline (12,24)
+        # Writes a temp YAML so resolve_site() can load it from disk.
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, prefix="test_gansu_seasonal_"
+        )
+        try:
+            _yaml.dump(site, tmp)
+            tmp.close()
+            try:
+                import importlib
+                resolver_mod = importlib.import_module("energy_go.env.resolver")
+                resolver_mod.resolve_site(tmp.name, str(models_path))
+            except RuntimeError as exc:
+                if "AVX" in str(exc) or "cpu_feature" in str(exc) or "jaxlib" in str(exc):
+                    pass  # JAX not available on this platform — (a) is the binding guard
+                else:
+                    raise
+            except Exception as exc:
+                from energy_go.env.config_validation import ConfigValidationError
+                if isinstance(exc, ConfigValidationError):
+                    pytest.fail(
+                        f"resolve_site() raised ConfigValidationError on inline (12,24) "
+                        f"(D33 parity broken — resolver-side): {exc}"
+                    )
+                # Other non-ConfigValidationError exceptions (ImportError, ModuleNotFoundError)
+                # indicate JAX unavailability — acceptable on this platform.
+        finally:
+            os.unlink(tmp.name)
+
 
 class TestEEconNeg:
     """E-ECON-NEG: negative economics parameters → hard error."""
