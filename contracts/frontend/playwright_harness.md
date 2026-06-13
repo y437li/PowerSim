@@ -59,17 +59,21 @@ app-shell implementation audit (PR #5).
 ## 1. Playwright configuration (`playwright.config.ts`)
 
 ```ts
-// playwright.config.ts — root of repo (same level as package.json)
+// tests/frontend_e2e/playwright.config.ts — co-located with the tests it configures
+// Moved from repo root by root_config_consolidation (PR #99, contract §3.4)
 import { defineConfig, devices } from '@playwright/test';
+import path from 'path';
+import { fileURLToPath } from 'url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
-  testDir: './tests/frontend_e2e',
+  testDir: '.',   // '.' = this file's directory = tests/frontend_e2e/ (same E2E area)
   testMatch: '**/*.spec.ts',
   fullyParallel: false,          // smoke suite is small; sequential is fine
   retries: process.env.CI ? 1 : 0,
   reporter: [
-    ['html', { open: 'never' }],
-    ['json', { outputFile: 'playwright-report/results.json' }],
+    ['html', { open: 'never', outputFolder: '../../playwright-report' }],
+    ['json', { outputFile: '../../playwright-report/results.json' }],
   ],
   use: {
     baseURL: 'http://localhost:5173',
@@ -90,12 +94,13 @@ export default defineConfig({
 ```
 
 ### Config invariants (asserted by the config-shape test):
-- `testDir` is `./tests/frontend_e2e`
+- `testDir` is `'.'` (the config's own directory = `tests/frontend_e2e/`; moved from root by PR #99)
 - `projects` contains exactly one entry with `name === 'chromium'`
 - `use.screenshot` is `'only-on-failure'`
 - `use.baseURL` is `'http://localhost:5173'`
 - `reporter` includes both `'html'` and `'json'` entries
 - `webServer.command` is `'npm run dev'`
+- `reporter` json entry `outputFile` is `'../../playwright-report/results.json'` (relative to config location, resolves to repo-root `playwright-report/`)
 
 ## 2. Error-capture fixture (`tests/frontend_e2e/helpers/errorCapture.ts`)
 
@@ -286,10 +291,12 @@ To verify the config contract without launching a browser, add one Vitest test:
 ```ts
 // tests/frontend/playwright_harness.test.ts  (NOT .tsx — no React; no JSX)
 // Verifies the shape of playwright.config.ts matches this contract's invariants.
-import config from '../../playwright.config';
+// Config moved to tests/frontend_e2e/ by root_config_consolidation (PR #99, contract §3.4)
+import config from '../frontend_e2e/playwright.config';
 
-test('playwright config: testDir is tests/frontend_e2e', () => {
-  expect(config.testDir).toBe('./tests/frontend_e2e');
+test("playwright config: testDir is '.'", () => {
+  // '.' = the config file's own directory = tests/frontend_e2e/ (E2E area)
+  expect(config.testDir).toBe('.');
 });
 test('playwright config: single chromium project', () => {
   expect(config.projects).toHaveLength(1);

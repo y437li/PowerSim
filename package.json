@@ -7,11 +7,11 @@
     "predev": "node scripts/copy_registry.js",
     "dev": "vite",
     "prebuild": "node scripts/copy_registry.js",
-    "build": "tsc -p tsconfig.app.json && vite build",
+    "build": "tsc -p .config/tsconfig.app.json && vite build",
     "pretest": "node scripts/copy_registry.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test",
+    "test:e2e": "playwright test --config tests/frontend_e2e/playwright.config.ts",
     "test:e2e:report": "playwright show-report"
   },
   "dependencies": {
