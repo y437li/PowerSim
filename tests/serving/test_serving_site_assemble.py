@@ -431,30 +431,17 @@ class TestFleetMerge:
 class TestMissingAssetsValidationErrors:
     """§I6: Missing required device categories (E-SCHEMA, task #8).
 
-    In v1.0.0 config_validation.validate() silently skips absent asset sections —
-    the E-SCHEMA rule is not yet implemented. Missing battery → errors == [].
-    test_no_battery_produces_validation_error is SKIPPED until E-SCHEMA lands.
+    E-SCHEMA activated in config_validation v1.1.0 (task #8, PR #106).
+    Missing battery → validate() returns at least one E-SCHEMA error.
     test_validation_issue_schema verifies the ValidationIssue dict schema
     on any response that happens to have issues.
     """
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "E-SCHEMA (required-asset rule) not implemented in config_validation v1.0.0; "
-            "validate() returns errors=[] for battery-less assembled configs — "
-            "absent asset categories are silently skipped ('not in v1 scope', "
-            "config_validation.py ~line 161). Tracked task #8. "
-            "Un-xfail when E-SCHEMA lands (auto-XPASS→fail forces the marker removal)."
-        ),
-    )
     def test_no_battery_produces_validation_error(self, client):
         """No battery in fleet → response HTTP 200 with at least one validation error.
 
-        XFAIL (strict): E-SCHEMA not implemented in config_validation v1.0.0 (task #8).
-        When E-SCHEMA lands, validate() will return errors for missing required
-        asset categories (battery absent → error); xfail flips to XPASS→fail,
-        forcing removal of this marker.
+        E-SCHEMA active in config_validation v1.1.0: validate() returns errors for
+        missing required asset categories (battery absent → E-SCHEMA error).
         """
         req = {
             "fleet": [
