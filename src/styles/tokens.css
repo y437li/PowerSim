@@ -1,0 +1,54 @@
+/* Energy GO — design tokens (single source of truth)
+ *
+ * All color values are defined here and only here.
+ * TypeScript consumers import from src/styles/tokenValues.ts.
+ * Keep this file in sync with tokenValues.ts (enforced by the token-sync test).
+ */
+:root {
+  /* Backgrounds */
+  --bg-app:        #0f1117;
+  --bg-surface:    #1e2533;
+  --bg-nav:        #1a1f2e;
+  --bg-error:      #2d1515;
+
+  /* Borders */
+  --border-default: #2d3748;
+
+  /* Text */
+  --text-primary:  #e2e8f0;
+  --text-muted:    #94a3b8;
+  --text-faint:    #64748b;
+
+  /* Accent / status */
+  --accent-blue:        #60a5fa;
+  --accent-green:       #22c55e;
+  --accent-amber:       #f59e0b;
+  --accent-red:         #f87171;
+  --accent-error-text:  #fca5a5;
+  --accent-grey:        #4b5563;
+
+  /* TOU tiers */
+  --tou-critical-peak-bg:     #fee2e2;
+  --tou-critical-peak-text:   #991b1b;
+  --tou-critical-peak-border: #f87171;
+  --tou-peak-bg:              #fef3c7;
+  --tou-peak-text:            #92400e;
+  --tou-peak-border:          #fcd34d;
+  --tou-mid-bg:               #dbeafe;
+  --tou-mid-text:             #1e40af;
+  --tou-mid-border:           #93c5fd;
+  --tou-valley-bg:            #dcfce7;
+  --tou-valley-text:          #166534;
+  --tou-valley-border:        #86efac;
+
+  /* Recharts series palette */
+  --chart-actor:      #6366f1;
+  --chart-critic:     #f59e0b;
+  --chart-entropy:    #10b981;
+  --chart-reward:     #3b82f6;
+  --chart-cost:       #ef4444;
+  --chart-soc:        #3b82f6;
+  --chart-grid:       #e5e7eb;
+  --chart-axis:       #9ca3af;
+  --chart-axis-label: #6b7280;
+}

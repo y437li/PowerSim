@@ -1,3 +1,5 @@
+@import './styles/tokens.css';
+
 /* Energy GO — base styles */
 
 *,
@@ -9,8 +11,8 @@
 body {
   margin: 0;
   font-family: system-ui, -apple-system, sans-serif;
-  background: #0f1117;
-  color: #e2e8f0;
+  background: var(--bg-app);
+  color: var(--text-primary);
 }
 
 /* App shell layout */
@@ -24,19 +26,19 @@ body {
   display: flex;
   gap: 1rem;
   padding: 0.75rem 1.5rem;
-  background: #1a1f2e;
-  border-bottom: 1px solid #2d3748;
+  background: var(--bg-nav);
+  border-bottom: 1px solid var(--border-default);
 }
 
 .nav-link {
-  color: #94a3b8;
+  color: var(--text-muted);
   text-decoration: none;
   font-size: 0.9rem;
   font-weight: 500;
 }
 
 .nav-link--active {
-  color: #60a5fa;
+  color: var(--accent-blue);
 }
 
 .app__main {
@@ -46,8 +48,8 @@ body {
 
 /* Card */
 .card {
-  background: #1e2533;
-  border: 1px solid #2d3748;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
   border-radius: 8px;
   padding: 1rem;
   margin-bottom: 1rem;
@@ -58,7 +60,7 @@ body {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #64748b;
+  color: var(--text-faint);
   margin-bottom: 0.5rem;
 }
 
@@ -87,23 +89,23 @@ body {
 }
 
 .number-display__null {
-  color: #64748b;
+  color: var(--text-faint);
 }
 
 /* Time axis */
 .time-axis {
   font-size: 0.85rem;
-  color: #94a3b8;
+  color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
 
 /* Error boundary */
 .error-boundary-fallback {
   padding: 1rem;
-  background: #2d1515;
-  border: 1px solid #f87171;
+  background: var(--bg-error);
+  border: 1px solid var(--accent-red);
   border-radius: 6px;
-  color: #fca5a5;
+  color: var(--accent-error-text);
 }
 
 .error-boundary-fallback__detail {
@@ -117,7 +119,7 @@ body {
 .not-found {
   text-align: center;
   padding: 4rem 1rem;
-  color: #64748b;
+  color: var(--text-faint);
 }
 
 /* Eval comparison table */
@@ -131,7 +133,7 @@ body {
 .eval-comparison__table td {
   padding: 0.5rem 0.75rem;
   text-align: right;
-  border-bottom: 1px solid #2d3748;
+  border-bottom: 1px solid var(--border-default);
 }
 
 .eval-comparison__table th:first-child,

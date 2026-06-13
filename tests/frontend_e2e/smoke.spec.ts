@@ -9,15 +9,38 @@
  * cleared by Playwright's HTML reporter at run start; see task #16 / playwright_harness.md §2).
  *
  * Design note — WS auto-connect:
- * The app shell (PR #5) does NOT call wsClient.connect() on mount. Consequently:
- *  - S1–S4 see no WS activity → consoleErrors === 0 is a correct, non-brittle assertion.
- *  - S5 must explicitly drive a WS connection via page.evaluate() so the test is not
- *    vacuous. The binding contract for S5 is pageErrors.length === 0.
+ * App.tsx calls telemetryWsClient.connect() + trainingWsClient.connect() on mount
+ * (useEffect, added in task #27). With no backend running, the browser emits a native
+ * "WebSocket connection to … failed" console.error per client — informational, not a crash.
+ *  - S1/S2/S4 filter WS-refused noise; S3 (/training) also filters API proxy 500s
+ *    (TrainingPanel fetches /api/runs on mount — Vite proxies to nothing → HTTP 500 →
+ *    console.error whose .text = "Failed to load resource..." and .location contains /api/).
+ *    After filtering, remainder === 0 catches real bugs (token import errors, etc.).
+ *    pageErrors === 0 (no unhandled JS exceptions) is the crash-safety invariant.
+ *  - S5 explicitly drives a raw WS connection via page.evaluate(). Only pageErrors is
+ *    asserted — consoleErrors intentionally not asserted (WS noise dominates; only crashes
+ *    are fatal). S6r: same pageErrors-only pattern.
  *
  * Run: npm run test:e2e  (requires `npm run dev` or webServer config in playwright.config.ts)
  */
 
 import { test, expect } from "./helpers/errorCapture";
+
+// WS-refused console.error filter (shared by S1–S4).
+// consoleErrors elements are ConsoleEntry objects { text, type, location }.
+// The browser emits "WebSocket connection to 'ws://…' failed" per refused client;
+// filter on .text so only that known noise is excluded.
+const WS_REFUSED = /WebSocket connection to .* failed/i;
+
+// API proxy console.error filter (S3 only — TrainingPanel fetches /api/runs on mount).
+// With no backend, Vite's proxy returns HTTP 500. This generates a console.error where:
+//   .text     = "Failed to load resource: the server responded with a status of 500"
+//   .location = "http://localhost:5173/api/runs:0:0"
+// The URL is in .location, NOT .text — so we match the failure phrase in .text AND
+// the /api/ path in .location to keep the filter scoped to proxy failures only.
+const API_RESOURCE_FAIL = /Failed to load resource/i;
+const isApiProxyFail = (e: { text: string; location: string }) =>
+  API_RESOURCE_FAIL.test(e.text) && /\/api\//i.test(e.location);
 
 // ---------------------------------------------------------------------------
 // S1 — App boots with HTTP 200 and the correct page title
@@ -31,8 +54,11 @@ test("S1: app boots with HTTP 200", async ({ page, errorCapture }) => {
   // Page title must contain "Energy GO" (case-insensitive)
   await expect(page).toHaveTitle(/Energy GO/i);
 
-  // No WS attempt on mount → no WS-originated console.error (see design note)
-  expect(errorCapture.consoleErrors).toHaveLength(0);
+  // App auto-connects WS on mount (task #27); filter the known WS-refused noise and
+  // assert NO OTHER console.error — catches real bugs (token import errors, etc.)
+  // while tolerating expected connection-refused output. See file-level design note.
+  const unexpected = errorCapture.consoleErrors.filter((e) => !WS_REFUSED.test(e.text));
+  expect(unexpected, `unexpected console errors: ${JSON.stringify(unexpected)}`).toHaveLength(0);
 
   // Zero unhandled JS exceptions on initial load
   expect(errorCapture.pageErrors).toHaveLength(0);
@@ -47,8 +73,11 @@ test("S2: / (SiteView) renders without errors", async ({ page, errorCapture }) =
   // The root route must render visible content — SiteView component is mounted
   await expect(page.locator("body")).not.toBeEmpty();
 
-  // No WS attempt on mount → no WS-originated console.error (see design note)
-  expect(errorCapture.consoleErrors).toHaveLength(0);
+  // App auto-connects WS on mount (task #27); filter the known WS-refused noise and
+  // assert NO OTHER console.error — catches real bugs (token import errors, etc.)
+  // while tolerating expected connection-refused output. See file-level design note.
+  const unexpected = errorCapture.consoleErrors.filter((e) => !WS_REFUSED.test(e.text));
+  expect(unexpected, `unexpected console errors: ${JSON.stringify(unexpected)}`).toHaveLength(0);
 
   // No unhandled JS exceptions
   expect(errorCapture.pageErrors).toHaveLength(0);
@@ -66,8 +95,15 @@ test("S3: /training (TrainingPanel) renders without errors", async ({
   // Route must render — TrainingPanel component is mounted
   await expect(page.locator("body")).not.toBeEmpty();
 
-  // No WS attempt on mount → no WS-originated console.error (see design note)
-  expect(errorCapture.consoleErrors).toHaveLength(0);
+  // S3 filters TWO known noise sources (see file-level design note):
+  //   1. WS-refused: browser emits console.error when WS clients can't connect on mount.
+  //   2. API proxy 500: TrainingPanel fetches /api/runs on mount; Vite returns 500.
+  //      The URL is in .location ("…/api/runs:0:0"), NOT in .text — isApiProxyFail checks both.
+  // Anything else (token import errors, runtime crashes surfaced as console.error) still fails.
+  const unexpected = errorCapture.consoleErrors.filter(
+    (e) => !WS_REFUSED.test(e.text) && !isApiProxyFail(e)
+  );
+  expect(unexpected, `unexpected console errors: ${JSON.stringify(unexpected)}`).toHaveLength(0);
 
   // No unhandled JS exceptions
   expect(errorCapture.pageErrors).toHaveLength(0);
@@ -85,8 +121,11 @@ test("S4: /eval (EvalComparison) renders without errors", async ({
   // Route must render — EvalComparison component is mounted
   await expect(page.locator("body")).not.toBeEmpty();
 
-  // No WS attempt on mount → no WS-originated console.error (see design note)
-  expect(errorCapture.consoleErrors).toHaveLength(0);
+  // App auto-connects WS on mount (task #27); filter the known WS-refused noise and
+  // assert NO OTHER console.error — catches real bugs (token import errors, etc.)
+  // while tolerating expected connection-refused output. See file-level design note.
+  const unexpected = errorCapture.consoleErrors.filter((e) => !WS_REFUSED.test(e.text));
+  expect(unexpected, `unexpected console errors: ${JSON.stringify(unexpected)}`).toHaveLength(0);
 
   // No unhandled JS exceptions
   expect(errorCapture.pageErrors).toHaveLength(0);
