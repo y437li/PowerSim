@@ -133,17 +133,19 @@ discount_rate (levered toggle)             = WACC
 
 **13.5a — r_f selected by time (two explicit dimensions).** (1) **Valuation-date dependence:** the analysis takes a `valuation_date` and uses the CGB yield *as of that date*; `valuation_date` + the exact yield used travel in `/api/finance/compare` provenance (a stale/mismatched rate is machine-visible). (2) **Term-matching:** the risk-free tenor is matched to the project horizon — `r_f = interp( CGB_curve(snapshot ≤ valuation_date), horizon_years )`; default convention **linear interpolation** to the exact `horizon_years` (20 yr interpolates 10yr↔30yr), `nearest`-tenor a config alternative. Currency/region-keyed: CNY → CGB; future regions → the corresponding sovereign curve (task #58 currency layering).
 
-**13.5b — named, overridable defaults — ⚠ PROVISIONAL, pending USER methodology discussion (provenance `USER-provided, pending`).** The CAPM **methodology** (§13.5/§13.5a) is USER-confirmed; the specific default **values** below are **PROVISIONAL** and **must not be locked until the USER discussion concludes** (a separate CAPM methodology decision brief is in flight). The engine carries them with a `provisional: true` provenance flag so any result computed on them is machine-visible as pre-discussion; the §13 *structure* is not blocked by the pending values.
+**13.5b — named, overridable defaults — USER-CONFIRMED (2026-06-13; provenance `USER-confirmed/2026-06-13`).** The CAPM methodology AND these default values are USER-confirmed (the USER accepted the §13 CAPM methodology-brief recommendations in full). All remain UI-editable with provenance badges; none is "pending."
 
-| Field | Provisional default | Basis (pending USER discussion) |
+| Field | Default (USER-confirmed) | Basis |
 |---|---|---|
-| `beta_unlevered` | **0.55** *(provisional)* | utility-scale renewable IPP asset beta ~0.5–0.6 (Damodaran "Green & Renewable Energy") — China renewables+storage β under discussion |
+| `beta_unlevered` | **0.60** | utility-scale renewable IPP asset beta, **upper end for a merchant wind+solar+storage exporter** (Damodaran green-energy ~0.5–0.6 + merchant-storage tilt) |
 | beta levering | Hamada `β_L = β_U·(1+(1−tax)·D/E)` | `= β_U` in the all-equity base |
-| `equity_risk_premium` (ERP) | **0.060** *(provisional)* | China-vs-global ERP basis under discussion (mature ~4.5–5% + China premium ~1–1.5%, Damodaran) |
-| `country_risk_premium` (CRP) | **0.0** *(provisional)* | CRP treatment under discussion; CNY/CGB base ⇒ sovereign risk already in r_f |
-| `cost_of_debt` | **5yr LPR + 125 bps** *(provisional)* | LPR benchmark + spread + tenor under discussion; time-selected like r_f |
-| `target_de_ratio` (D/E) | **0.0** base · **1.5** (60/40) levered *(provisional)* | unlevered-vs-levered base case under discussion |
-| `tax_rate` | **0.25** *(provisional; 15% renewable alt; VAT treatment open)* | tax/VAT treatment under discussion |
+| `equity_risk_premium` (ERP) | **0.060** (total China ERP) | **total-China-ERP convention** (mature ~4.5–5% + China premium ~1–1.5%, Damodaran), paired with **CRP = 0** to avoid double-count with the CGB r_f |
+| `country_risk_premium` (CRP) | **0.0** | CNY/CGB base ⇒ sovereign risk already in r_f; non-zero only for a cross-border/USD valuation |
+| `cost_of_debt` | **5yr LPR + 125 bps** *(levered only)* | LPR-anchored (PBoC), time-selected like r_f; spread = project credit margin |
+| `target_de_ratio` (D/E) | **0.0** base · **1.5** (60/40) levered toggle | base = all-equity unlevered; renewable PF gearing ~60% for the levered case |
+| `tax_rate` | **0.25** (15% renewable-preferential where qualifying) | levered/post-tax toggle only; **VAT explicitly out of v1** (§13.14) |
+
+**Base case = unlevered / pre-tax** (discount = `r_e`); **levered (WACC + equity-IRR + DSCR) is a default-OFF toggle reported as a delta** (§13.9). **Treasury tenor: linear-interpolate the CGB curve to the exact horizon** (20yr → interp 10↔30; 10yr → 10yr point; §13.5a). **v1 data source: static user-editable CGB + LPR curve config; live-fetch deferred to v2** (§13.6).
 
 **13.5c — sensitivity sweeps anchor on the CAPM base** (§13.10): the NPV-vs-rate curve's base point is `r_e` (or WACC); the swept band is `r_f ± Δ` (e.g. ±100 bps on the term-matched CGB) and `ERP ± Δ` (e.g. ±150 bps) — anchored and parameter-meaningful, not an arbitrary `[3%,12%]` band.
 
@@ -153,7 +155,7 @@ discount_rate (levered toggle)             = WACC
 
 **CAPEX** per device-model instance, summed over the site, keyed by the **same device-model ID** as the physics facet (`device_models.yaml` econ block, task #57). **Fleet sizing is configurable** (D32(h)): `CAPEX = unit_count × unit_price`.
 
-**Econ defaults — SHIP the #63 China benchmark library (USER decision §13.13-10).** The default CAPEX / OPEX / lifecycle *values* on each device-model ID are **sourced from finance-engineer's #63 device benchmark library** (the 2024/25 China market benchmarks — wind ¥/kW, PV ¥/kW + inverter, LFP battery ¥/kWh + ¥/kW, grid lump-sum, O&M, replacement/residual fractions, lifetimes). Each shipped value carries its #63 provenance/citation; all remain overridable. **§13's econ layer depends on #63** (named in the §13.7 dependencies note); the **fields** are fixed here, the **numbers** come from #63 verbatim. (Distinct from the CAPM discount-rate values, which stay PROVISIONAL pending the USER methodology discussion, §13.5b.)
+**Econ defaults — SHIP the #63 China benchmark library (USER decision §13.13-10).** The default CAPEX / OPEX / lifecycle *values* on each device-model ID are **sourced from finance-engineer's #63 device benchmark library** (the 2024/25 China market benchmarks — wind ¥/kW, PV ¥/kW + inverter, LFP battery ¥/kWh + ¥/kW, grid lump-sum, O&M, replacement/residual fractions, lifetimes). Each shipped value carries its #63 provenance/citation; all remain overridable. **§13's econ layer depends on #63** (named in the §13.7 dependencies note); the **fields** are fixed here, the **numbers** come from #63 verbatim. (Distinct from the CAPM discount-rate values, which are USER-confirmed §13.5b.)
 
 ```
 generators:  CAPEX_i = capacity_mw_i · 1000 · capex_per_kw_yuan_i
@@ -309,13 +311,13 @@ Composes **on top of** the LOCKED D13 identity; does **not** touch the LOCKED `e
 
 ### 13.13 USER gate decisions — RESOLVED (one item in follow-up discussion)
 
-The §13 sign-off items (REBUILD_SPEC change → human-gated). **The USER reviewed the package and decided** (2026-06-13); statuses below. One item — the CAPM default *values* — is in a separate methodology discussion (the §13 structure is not blocked; values are PROVISIONAL).
+The §13 sign-off items (REBUILD_SPEC change → human-gated). **The USER reviewed the package and decided** (2026-06-13); all items below are **RESOLVED** — including the CAPM methodology + default values (the follow-up CAPM methodology discussion concluded 2026-06-13 with all recommendations accepted).
 
 1. **✅ RESOLVED — Ensemble default M (§13.10):** **M = 50 confirmed**, with M = 1 retained as an honest fast-iteration mode (distributional metrics suppressed). An explicit override of D31's "v1 M = 1" guard → **records as LINEAGE D34** (co-authored rl-architect + finance-expert; supersedes D31's M=1 clauses only; lands with this PR on merge).
 2. **✅ RESOLVED — Downside-risk centerpiece (§13.10b):** the six metrics confirmed as the headline (worst-case NPV / max loss, max drawdown + year, P(NPV<0), P(IRR<hurdle), CVaR-5%, worst single-year CF), upside as context.
 3. **✅ RESOLVED — Tail percentile (§13.10a):** **headline set = P50/P75/P90/P95** + bootstrap CI on each; **P95 is the decision tail** (≈ 2.5th-worst of 50, defensible). **P99 dropped from the headline** (≈ 0.5th-worst, not credible at M = 50); retained only as optional indicative/low-confidence with CI. Convergence-hint thresholds (IRR ≥ 2 pp, NPV ≥ 20% of |P50|).
 4. **✅ RESOLVED — Price-path library + INV-FINLAYER (§13.4):** the 5 presets + editable custom curve as a **finance-layer-only** post-hoc transform (INV-FINLAYER — barred from dispatch; non-uniform → retrain flag); two-axis separation; constant-real default; shared-uniform path default with advanced per-stream paths.
-5. **🟡 IN DISCUSSION — CAPM default VALUES (§13.5b):** the CAPM **methodology** (r_e = r_f + β·ERP + CRP, time-matched CGB r_f, unlevered base) is **confirmed**; the specific default **values** (β_U, ERP, CRP, cost-of-debt benchmark/tenor, D/E, tax/VAT) are **PROVISIONAL pending a USER methodology discussion** (a separate CAPM decision brief is in flight). The v1 static user-updatable treasury-curve config (live fetch v2) stands. Values carry a `provisional` provenance flag; not locked until the discussion concludes.
+5. **✅ RESOLVED — Discount rate = CAPM, methodology + values (§13.5):** CAPM with time-matched CGB r_f, unlevered/pre-tax base (levered toggle as a delta). **USER-confirmed values (2026-06-13):** **β_U = 0.60** (merchant-storage tilt); **ERP = 6.0% total-China with CRP = 0** (no double-count); **cost of debt 5yr-LPR + 125 bps** (levered only); **D/E 0 base · 1.5 levered**; **tax 25%** (15% renewable where qualifying); **VAT out of v1**; **treasury tenor linear-interp to exact horizon**; **static user-editable CGB+LPR curve config in v1** (live-fetch v2). All UI-editable with `USER-confirmed/2026-06-13` provenance.
 6. **✅ RESOLVED — Horizon (§13.6):** **20-yr primary + 10-yr variant** confirmed.
 7. **✅ RESOLVED — Lifecycle replacement (§13.6):** battery replacement at **first-of(10-yr calendar, cycle-life)**; PV-inverter subsystem replacement; cost-side scenario-completeness; asset-management lines named, none dropped.
 8. **✅ RESOLVED — v1 revenue = COMPOSITE (§13.3):** v1 prices the composite of active power-supply streams (export net of import + demand charge); h2/avoided-cost/token design-proven config-only.
@@ -336,4 +338,4 @@ The §13 sign-off items (REBUILD_SPEC change → human-gated). **The USER review
 8. **Static treasury curve in v1** (§13.5/§13.6) — reproducible; live fetch is v2.
 9. **Real-option value ignored** (v2).
 10. **Ensemble fidelity & tail resolution (§13.10).** v1 prices **M = 50** weather draws via §12 block-bootstrap (a v1 prerequisite); the headline tail is **P95** (decision percentile; P50/P75/P90/P95 sound), **P99 dropped from the headline** (≈ 0.5th-worst of 50 → not credible; indicative-only if shown), and every percentile is only as valid as the §12 ensemble's statistical fidelity (cited via PR #77 §4.2). Weather is the **only** stochastic axis priced; price paths are deterministic scenarios, not draws.
-11. **CAPM default values PROVISIONAL (§13.5b).** The CAPM methodology is fixed, but β / ERP / CRP / cost-of-debt / D-E / tax default *values* are provisional pending a USER methodology discussion — results computed pre-discussion carry a `provisional` flag.
+11. **VAT excluded from v1 (§13.5b/§13.9).** The tax layer models corporate income tax only (pre-tax base + 25%/15% toggle, straight-line depreciation); **VAT** (input VAT on CAPEX, output VAT on sales — a cash-timing item) and deferred-tax are **out of v1**.
