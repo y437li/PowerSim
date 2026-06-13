@@ -91,6 +91,14 @@ Because dispatch runs at **constant-real year-1 prices** (D31/F1), the entire pr
 revenue_s(year y, path) = m_s(y) · Σ_{t} q_{s,t}·p_{s,t}        # m normalised to m(1) = 1.0 (= year-1 tariff)
 ```
 
+**INV-FINLAYER (named invariant — parallel to INV-BASIS).** Price paths, escalation, and contract structures (flat / indexed / spot) are a **post-hoc transform applied in the finance layer** over the dispatched-year streams, which are produced at **constant-real year-1 prices** (D31/F1). They are **structurally barred from re-entering env dispatch** — no price-path, escalation rate, or contract term may flow into the jitted `step` or alter the trained policy's observation distribution. A *uniform* path leaves relative TOU structure (hence optimal dispatch) unchanged ⇒ it is a **pure, financially-exact** finance transform. A **non-uniform / stream-specific** path genuinely changes dispatch incentives; applied post-hoc it is only an *approximation*, so it **must raise an explicit retrain flag — never a silent finance knob**. *Guard test (mandatory):* a non-uniform per-stream path → the engine sets `requires_retrain=true` in provenance and the result is badged, and a test asserts that no price-path/escalation field is reachable from the dispatch path (the env trace is independent of `price_path`). v1 default = the shared uniform path.
+
+**Two distinct distributional axes — do NOT conflate (INV-FINLAYER corollary).** The model has two orthogonal axes, and the spec keeps them separate:
+- **Weather draws `M` = the stochastic Monte-Carlo axis** — the M ensemble members are random weather realizations (§12 block-bootstrap); they produce the **P50/P75/P90/P99 exceedance distribution** and the downside-risk panel (§13.10).
+- **Price paths = DETERMINISTIC finance scenarios = a sensitivity axis** (§13.11), **not** Monte-Carlo draws.
+
+Each price path yields **its own** distribution-over-M (and its own surface); the two are **never** collapsed into a single cross-product "distribution" — doing so makes P90 meaningless. The §13.10 / §13.12 schema makes the dimensionality explicit: the exceedance distribution is over **M weather draws at a fixed price path**; sweeping price paths produces a family of such distributions.
+
 **Preset library** (each a named multiplier vector; defaults overridable, confirm at gate):
 
 | Preset | Shape | Default parameterization |
@@ -102,7 +110,7 @@ revenue_s(year y, path) = m_s(y) · Σ_{t} q_{s,t}·p_{s,t}        # m normalise
 | **stress** | sharp early fall | front-loaded decline (e.g. −X% over years 1–3) — the lender stress scenario |
 | **custom** | user-edited | a full editable `(N,)` multiplier vector, drag or table entry, named `"custom — from <source-preset>"` |
 
-**Per-stream paths (advanced).** A stream may carry its own `price_path`; default = one shared path across all streams. Per-stream paths are for differently structured revenue contracts. **Caveat (D31/F1):** a *uniform* path leaves relative TOU structure (hence optimal dispatch) unchanged — financially exact post-hoc. **Non-uniform / stream-specific escalation genuinely changes dispatch incentives** and is only an *approximation* if applied post-hoc without retraining — the spec records this limitation; v1 default is the shared uniform path.
+**Per-stream paths (advanced).** A stream may carry its own `price_path`; default = one shared path across all streams. Per-stream paths are for differently structured revenue contracts, and trip the INV-FINLAYER retrain flag above (non-uniform → approximate post-hoc, badged). v1 default = the shared uniform path.
 
 **Client/server parity (binding for the stage-⑤ frontend).** Price-path re-multiplication recomputes the full distributional set client-side (NPV/IRR/MIRR/CVaR × M draws). The client-side financial library must match the server engine within **≤ 0.01 pp** (IRR / MIRR) and **≤ ¥1k** (NPV) per draw, proven against a shared test vector (≥ M=5 draws × N=20-yr series at ≥ 2 distinct multiplier vectors). The finance contract specifies the test-vector format and field names.
 
@@ -236,7 +244,7 @@ output  : per-metric exceedance distribution + downside-risk panel + bootstrap C
 
 **13.10c — M = 1 honesty (binding).** M = 1 is a **valid fast-iteration mode** but the probabilistic / distributional metrics are then **undefined and must be SUPPRESSED, never shown as proxies**: P(NPV<0)/P(IRR<hurdle) would collapse to binary 0%/100% (reads as "no chance of loss" — affirmatively misleading); CVaR-5%, "worst-case NPV", and P90 collapse to the single draw. At M = 1 show only the **single-trajectory well-defined** metrics — single-scenario NPV (labelled `"NPV (single scenario)"`, not "worst-case"/"P50"), max cumulative drawdown + year, worst single-year CF — under a prominent non-dismissable banner reproduced on export: *"M = 1 — single scenario; risk distribution requires an ensemble (M ≥ 50)."* **Relative policy ranking is robust at M = 1** (shared draw), so M = 1 is legitimate for quick comparison; bankability-grade risk needs M ≥ 50.
 
-> **Reconciliation flagged for the USER (§13.13-1):** the task directive sets **M = 50 default**; D31 recorded **v1 M = 1**. This section adopts **M = 50 as the default** with **M = 1 as an explicit, honest fast-iteration mode** (metrics suppressed per §13.10c). The two are reconciled — the schema is identical (M = 1 is the M-collapsed case) — but the *default* changes from D31; confirm at sign-off.
+> **M = 50 default is a USER-authorized OVERRIDE of D31's M = 1 guard (flagged for re-confirm, §13.13-1).** The USER's recorded decision — distributions / CI / downside-risk / price-paths in v1 — is an **explicit override** of D31's "v1 ships M = 1" provision, *not* a soft reconciliation. §13 therefore sets **M = 50 as the v1 default**, retaining **M = 1 as a valid fast-iteration mode** where distributional metrics are suppressed (the §13.10c honesty rule). The schema is identical across M (M = 1 is the M-collapsed case), so no architecture changes — only the *default* and the v1 guard change. **This requires a LINEAGE amendment to D31** (co-authored with rl-architect, landed consistently with this spec PR on USER sign-off). Carried as a named OPEN QUESTION (§13.13-1) so the USER explicitly re-confirms the override at the gate.
 
 ---
 
@@ -249,9 +257,26 @@ output  : per-metric exceedance distribution + downside-risk panel + bootstrap C
 
 ---
 
-### 13.12 Per-policy comparison + delivery — off-wire REST resource
+### 13.12 Per-policy comparison + delivery — pure engine + off-wire REST resource
 
-Finance is an **off-wire batch artifact**: a new REST resource
+**Pure cash-flow-engine function boundary (the contract surface backend-reviewer gates).** The finance engine is a **pure function** of explicit inputs — no I/O, no network, no hidden global state (the treasury curve is passed in via `finance_config`, §13.6):
+
+```
+finance( ensemble:       list[ExtendedPolicyEvalResult],     # M dispatched-year results, the stochastic axis (§13.7)
+         price_paths:     list[PricePath],                    # deterministic finance scenarios, the sensitivity axis (§13.4)
+         econ:            DeviceEconParams,                    # per-device CAPEX/OPEX/lifecycle (§13.6, device_models.yaml)
+         finance_config:  FinanceConfig                        # discount (CAPM/curve), tax/debt toggles, horizon, escalation, flags
+       ) -> FinanceResult {
+         per_policy: { View I & II : { P50/P75/P90/P99 of {IRR, NPV(r), MIRR, LCOE, LCOS, payback},
+                                       downside_risk{…}, bootstrap_ci,
+                                       [ equity_IRR, min_DSCR ]      # debt-toggle-gated — emitted ONLY when debt ON (§13.9)
+                                     } per price_path },
+         cash_flow_series, npv_vs_r_curve, sensitivity_surface, provenance }
+```
+
+The two input lists are the two orthogonal axes of §13.4: `ensemble` (the **M** weather draws → the exceedance distribution) and `price_paths` (deterministic → a sensitivity family). The REST resource below is a thin wrapper over this pure function. **DSCR and equity-IRR are debt-toggle-gated** (§13.9): the base case is pre-tax / all-equity / unlevered → **no DSCR**; these fields are absent (not zero/null) unless the debt toggle is ON — no contract may mark them required.
+
+**Delivery — off-wire REST resource.** Finance is an **off-wire batch artifact**: a new REST resource
 
 ```
 GET /api/finance/compare?policies=…&scenario=…
@@ -272,10 +297,10 @@ Composes **on top of** the LOCKED D13 identity; does **not** touch the LOCKED `e
 
 These are the §13 sign-off items (REBUILD_SPEC change → human-gated). Items 1–9 fold in or refine the master-plan §5.13 list under the later USER directives:
 
-1. **Ensemble default M (§13.10):** adopt **M = 50 default** with M = 1 as an honest fast-iteration mode (distributional metrics suppressed)? — *evolves D31's "v1 M = 1"; flagged.*
+1. **Ensemble default M (§13.10) — re-confirm the override:** the USER's recorded decision authorizes **M = 50 default** (with M = 1 as an honest fast-iteration mode, distributional metrics suppressed) as an **explicit override of D31's "v1 M = 1" guard**. Confirm the override stands → triggers a **LINEAGE amendment to D31** (co-authored with rl-architect, lands with this PR on sign-off).
 2. **Downside-risk centerpiece (§13.10b):** confirm the six metrics (worst-case NPV / max loss, max drawdown + year, P(NPV<0), P(IRR<hurdle), CVaR-5%, worst single-year CF) as the headline, upside as context.
 3. **CI & percentiles (§13.10a):** confirm exceedance **P50/P75/P90/P99** + bootstrap CI + the convergence-hint thresholds (IRR ≥ 2 pp, NPV ≥ 20% of |P50|).
-4. **Price-path library (§13.4):** confirm the 5 presets + editable custom curve, finance-layer-only (constant-real default), shared-uniform path default with advanced per-stream paths, and the non-uniform-escalation limitation.
+4. **Price-path library + INV-FINLAYER (§13.4):** confirm the 5 presets + editable custom curve as a **finance-layer-only** post-hoc transform (the new **INV-FINLAYER** invariant — barred from re-entering dispatch; non-uniform paths raise an explicit retrain flag, never a silent knob), the two-axis separation (M weather draws = Monte-Carlo; price paths = deterministic sensitivity — never conflated), constant-real default, and shared-uniform path default with advanced per-stream paths.
 5. **Discount rate = CAPM (§13.5):** confirm CAPM with time-selected, term-matched CGB r_f; the §13.5b default *values* (β_U 0.55, ERP 6.0%, CRP 0, LPR+125bps, D/E, tax 25%); and the v1 static user-updatable treasury-curve config (live fetch deferred to v2).
 6. **Horizon (§13.6):** **20-yr primary + 10-yr variant** — confirm both.
 7. **Lifecycle replacement (§13.6):** confirm battery replacement at **first-of(10-yr calendar, cycle-life)**; PV-inverter subsystem replacement; cost-side scenario-completeness (non-power devices schema-present, not built); asset-management lines (insurance / grid fee / land / admin) named, none dropped.
