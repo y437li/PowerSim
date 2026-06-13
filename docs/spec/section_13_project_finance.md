@@ -221,15 +221,23 @@ Base = **pre-tax, all-equity (unlevered project IRR)** (D31) ⇒ the base discou
 
 ### 13.10 Distributions, downside risk, and confidence (the centerpiece)
 
-The finance interface takes an **ENSEMBLE of M dispatched-year results** (M weather draws from §12 block-bootstrap) and outputs **DISTRIBUTIONS** of every metric. **Default M = 50** (USER directive, §13.13-1). The §12 generator's validation battery (PR #77 §4.2) is part of D's evidence chain — the percentile numbers are only as valid as the ensemble's statistical fidelity.
+The finance interface takes an **ENSEMBLE of M dispatched-year results** (M weather draws from §12 block-bootstrap) and outputs **DISTRIBUTIONS** of every metric. **Default M = 50** (USER directive, §13.13-1). **§12 block-bootstrap is a v1 PREREQUISITE** at M = 50, and the §12 generator's validation battery (PR #77 §4.2) is part of D's acceptance/evidence chain — the percentile numbers (especially P90) are only as valid as the ensemble's statistical fidelity (marginals, cross-correlation, ramp/persistence tails).
+
+**Common Random Numbers (CRN) — binding.** All policies in a single comparison consume the **same M weather draws** (shared seed / identical ensemble), so per-policy metric deltas are **pure dispatch** (P2), not weather noise. The shared seed travels in provenance.
 
 ```
-input   : ensemble = { dispatched_year_m : m = 1…M }            # M weather draws (default M = 50)
+input   : ensemble = { dispatched_year_m : m = 1…M }            # M weather draws (default 50), SAME draws ∀ policies (CRN)
 per draw: cash_flow_m (after §13.4 price path) → { NPV_m(r), IRR_m, MIRR_m, LCOE_m, LCOS_m, payback_m }
-output  : per-metric exceedance distribution + downside-risk panel + bootstrap CI
+output  : { M, distribution_valid,                              # distribution_valid=false ⇒ point estimates only (§13.10c)
+            per-metric exceedance distribution + downside-risk panel + bootstrap CI }
 ```
 
-**13.10a — Exceedance percentiles + bootstrap CI.** Report **P50 / P75 / P90 / P99** (exceedance form — "in X% of weather scenarios the project achieves *at least* this") for each metric, plus a **bootstrap confidence interval** (resample the M draws with replacement, default 90% CI = P5–P95 of the bootstrap distribution) so the operator sees how *converged* the percentile estimates are at the current M. A **convergence hint** fires when the CI width exceeds a threshold (default ≥ 2 pp for IRR, ≥ 20% of |P50-NPV| for NPV — locked here, not hardcoded in the frontend): *"wide range — add more weather scenarios."* For IRR / NPV / MIRR higher percentile-value = better; for LCOE / payback lower = better.
+The result is the cross-product **{K deterministic price paths} × {one distribution over the M weather draws}** — the M axis is the *only* stochastic/distributional axis; price paths are a separate deterministic sensitivity axis (§13.4, INV-FINLAYER) and are **never** multiplied into the weather distribution. M = 50 grows the weather axis only.
+
+**13.10a — Exceedance percentiles + bootstrap CI.** Report **P50 / P90** as the sound headline pair, plus **P75** and **P99** with caveats, each with a **bootstrap confidence interval** (resample the M draws with replacement, default 90% CI = P5–P95 of the bootstrap distribution) so the operator sees how *converged* each estimate is at the current M. Exceedance form = "in X% of weather scenarios the project achieves *at least* this." For IRR / NPV / MIRR higher percentile-value = better; for LCOE / payback lower = better.
+- **P50 / P90 are statistically sound at M = 50** — the headline bankability pair.
+- **P99 at M = 50 is statistically weak** (≈ the single worst of 50 draws → high variance, not a credible 1-in-100). It is therefore **indicative-only, carried with its bootstrap CI and NOT hard-required** in the schema; v1 may **cap the headline at P90** or show P99-with-caveat. *(USER steer pending — §13.13-3: cap-at-P90 vs P99-with-caveat; the schema supports either — P99 is an optional, CI-annotated field, not a load-bearing number. A credible P99 would gate on M ≥ 100.)*
+- A **convergence hint** fires when a metric's CI width exceeds a threshold (default ≥ 2 pp for IRR, ≥ 20% of |P50-NPV| for NPV — locked here, not hardcoded in the frontend): *"wide range — add more weather scenarios."*
 
 **13.10b — Downside-risk panel (the centerpiece — what the USER shows investors/lenders).** The downside is the headline, the upside is context. Six metrics:
 
@@ -242,7 +250,7 @@ output  : per-metric exceedance distribution + downside-risk panel + bootstrap C
 | **CVaR-5%** | expected NPV over the worst 5% of draws (mean of the bottom 5th-percentile tail) — the conditional tail loss |
 | **Worst single-year cash flow** | min annual net CF over years 1…N and all M draws (year-0 CAPEX excluded — CAPEX is certain) |
 
-**13.10c — M = 1 honesty (binding).** M = 1 is a **valid fast-iteration mode** but the probabilistic / distributional metrics are then **undefined and must be SUPPRESSED, never shown as proxies**: P(NPV<0)/P(IRR<hurdle) would collapse to binary 0%/100% (reads as "no chance of loss" — affirmatively misleading); CVaR-5%, "worst-case NPV", and P90 collapse to the single draw. At M = 1 show only the **single-trajectory well-defined** metrics — single-scenario NPV (labelled `"NPV (single scenario)"`, not "worst-case"/"P50"), max cumulative drawdown + year, worst single-year CF — under a prominent non-dismissable banner reproduced on export: *"M = 1 — single scenario; risk distribution requires an ensemble (M ≥ 50)."* **Relative policy ranking is robust at M = 1** (shared draw), so M = 1 is legitimate for quick comparison; bankability-grade risk needs M ≥ 50.
+**13.10c — M = 1 honesty (binding; carried in the schema by `distribution_valid`).** M = 1 is a **valid fast-iteration mode** but the probabilistic / distributional metrics are then **undefined and must be SUPPRESSED, never shown as proxies**: P(NPV<0)/P(IRR<hurdle) would collapse to binary 0%/100% (reads as "no chance of loss" — affirmatively misleading); CVaR-5%, "worst-case NPV", and the percentiles collapse to the single draw. The `FinanceResult` carries `M` and **`distribution_valid`** (= false whenever M = 1); when `distribution_valid` is false the engine emits **point estimates only** and the percentile / downside-distribution fields are **explicitly absent (a represented "no distribution available"), never fabricated** as P50 = P90 = the single draw. The schema is **identical** to the M = 50 case — an honest collapse, not a silent relabel. At M = 1 the UI shows only the **single-trajectory well-defined** metrics — single-scenario NPV (labelled `"NPV (single scenario)"`, not "worst-case"/"P50"), max cumulative drawdown + year, worst single-year CF — under a prominent non-dismissable banner reproduced on export: *"M = 1 — single scenario; risk distribution requires an ensemble (M ≥ 50)."* **Relative policy ranking is robust at M = 1** under CRN (shared draw), so M = 1 is legitimate for quick comparison; bankability-grade risk needs M ≥ 50.
 
 > **M = 50 default is a USER-authorized OVERRIDE of D31's M = 1 guard (flagged for re-confirm, §13.13-1).** The USER's recorded decision — distributions / CI / downside-risk / price-paths in v1 — is an **explicit override** of D31's "v1 ships M = 1" provision, *not* a soft reconciliation. §13 therefore sets **M = 50 as the v1 default**, retaining **M = 1 as a valid fast-iteration mode** where distributional metrics are suppressed (the §13.10c honesty rule). The schema is identical across M (M = 1 is the M-collapsed case), so no architecture changes — only the *default* and the v1 guard change. **This requires a LINEAGE amendment to D31** (co-authored with rl-architect, landed consistently with this spec PR on USER sign-off). Carried as a named OPEN QUESTION (§13.13-1) so the USER explicitly re-confirms the override at the gate.
 
@@ -267,14 +275,16 @@ finance( ensemble:       list[ExtendedPolicyEvalResult],     # M dispatched-year
          econ:            DeviceEconParams,                    # per-device CAPEX/OPEX/lifecycle (§13.6, device_models.yaml)
          finance_config:  FinanceConfig                        # discount (CAPM/curve), tax/debt toggles, horizon, escalation, flags
        ) -> FinanceResult {
-         per_policy: { View I & II : { P50/P75/P90/P99 of {IRR, NPV(r), MIRR, LCOE, LCOS, payback},
-                                       downside_risk{…}, bootstrap_ci,
+         M, distribution_valid,                                 # false at M=1 ⇒ point estimates only, percentile fields absent (§13.10c)
+         per_policy: { View I & II : { P50, P90 of {IRR, NPV(r), MIRR, LCOE, LCOS, payback},   # sound headline pair
+                                       [ P75, P99 ]: optional, CI-annotated, indicative (P99 weak at M=50, §13.10a),
+                                       bootstrap_ci, downside_risk{…},
                                        [ equity_IRR, min_DSCR ]      # debt-toggle-gated — emitted ONLY when debt ON (§13.9)
                                      } per price_path },
-         cash_flow_series, npv_vs_r_curve, sensitivity_surface, provenance }
+         cash_flow_series, npv_vs_r_curve, sensitivity_surface, provenance }   # provenance carries the shared CRN seed
 ```
 
-The two input lists are the two orthogonal axes of §13.4: `ensemble` (the **M** weather draws → the exceedance distribution) and `price_paths` (deterministic → a sensitivity family). The REST resource below is a thin wrapper over this pure function. **DSCR and equity-IRR are debt-toggle-gated** (§13.9): the base case is pre-tax / all-equity / unlevered → **no DSCR**; these fields are absent (not zero/null) unless the debt toggle is ON — no contract may mark them required.
+The two input lists are the two orthogonal axes of §13.4: `ensemble` (the **M** weather draws under CRN → the *one* exceedance distribution) and `price_paths` (deterministic → a sensitivity family); the result is `{K price-paths} × {distribution over M draws}`, never a cross-product distribution. The REST resource below is a thin wrapper over this pure function. **`distribution_valid` is load-bearing** (§13.10c): at M = 1 the percentile/downside-distribution fields are absent, not fabricated. **P50/P90 are the required headline; P75/P99 are optional, CI-annotated, indicative** (§13.10a — P99 weak at M = 50). **DSCR and equity-IRR are debt-toggle-gated** (§13.9): base case pre-tax / all-equity / unlevered → **no DSCR**; these fields are absent (not zero/null) unless the debt toggle is ON — no contract may mark them required.
 
 **Delivery — off-wire REST resource.** Finance is an **off-wire batch artifact**: a new REST resource
 
@@ -299,7 +309,7 @@ These are the §13 sign-off items (REBUILD_SPEC change → human-gated). Items 1
 
 1. **Ensemble default M (§13.10) — re-confirm the override:** the USER's recorded decision authorizes **M = 50 default** (with M = 1 as an honest fast-iteration mode, distributional metrics suppressed) as an **explicit override of D31's "v1 M = 1" guard**. Confirm the override stands → triggers a **LINEAGE amendment to D31** (co-authored with rl-architect, lands with this PR on sign-off).
 2. **Downside-risk centerpiece (§13.10b):** confirm the six metrics (worst-case NPV / max loss, max drawdown + year, P(NPV<0), P(IRR<hurdle), CVaR-5%, worst single-year CF) as the headline, upside as context.
-3. **CI & percentiles (§13.10a):** confirm exceedance **P50/P75/P90/P99** + bootstrap CI + the convergence-hint thresholds (IRR ≥ 2 pp, NPV ≥ 20% of |P50|).
+3. **CI & percentiles (§13.10a) — P99 steer:** confirm **P50/P90 as the sound headline pair** at M = 50, with bootstrap CI on each + the convergence-hint thresholds (IRR ≥ 2 pp, NPV ≥ 20% of |P50|). **USER steer requested:** P99 at M = 50 is statistically weak (≈ worst-of-50) — **cap the headline at P90**, or show **P99 indicative-only with its CI** (a credible P99 gates on M ≥ 100)? The schema supports either (P99 is an optional, CI-annotated field).
 4. **Price-path library + INV-FINLAYER (§13.4):** confirm the 5 presets + editable custom curve as a **finance-layer-only** post-hoc transform (the new **INV-FINLAYER** invariant — barred from re-entering dispatch; non-uniform paths raise an explicit retrain flag, never a silent knob), the two-axis separation (M weather draws = Monte-Carlo; price paths = deterministic sensitivity — never conflated), constant-real default, and shared-uniform path default with advanced per-stream paths.
 5. **Discount rate = CAPM (§13.5):** confirm CAPM with time-selected, term-matched CGB r_f; the §13.5b default *values* (β_U 0.55, ERP 6.0%, CRP 0, LPR+125bps, D/E, tax 25%); and the v1 static user-updatable treasury-curve config (live fetch deferred to v2).
 6. **Horizon (§13.6):** **20-yr primary + 10-yr variant** — confirm both.
@@ -321,3 +331,4 @@ These are the §13 sign-off items (REBUILD_SPEC change → human-gated). Items 1
 7. **Replacement = discrete EOL param-reset** — continuous augmentation modeled as a step.
 8. **Static treasury curve in v1** (§13.5/§13.6) — reproducible; live fetch is v2.
 9. **Real-option value ignored** (v2).
+10. **Ensemble fidelity & tail resolution (§13.10).** v1 prices **M = 50** weather draws via §12 block-bootstrap (a v1 prerequisite); P50/P90 are sound, **P99 is indicative-only** (≈ worst-of-50 → high variance), and every percentile is only as valid as the §12 ensemble's statistical fidelity (cited via PR #77 §4.2). Weather is the **only** stochastic axis priced; price paths are deterministic scenarios, not draws.
