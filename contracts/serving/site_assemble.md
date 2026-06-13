@@ -270,6 +270,10 @@ request omitted `site_meta` entirely.
 **Device type absent from fleet:** that asset category key is omitted from
 `site_config.assets`. Example: no battery in fleet → `assets.battery` absent.
 The validator will catch missing required assets as validation errors (not 400).
+**Note:** missing-category validation is deferred to the E-SCHEMA rule in
+`config_validation.md §4`; E-SCHEMA is not implemented in v1.0.0 ("not in v1
+scope") — absent sections are silently skipped by `validate()`. Tracked in
+task #8. Two xfail tests assert the contracted behavior for when E-SCHEMA lands.
 
 **Costs assembly:**
 ```python
