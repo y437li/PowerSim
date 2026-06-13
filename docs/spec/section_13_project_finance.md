@@ -293,7 +293,7 @@ The two input lists are the two orthogonal axes of §13.4: `ensemble` (the **M**
 
 ```
 GET /api/finance/compare?policies=…&scenario=…
-→ { per policy π : { View I & II : { P50/P75/P90/P99 of {NPV(r_base), IRR, MIRR, LCOE, LCOS, payback},
+→ { per policy π : { View I & II : { P50/P90 (sound) + P75/P99 (optional, CI/confidence-annotated, §13.10a) of {NPV(r_base), IRR, MIRR, LCOE, LCOS, payback},
                                      downside_risk:{ worst_npv, max_drawdown+year, p_npv_neg, p_irr_below_hurdle, cvar5, worst_year_cf },
                                      bootstrap_ci, [equity IRR, min DSCR] },
                      cash_flow_series (per draw, pre-price-path baseline §13.4), npv_vs_r_fan, sensitivity_surface },
@@ -310,7 +310,7 @@ Composes **on top of** the LOCKED D13 identity; does **not** touch the LOCKED `e
 
 These are the §13 sign-off items (REBUILD_SPEC change → human-gated). Items 1–9 fold in or refine the master-plan §5.13 list under the later USER directives:
 
-1. **Ensemble default M (§13.10) — re-confirm the override:** the USER's recorded decision authorizes **M = 50 default** (with M = 1 as an honest fast-iteration mode, distributional metrics suppressed) as an **explicit override of D31's "v1 M = 1" guard**. Confirm the override stands → triggers a **LINEAGE amendment to D31** (co-authored with rl-architect, lands with this PR on sign-off).
+1. **Ensemble default M (§13.10) — re-confirm the override:** the USER's recorded decision authorizes **M = 50 default** (with M = 1 as an honest fast-iteration mode, distributional metrics suppressed) as an **explicit override of D31's "v1 M = 1" guard**. Confirm the override stands → **records as LINEAGE D34 on sign-off** (co-authored rl-architect + finance-expert; supersedes D31's M=1 clauses only; lands with this PR, human-gated).
 2. **Downside-risk centerpiece (§13.10b):** confirm the six metrics (worst-case NPV / max loss, max drawdown + year, P(NPV<0), P(IRR<hurdle), CVaR-5%, worst single-year CF) as the headline, upside as context.
 3. **CI & percentiles (§13.10a) — P99 steer:** confirm **P50/P90 as the sound headline pair** at M = 50, with bootstrap CI on each + the convergence-hint thresholds (IRR ≥ 2 pp, NPV ≥ 20% of |P50|). **USER steer requested:** P99 at M = 50 is statistically weak (≈ worst-of-50) — **cap the headline at P90**, or show **P99 indicative-only with its CI** (a credible P99 gates on M ≥ 100)? The schema supports either (P99 is an optional, CI-annotated field).
 4. **Price-path library + INV-FINLAYER (§13.4):** confirm the 5 presets + editable custom curve as a **finance-layer-only** post-hoc transform (the new **INV-FINLAYER** invariant — barred from re-entering dispatch; non-uniform paths raise an explicit retrain flag, never a silent knob), the two-axis separation (M weather draws = Monte-Carlo; price paths = deterministic sensitivity — never conflated), constant-real default, and shared-uniform path default with advanced per-stream paths.
