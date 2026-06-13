@@ -236,8 +236,12 @@ def resolve_site(
         if _seasonal_ok:
             # Seasonal (12,24) passthrough — already in the correct shape for EnvParams.
             price_table = jnp.array(price_table_raw, dtype=jnp.float32)  # shape (12, 24)
-        elif isinstance(price_table_raw, list) and len(price_table_raw) == 24:
-            # Flat (24,) → broadcast ×12; on-disk backward-compat form (site_gansu.yaml).
+        elif (isinstance(price_table_raw, list)
+              and len(price_table_raw) == 24
+              and not any(isinstance(row, list) for row in price_table_raw)):
+            # Flat (24,) of scalars → broadcast ×12; on-disk backward-compat form.
+            # Scalar guard mirrors config_validation flat_ok: rejects list-of-lists with
+            # len==24 (e.g. [[v]]*24 or (24,24)) so resolver and validator agree exactly.
             _row = jnp.array(price_table_raw, dtype=jnp.float32)  # shape (24,)
             price_table = jnp.stack([_row] * 12, axis=0)           # shape (12, 24)
         else:

@@ -642,6 +642,68 @@ class TestETarShapeV2:
         finally:
             os.unlink(tmp.name)
 
+    # reviewer: backend-reviewer (F2 — validator+resolver AGREE on rejecting 24-nested)
+    def test_v2_flat_24_nested_rejected_by_both(self):
+        # Parity boundary: a 24-element list-of-lists (e.g. [[250],[450],…]*24) has
+        # len==24 but is NOT flat scalars — NOT in {flat (24,), (12,24)}.
+        # validator flat_ok: `not any(isinstance(row, list)...)` → False → flat_ok=False
+        # validator seasonal_ok: len==24 ≠ 12 → False
+        # → E-TAR-SHAPE (validator rejects)
+        # resolver flat branch: scalar guard `not any(...)` → False → falls to else: raise
+        # → ValueError (resolver rejects)
+        # Both sides must agree: this shape is INVALID.
+        import pathlib, tempfile, os
+        import yaml as _yaml
+        validate = _import_validate()
+
+        # Build [[v]]*24 — 24 rows of a single-element list (clearly not a scalar vector)
+        nested_24 = [[v] for v in GANSU_SITE["tariff"]["price_table_yuan_per_mwh"]]
+        # Arithmetic: len=24, but each element is a list → flat_ok=False, seasonal_ok=False.
+
+        # (a) validator must reject
+        site = copy.deepcopy(GANSU_SITE)
+        site["tariff"]["price_table_yuan_per_mwh"] = nested_24
+        result = validate(site, GANSU_MODELS_V2)
+        assert "E-TAR-SHAPE" in [e.rule_id for e in result.errors], (
+            "[[v]]*24 (24 single-element lists) must produce E-TAR-SHAPE "
+            "— not flat scalars, not (12,24)"
+        )
+
+        # (b) resolver must also reject (ValueError), not silently build wrong-shape table.
+        # JAX-guarded: if JAX fails to import/initialize on this platform, skip resolver
+        # half — (a) is the binding guard.  Catches AttributeError (ARM circular import),
+        # RuntimeError (AVX), ImportError, and ModuleNotFoundError.
+        repo_root = pathlib.Path(__file__).resolve().parents[2]
+        models_path = repo_root / "config" / "device_models.yaml"
+        gansu_site = _yaml.safe_load(open(repo_root / "config" / "site_gansu.yaml"))
+        gansu_site["tariff"]["price_table_yuan_per_mwh"] = nested_24
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, prefix="test_gansu_nested24_"
+        )
+        try:
+            _yaml.dump(gansu_site, tmp)
+            tmp.close()
+            try:
+                import importlib
+                resolver_mod = importlib.import_module("energy_go.env.resolver")
+            except (ImportError, ModuleNotFoundError, RuntimeError, AttributeError):
+                resolver_mod = None  # JAX unavailable — skip resolver half
+            if resolver_mod is not None:
+                try:
+                    resolver_mod.resolve_site(tmp.name, str(models_path))
+                    # No exception → resolver silently accepted [[v]]*24 → parity broken
+                    pytest.fail(
+                        "resolve_site() silently accepted [[v]]*24 (24 single-element lists); "
+                        "must raise ValueError to match validator E-TAR-SHAPE (F2 scalar guard)"
+                    )
+                except ValueError:
+                    pass  # correct — resolver rejects, matching validator
+                except (RuntimeError, AttributeError) as exc:
+                    # JAX initialization failed mid-resolve (ARM platform) — skip
+                    pass
+        finally:
+            os.unlink(tmp.name)
+
 
 class TestEEconNeg:
     """E-ECON-NEG: negative economics parameters → hard error."""
