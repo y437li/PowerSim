@@ -1,10 +1,13 @@
 """energy_go.serving.geo_site_api — Workstream A serving surface (wizard stage ①).
 
 Contract: contracts/serving/geo_site_api.md v1.0.0
+         contracts/serving/site_assemble.md v1.0.0 (D37)
 Reviewer-approved tests: tests/serving/test_serving_geo_site_api.py
+                         tests/serving/test_serving_site_assemble.py
 
 Endpoints:
   POST /api/site/validate              — config validation passthrough (D32(i)/D18)
+  POST /api/site/assemble              — wizard-form → site_config assembly (D37)
   GET  /api/tariff/regions             — tariff region list
   GET  /api/tariff/regions/{id}        — full region detail + monthly TariffBands
   GET  /api/tariff/bands/{id}?month=N  — single-month TariffBand slice
@@ -205,6 +208,45 @@ class _WeatherFetchRequest(BaseModel):
     # code: "WEATHER_PARAM_INVALID" instead of the app-level REQUEST_VALIDATION_ERROR.
 
 
+# --- site_assemble request models (site_assemble.md v1.0.0) ---
+
+class _FleetEntry(BaseModel):
+    model_id: str
+    # count: accepted as float|None (not strict int) so that fractional values
+    # like 2.5 arrive here and we can emit 400 FLEET_COUNT_INVALID (not 422).
+    # The endpoint validates integerness explicitly. (Reviewer note, §5.)
+    count: float | None = None
+    fleet_capacity_mw: float | None = None
+
+
+class _CostsOverride(BaseModel):
+    c_deg_yuan_per_mwh: float | None = None
+    voll_yuan_per_mwh: float | None = None
+    curtail_yuan_per_mwh: float | None = None
+    soc_penalty_yuan_per_mwh: float | None = None
+    reward_scale: float | None = None
+
+
+class _ForecastOverride(BaseModel):
+    sigma_max: float | None = None
+
+
+class _SiteMetaInput(BaseModel):
+    name: str | None = None
+    lat: float | None = None
+    lon: float | None = None
+    province: str | None = None
+    weather_mode: str | None = None
+
+
+class _AssembleRequest(BaseModel):
+    fleet: list[_FleetEntry] | None = None
+    tariff_region: str | None = None
+    site_meta: _SiteMetaInput | None = None
+    costs: _CostsOverride | None = None
+    forecast: _ForecastOverride | None = None
+
+
 # ---------------------------------------------------------------------------
 # §3.1  POST /api/site/validate
 # ---------------------------------------------------------------------------
@@ -239,6 +281,227 @@ def site_validate(body: _ValidateRequest) -> JSONResponse:
     return JSONResponse(content={
         "errors":   [_issue(e) for e in result.errors],
         "warnings": [_issue(w) for w in result.warnings],
+    })
+
+
+# ---------------------------------------------------------------------------
+# POST /api/site/assemble  (site_assemble.md v1.0.0 / D37)
+# ---------------------------------------------------------------------------
+
+@router.post("/api/site/assemble")
+def site_assemble(body: _AssembleRequest) -> JSONResponse:
+    """D37: wizard form → canonical site_config dict + immediate validation.
+
+    Returns HTTP 200 with {site_config, errors, warnings} always.
+    HTTP 400 on structural/input errors (unknown model_id, missing required
+    field, invalid count, etc.) — NOT on physics validation errors.
+    HTTP 422 on unparseable JSON (FastAPI default).
+
+    Validation order (contract §5):
+      1. FLEET_EMPTY
+      2. TARIFF_REGION_REQUIRED
+      3. DEVICE_MODEL_NOT_FOUND   (collect all missing before erroring)
+      4. TARIFF_REGION_NOT_FOUND
+      5. FLEET_COUNT_INVALID      (zero / negative / non-integer)
+      6. PV_FLEET_CAPACITY_REQUIRED
+      7. FLEET_MIXED_MODEL
+    Then assemble_site_config() + config_validation.validate().
+    """
+    from energy_go.serving.site_assembly import assemble_site_config
+    from energy_go.env.config_validation import validate as _validate  # type: ignore
+
+    # 1. FLEET_EMPTY -------------------------------------------------------
+    if not body.fleet:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "fleet must not be empty", "code": "FLEET_EMPTY"},
+        )
+
+    # 2. TARIFF_REGION_REQUIRED --------------------------------------------
+    if not body.tariff_region or not body.tariff_region.strip():
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": "tariff_region is required",
+                "code": "TARIFF_REGION_REQUIRED",
+            },
+        )
+
+    tariff_region_id = body.tariff_region.strip()
+    raw_dm = _get_device_models()
+    models_dict = raw_dm.get("models", {})
+
+    # 3. DEVICE_MODEL_NOT_FOUND --------------------------------------------
+    missing_ids = [
+        e.model_id for e in body.fleet
+        if e.model_id not in models_dict
+    ]
+    if missing_ids:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": f"device model(s) not found: {missing_ids}",
+                "code": "DEVICE_MODEL_NOT_FOUND",
+                "missing_ids": missing_ids,
+            },
+        )
+
+    # 4. TARIFF_REGION_NOT_FOUND -------------------------------------------
+    tariff_schema = _get_tariff_schema()
+    if tariff_region_id not in tariff_schema["regions"]:
+        available = sorted(tariff_schema["regions"].keys())
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": f"tariff_region '{tariff_region_id}' not found",
+                "code": "TARIFF_REGION_NOT_FOUND",
+                "available_regions": available,
+            },
+        )
+
+    # 5. FLEET_COUNT_INVALID -----------------------------------------------
+    # Validate per-entry count for wind_turbine and battery:
+    #   - count must be present (not None)
+    #   - count must be a whole number (no 2.5 — accepted as float to catch this)
+    #   - count must be ≥ 1
+    # Also validates fleet_capacity_mw > 0 for pv_panel (≤ 0 → FLEET_COUNT_INVALID).
+    for entry in body.fleet:
+        dtype = models_dict[entry.model_id]["type"]
+        if dtype in ("wind_turbine", "battery"):
+            if entry.count is None:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "detail": (
+                            f"fleet entry '{entry.model_id}' (type: {dtype}) "
+                            f"requires count"
+                        ),
+                        "code": "FLEET_COUNT_INVALID",
+                    },
+                )
+            # Non-integer check (e.g. 2.5): accepted as float above; validate here.
+            if entry.count != int(entry.count):
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "detail": (
+                            f"fleet entry '{entry.model_id}': count must be an integer, "
+                            f"got {entry.count}"
+                        ),
+                        "code": "FLEET_COUNT_INVALID",
+                    },
+                )
+            if int(entry.count) < 1:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "detail": (
+                            f"fleet entry '{entry.model_id}': count must be ≥ 1, "
+                            f"got {int(entry.count)}"
+                        ),
+                        "code": "FLEET_COUNT_INVALID",
+                    },
+                )
+
+        elif dtype == "pv_panel":
+            # fleet_capacity_mw ≤ 0 treated as FLEET_COUNT_INVALID per contract §3.1.1
+            if entry.fleet_capacity_mw is not None and entry.fleet_capacity_mw <= 0.0:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "detail": (
+                            f"fleet entry '{entry.model_id}': fleet_capacity_mw "
+                            f"must be > 0 MW, got {entry.fleet_capacity_mw}"
+                        ),
+                        "code": "FLEET_COUNT_INVALID",
+                    },
+                )
+
+    # 6. PV_FLEET_CAPACITY_REQUIRED ----------------------------------------
+    for entry in body.fleet:
+        dtype = models_dict[entry.model_id]["type"]
+        if dtype == "pv_panel":
+            phy = models_dict[entry.model_id].get("physics", {})
+            has_per_unit = "panel_mw_per_unit" in phy
+            if entry.fleet_capacity_mw is None and not has_per_unit:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "detail": (
+                            f"fleet entry '{entry.model_id}' (pv_panel): "
+                            f"fleet_capacity_mw is required (device model has no "
+                            f"panel_mw_per_unit)"
+                        ),
+                        "code": "PV_FLEET_CAPACITY_REQUIRED",
+                    },
+                )
+
+    # 7. FLEET_MIXED_MODEL -------------------------------------------------
+    # After all model_ids are known-valid, check that each device type has
+    # at most one distinct model_id across entries.
+    type_to_models: dict[str, set[str]] = {}
+    for entry in body.fleet:
+        dtype = models_dict[entry.model_id]["type"]
+        type_to_models.setdefault(dtype, set()).add(entry.model_id)
+    for dtype, mids in type_to_models.items():
+        if len(mids) > 1:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": (
+                        f"fleet has {len(mids)} distinct models for device type "
+                        f"'{dtype}': {sorted(mids)} — only one model per type allowed"
+                    ),
+                    "code": "FLEET_MIXED_MODEL",
+                    "conflicting_type": dtype,
+                    "conflicting_models": sorted(mids),
+                },
+            )
+
+    # ------------------------------------------------------------------
+    # All 400 checks passed — assemble and validate
+    # ------------------------------------------------------------------
+
+    # Prepare fleet list with integer counts for assembly
+    fleet_for_assembly = [
+        {
+            "model_id": e.model_id,
+            **({} if e.count is None else {"count": int(e.count)}),
+            **({} if e.fleet_capacity_mw is None else
+               {"fleet_capacity_mw": e.fleet_capacity_mw}),
+        }
+        for e in body.fleet
+    ]
+
+    costs_dict = body.costs.model_dump(exclude_none=True) if body.costs else None
+    forecast_dict = body.forecast.model_dump(exclude_none=True) if body.forecast else None
+    site_meta_dict = body.site_meta.model_dump(exclude_none=True) if body.site_meta else None
+
+    site_config = assemble_site_config(
+        fleet=fleet_for_assembly,
+        tariff_region_id=tariff_region_id,
+        tariff_schema=tariff_schema,
+        device_models=raw_dm,
+        costs_overrides=costs_dict,
+        forecast_overrides=forecast_dict,
+        site_meta=site_meta_dict if site_meta_dict else None,
+    )
+
+    # Validate with device_models (non-optional here — D32(i)/D18 single source)
+    result = _validate(site_config, raw_dm)
+
+    def _issue(vi) -> dict:
+        return {
+            "rule_id":    vi.rule_id,
+            "field":      vi.field,
+            "message":    vi.message,
+            "constraint": vi.constraint,
+        }
+
+    return JSONResponse(content={
+        "site_config": site_config,
+        "errors":      [_issue(e) for e in result.errors],
+        "warnings":    [_issue(w) for w in result.warnings],
     })
 
 
