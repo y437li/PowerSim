@@ -833,3 +833,54 @@ class TestResolverRoundTrip:
             pytest.skip("JAX not available in this environment")
         finally:
             pathlib.Path(tmp_path).unlink(missing_ok=True)
+
+
+class TestReviewerAddedCases:
+    """Reviewer-added edge cases (backend-reviewer). Two gaps in the suite:
+    (1) non-integer count — contract §5 lists 'count is not an integer' as a
+        FLEET_COUNT_INVALID trigger, but only zero/negative were tested; and
+    (2) the assembler emits no battery.unit_count, so E-BAT-UNIT must not fire
+        (config_validation's E-BAT-UNIT only checks an EXPLICIT unit_count).
+    """
+
+    # reviewer: backend-reviewer — non-integer count must be rejected, never silently coerced
+    def test_fleet_count_non_integer_rejected(self, client):
+        # Contract §5: "count < 1 OR count is not an integer" → 400 FLEET_COUNT_INVALID.
+        # A fractional count (2.5) must NOT be silently truncated into a valid 200 config
+        # (that would mis-size the fleet: 2.5→2 silently understates capacity). Pin the
+        # contract's documented behavior. (If a strict Pydantic `int` model is used, the
+        # impl must still surface FLEET_COUNT_INVALID per §5 — or the contract's "not an
+        # integer" trigger needs amending; this test forces that to be decided, not silent.)
+        req = {
+            "fleet": [
+                {"model_id": "vestas-v150-4.2", "count": 2.5},  # non-integer
+                {"model_id": "trina-vertex-n-670w", "fleet_capacity_mw": 330.0},
+                {"model_id": "catl-lmp-300mwh", "count": 1},
+                {"model_id": "pcc-substation-945mw"},
+            ],
+            "tariff_region": "cn-gansu",
+        }
+        resp = client.post("/api/site/assemble", json=req)
+        assert resp.status_code == 400, (
+            f"non-integer count must be rejected with 400 FLEET_COUNT_INVALID (§5); "
+            f"got {resp.status_code} — must never be a silent 200 with a coerced count"
+        )
+        assert resp.json()["code"] == "FLEET_COUNT_INVALID"
+
+    # reviewer: backend-reviewer — assembler emits no unit_count → E-BAT-UNIT must not fire
+    def test_assembled_battery_no_unit_count_no_e_bat_unit(self, client):
+        # §4.2 — the assembled battery dict carries only model + fleet_capacity_mwh +
+        # fleet_power_mw, NOT unit_count. config_validation's E-BAT-UNIT fires only when an
+        # explicit unit_count is present (consistency vs fleet_capacity); absent → it skips.
+        # So a clean Gansu assembly must (a) NOT emit assets.battery.unit_count, and
+        # (b) produce NO E-BAT-UNIT error — guarding against a future impl that emits an
+        # inconsistent unit_count that would spuriously trip E-BAT-UNIT.
+        resp = client.post("/api/site/assemble", json=GANSU_FLEET_REQUEST)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "unit_count" not in body["site_config"]["assets"]["battery"], (
+            "assembler must not emit assets.battery.unit_count (§4.2)"
+        )
+        assert "E-BAT-UNIT" not in [e["rule_id"] for e in body["errors"]], (
+            "E-BAT-UNIT must not fire when unit_count is absent (it only checks an explicit one)"
+        )
