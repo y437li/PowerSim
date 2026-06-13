@@ -704,6 +704,41 @@ class TestETarShapeV2:
         finally:
             os.unlink(tmp.name)
 
+    # reviewer: backend-reviewer (lock: len==12 of scalars is NEVER read as a seasonal table)
+    def test_v2_flat_12_scalars_errors(self):
+        # schema_version=2.0.0 + flat (12,) of SCALARS — len matches the seasonal ROW COUNT
+        # but elements are scalars, not 24-length rows → neither flat-24 nor (12,24).
+        # validator flat_ok:    len 12 != 24                     → False
+        # validator seasonal_ok: len==12 but rows are scalars     → all(isinstance(row,list)) False → False
+        # → E-TAR-SHAPE.  Guards against a buggy impl mistaking len==12 for seasonal.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        site["tariff"]["price_table_yuan_per_mwh"] = [300.0] * 12
+        result = validate(site, GANSU_MODELS_V2)
+        assert "E-TAR-SHAPE" in [e.rule_id for e in result.errors], (
+            "schema_version=2.0.0 + flat (12,) scalars — not flat-24, not (12,24) → E-TAR-SHAPE"
+        )
+
+    # reviewer: backend-reviewer (malformed/absent schema_version → v1 flat path, no crash)
+    def test_malformed_schema_version_uses_v1_path(self):
+        # A non-numeric schema_version → int(...split('.')[0]) raises ValueError, caught →
+        # use_seasonal stays False → v1 path (len==24 check). Must not crash.
+        # (a) flat (24,) Gansu under malformed version → v1 accepts → no E-TAR-SHAPE.
+        # (b) (12,24) under malformed version → v1 path: len 12 != 24 → E-TAR-SHAPE.
+        validate = _import_validate()
+        bad_models = {"schema_version": "not-a-version", "models": GANSU_MODELS["models"]}
+        res_a = validate(GANSU_SITE, bad_models)
+        assert "E-TAR-SHAPE" not in [e.rule_id for e in res_a.errors], (
+            "malformed schema_version must fall back to v1 (flat (24,) accepted, no crash)"
+        )
+        site = copy.deepcopy(GANSU_SITE)
+        flat = site["tariff"]["price_table_yuan_per_mwh"]
+        site["tariff"]["price_table_yuan_per_mwh"] = [list(flat) for _ in range(12)]
+        res_b = validate(site, bad_models)
+        assert "E-TAR-SHAPE" in [e.rule_id for e in res_b.errors], (
+            "malformed schema_version → v1 path → (12,24) has len 12 != 24 → E-TAR-SHAPE"
+        )
+
 
 class TestEEconNeg:
     """E-ECON-NEG: negative economics parameters → hard error."""

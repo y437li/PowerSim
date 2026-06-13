@@ -81,3 +81,32 @@
 
 **Current head at QA handoff:** `f4ac01a`  
 **Test count:** 63 collected (60 pass + 3 new adversarial), 1 skipped (JAX ARM)
+
+---
+
+## D33 revision — E-TAR-SHAPE v2.0+ relaxation (PR #101)
+
+**Reviewer:** backend-reviewer · **Date:** 2026-06-13 · **Classification:** MINOR (rl-architect; relaxes an existing rule's accepted set; no rule_id/result-shape change → no re-LOCK)
+
+**Live bug fixed:** validator demanded strict `(12,24)` under device_model_schema v2.0+, but `resolver.py` accepts flat `(24,)` (broadcast ×12) → the flagship Gansu site (flat tariff + device_models@2.0.0) hard-failed E-TAR-SHAPE end-to-end.
+
+**Resolution (option a, rl-architect ruling):** both `config_validation._check_e_tar_shape` and `resolver.resolve_site` inline path accept exactly `{flat (24,) scalars, (12,24)}`. Validator: `flat_ok OR seasonal_ok`. Resolver: flat→×12 broadcast, seasonal→passthrough, else `ValueError`. Contract §4/§9 + binding parity-invariant note.
+
+**Findings raised & resolved:**
+- **F1** (round 1): `seasonal_ok` accepted `(12,24)` that the resolver then rejected → validator/resolver disagreement. Resolved by extending the resolver inline path to passthrough `(12,24)`.
+- **F2** (round 2): resolver flat branch checked `len==24` without the validator's scalar guard → a 24-length list-of-lists (`[[v]]*24`, `(24,24)`) was rejected by the validator but accepted by the resolver → silent `(12,24,24)` price_table. Resolved by adding `and not any(isinstance(row,list) …)` to the resolver flat branch (mirrors validator `flat_ok` exactly).
+
+**Parity invariant now tested both directions:**
+- `test_resolver_inline_seasonal_passthrough` — resolve_site() succeeds on inline `(12,24)` (positive parity).
+- `test_v2_flat_24_nested_rejected_by_both` — validator AND resolver both reject `[[v]]*24` (negative parity; fails loudly if resolver silently accepts).
+- `test_real_gansu_config_validates_no_tar_shape` — loads on-disk `config/site_gansu.yaml` + `config/device_models.yaml`; pins `schema_version` 2.x (immune to the #63 → 2.1.0 drift); validate→no E-TAR-SHAPE + resolve_site() no-raise.
+
+**Reviewer-added cases (backend-reviewer, this revision):**
+- `test_v2_flat_12_scalars_errors` — len==12 of scalars is never mistaken for a seasonal table → E-TAR-SHAPE.
+- `test_malformed_schema_version_uses_v1_path` — non-numeric `schema_version` falls back to v1 flat path without crashing.
+
+**Suite state:** 76 collected; all pass except `test_error_not_raised_on_valid_gansu` (pre-existing x86-jaxlib-AVX-on-ARM import failure; environmental, unrelated; CI/QA validates the JAX-gated resolver halves).
+
+| Stage | Head | Verdict |
+|---|---|---|
+| D33 implementation | `f5e7ae3` | APPROVE (backend-reviewer) |
