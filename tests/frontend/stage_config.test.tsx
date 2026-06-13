@@ -1435,3 +1435,64 @@ describe("§T12 Accessibility", () => {
     expect(errorEl.textContent).toMatch(/✗/);
   });
 });
+
+// ===========================================================================
+// reviewer: added cases — frontend-reviewer (PR #102 contract+tests gate, e1c865d)
+// The approved suite = developer cases above + these reviewer cases.
+// ===========================================================================
+
+// reviewer: §5.2 fail-safe gap. The contract §5.2 states: "If coverage check fails,
+// Historical/Bootstrap remain disabled (fail-safe)." But the T-MAP-6/7 *invariants*
+// only enumerate `coverage?.historical_available === false` OR `coveragePending` — they
+// do NOT mention the error/null case. An implementation that satisfies T-MAP-6/7
+// literally could leave both radios ENABLED when the coverage API errored (coverage=null,
+// coverageError set, pending=false), letting the user select a weather mode with no
+// backing data. This pins the §5.2 fail-safe. (Recommend rewording T-MAP-6/7 to:
+// "enabled ONLY when coverage.historical_available === true; any other state — false,
+// null, pending, or error — disables.")
+describe("reviewer: §T3 MapPicker coverage-error fail-safe (§5.2)", () => {
+  it("reviewer: [T-MAP-COV-ERR] coverageError set → Historical & Bootstrap both disabled", async () => {
+    const MapPicker = await loadMapPicker();
+    render(
+      <MapPicker
+        latLon={{ lat: 38.5, lon: 102.0 }}
+        weatherMode="synthetic"
+        coverage={null}
+        coveragePending={false}
+        coverageError="Coverage check failed"
+        onLatLonChange={vi.fn()}
+        onWeatherModeChange={vi.fn()}
+      />
+    );
+    // Fail-safe: a failed coverage check must NOT leave historical/bootstrap selectable.
+    expect(screen.getByTestId("weather-mode-historical")).toBeDisabled();
+    expect(screen.getByTestId("weather-mode-bootstrap")).toBeDisabled();
+  });
+});
+
+// reviewer: T-MAP-10 only exercises the LAT range guard ([-90,90]). The symmetric LON
+// guard ([-180,180] → lon-range-error, no onLatLonChange) is asserted nowhere, so a
+// lon-only limit/sign bug (e.g. clamping to ±90, or firing onLatLonChange with an
+// out-of-range lon) would slip through. This adds the missing symmetric case.
+describe("reviewer: §T3 MapPicker lon range guard (§4.2 T-MAP-10)", () => {
+  it("reviewer: [T-MAP-10-LON] lon=200 (out of [-180,180]) shows lon-range-error, no onLatLonChange", async () => {
+    const MapPicker = await loadMapPicker();
+    const onLatLonChange = vi.fn();
+    render(
+      <MapPicker
+        latLon={null}
+        weatherMode="synthetic"
+        coverage={null}
+        coveragePending={false}
+        coverageError={null}
+        onLatLonChange={onLatLonChange}
+        onWeatherModeChange={vi.fn()}
+      />
+    );
+    const lonInput = screen.getByTestId("lon-input");
+    await userEvent.type(lonInput, "200");
+    fireEvent.blur(lonInput);
+    expect(screen.getByTestId("lon-range-error")).toBeTruthy();
+    expect(onLatLonChange).not.toHaveBeenCalled();
+  });
+});
