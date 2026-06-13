@@ -49,8 +49,11 @@ the TypeScript API (props, state shape, hook contracts) and behavioral invariant
 
 ## 2. Stage state machine
 
-Stage ① follows the five-state model from `wizard_flow.md §2.2`. The state is stored in
-`useStageOneStore` (Zustand, `localStorage`-persisted).
+Stage ① uses a five-state form-level machine stored in `useStageOneStore` (Zustand,
+`localStorage`-persisted). This is the **form validation state**, not the wizard-bar
+step state: the wizard-bar's own stage lifecycle is owned by `wizard_shell.md` (future).
+The five states here capture whether the form has been touched, whether a server
+validation call is in flight, and whether the result is clean (§M2 clarification).
 
 ```
 FIRST_VISIT   — no saved config; all fields empty; Continue disabled
@@ -72,7 +75,8 @@ STALE         — was COMPLETE, user returned and edited something; Continue sho
 | `STALE` | Debounce fires → API returns 0 errors + 0 unack'd warnings | `COMPLETE` |
 | `STALE` | Debounce fires → API returns errors/warnings | `IN_PROGRESS` |
 
-**Invariant:** `Continue` button is enabled iff `stageState === 'COMPLETE'` (no exception).
+**Invariant:** `Continue` button is enabled iff `stageState === 'COMPLETE' || stageState === 'STALE'`
+(B3 fix: STALE = was clean, user edited; button label changes to "Save & Update →" but remains enabled).
 
 ---
 
@@ -97,6 +101,18 @@ export interface LatLon {
   lon: number;   // decimal degrees E; positive = east
 }
 
+/** Per-unit physics stored in DeviceRow after resolution (§4.1, T-FLEET-6).
+ *  Populated from GET /api/devices/models/{model_id} — device_model_schema §1.2.
+ *  Used by §5.1 validate body builder to compute fleet MW / MWh totals.
+ */
+export interface DeviceRowPhysics {
+  rated_mw_per_unit?:     number;   // MW  — wind_turbine (physics.rated_mw_per_unit)
+  panel_mw_per_unit?:     number;   // MW  — pv_panel (nameplate power per panel)
+  capacity_mwh_per_unit?: number;   // MWh — battery (physics.capacity_mwh_per_unit)
+  power_mw_per_unit?:     number;   // MW  — battery (physics.power_mw_per_unit)
+  // grid_connection: max_export/import resolved server-side; frontend stores model only
+}
+
 export interface DeviceRow {
   id:       string;   // model_id from device_models.yaml
   count:    number;   // ≥ 1
@@ -104,6 +120,7 @@ export interface DeviceRow {
   type?:    'wind_turbine' | 'pv_panel' | 'battery' | 'grid_connection';
   label?:   string;   // human label from search response
   valid?:   boolean;  // true = id resolved in library; false = not found; undefined = resolving
+  physics?: DeviceRowPhysics;  // per-unit physics; populated via resolveDevice() after add (§4.1)
 }
 
 export interface ValidationIssue {
@@ -123,6 +140,19 @@ export interface WeatherCoverage {
   available_year_count: number;
   year_range:           [number, number] | null;
   bootstrap_available:  boolean;
+}
+
+/** Mirrors one entry from GET /api/tariff/regions (geo_site_api §3.2).
+ *  Used in useSiteMetaForm.availableTariffs and the tariff dropdown.
+ *  (M1 fix: type was referenced but not defined.)
+ */
+export interface TariffRegion {
+  region_id:                     string;
+  currency:                      string;
+  price_min_yuan_per_mwh:       number;   // ¥/MWh
+  price_max_yuan_per_mwh:       number;   // ¥/MWh
+  demand_rate_yuan_per_mw_month?: number; // ¥/MW·month (optional field)
+  provenance:                    string;
 }
 ```
 
@@ -145,6 +175,11 @@ export interface StageOneStoreState {
   weatherMode: WeatherMode;
 
   fleet:       DeviceRow[];    // ordered list; may be empty
+
+  // Full (12,24) tariff price table fetched from GET /api/tariff/regions/{tariffRegion}.
+  // null until a region is selected and the detail fetch completes (§5.4).
+  // Used as site_config.tariff.price_table_yuan_per_mwh in the validate body (§5.1).
+  tariffPriceTable: number[][] | null;
 
   scenarioBasePowerActive: boolean;  // v1: always true; immutable
 
@@ -174,7 +209,7 @@ export interface StageOneStoreActions {
   addDevice(row: DeviceRow): void;
   updateDeviceCount(index: number, count: number): void;
   removeDevice(index: number): void;
-  resolveDevice(index: number, resolved: Pick<DeviceRow, 'type' | 'label' | 'valid'>): void;
+  resolveDevice(index: number, resolved: Pick<DeviceRow, 'type' | 'label' | 'valid' | 'physics'>): void;
 
   acknowledgeWarning(ruleId: string): void;
   receiveValidation(result: ValidationResult): void;
@@ -185,6 +220,10 @@ export interface StageOneStoreActions {
   setSaveInProgress(v: boolean): void;
   setSaveError(msg: string | null): void;
   onSaveSuccess(configHash: string): void;   // transitions to COMPLETE, updates provenanceHash
+
+  /** Stores the (12,24) tariff price table fetched from GET /api/tariff/regions/{region_id}.
+   *  Called after setTariffRegion succeeds (§5.4). Null when no region selected. */
+  receiveTariffPriceTable(table: number[][]): void;
 
   reset(): void;   // resets to FIRST_VISIT; used when wizard is mounted fresh
 }
@@ -210,6 +249,10 @@ key `"energygo.stage1"`. On page reload the form values and `stageState` are res
 - Manage the 300 ms validation debounce: fire `POST /api/site/validate` after any meaningful change
   (fleet change, lat/lon change, tariff change, scenario toggle). See §5.1.
 - Manage the 500 ms coverage debounce: fire `GET /api/site/weather-coverage` after lat/lon change.
+- After `DeviceFleetTable.onAdd` fires: call `GET /api/devices/models/{id}` to fetch full per-unit
+  physics; then call `store.resolveDevice(index, { type, label, valid: true, physics: {...} })`.
+  Until resolved, `valid` is `undefined` (spinner state). Physics is required for the §5.1 validate
+  body builder (count × per-unit = fleet MW/MWh).
 
 **Props:**
 ```typescript
@@ -261,7 +304,7 @@ interface MapPickerProps {
   coverage:         WeatherCoverage | null;
   coveragePending:  boolean;
   coverageError:    string | null;
-  onLatLonChange:   (loc: LatLon) => void;
+  onLatLonChange:   (loc: LatLon | null) => void;   // null when coordinates are cleared (B4 fix)
   onWeatherModeChange: (mode: WeatherMode) => void;
   testId?:          string;   // default "map-picker"
 }
@@ -278,6 +321,7 @@ interface MapPickerProps {
 - `[T-MAP-8]` When `coveragePending` is true, radio labels for Historical/Bootstrap show a spinner (`data-testid="coverage-spinner"`).
 - `[T-MAP-9]` Lat/Lon fields accept `N`/`S`/`E`/`W` suffix (case-insensitive). "38S" → lat = -38; "102W" → lon = -102. Positive decimals are also valid.
 - `[T-MAP-10]` Lat input is restricted to [-90, 90]; Lon to [-180, 180]. Values outside range show inline error `data-testid="lat-range-error"` / `data-testid="lon-range-error"` and do NOT call `onLatLonChange`.
+- `[T-MAP-11]` When both coordinate inputs are cleared (empty string), `onLatLonChange(null)` is called on blur. The store's `location` becomes `null`. Cleared inputs do NOT call `onLatLonChange` with `NaN` or stale values. (B4 fix: `null` is the canonical "no location" signal.)
 
 **DOM anchors:**
 - `data-testid="map-picker"` (or prop `testId`) on root
@@ -443,23 +487,82 @@ export function useSiteMetaForm(store: StageOneStoreState & StageOneStoreActions
 the timer resets. While debounce is pending OR request is in flight, `validationPending = true`.
 
 **Request body construction:**
+
+The `site_config` field mirrors the YAML dict structure consumed by `config_validation.validate()`
+(config_validation.md §3 + geo_site_api §3.1). It is **category-keyed**, not a flat fleet list.
+Fleet MW/MWh values are computed client-side: `count × per-unit physics` (stored in
+`DeviceRow.physics` after resolution). Rows with `valid !== false` and a resolved `physics` object
+are included; unresolved rows (physics=undefined or valid=false) are excluded.
+
 ```typescript
-{
-  site_config: {
-    location: { lat: location.lat, lon: location.lon },
-    assets: {
-      // devices mapped from fleet rows where valid !== false
-      fleet: fleet.filter(r => r.valid !== false).map(r => ({
-        model_id: r.id,
-        count: r.count
-      }))
-    },
-    tariff_region: tariffRegion,
-    scenario: { base_power: scenarioBasePowerActive }
-  }
-  // device_models omitted — backend uses its own loaded catalogue
+// Only include rows that have been resolved and are valid.
+const validFleet = fleet.filter(r => r.valid !== false && r.physics !== undefined);
+
+// Group by device type.
+const byType = (t: DeviceRow['type']) => validFleet.filter(r => r.type === t);
+
+// Build category-keyed assets dict.
+const assets: Record<string, unknown> = {};
+
+const windRows = byType('wind_turbine');
+if (windRows.length > 0) {
+  // fleet_rated_mw: sum of (count × rated_mw_per_unit) across all wind rows
+  // e.g. 100 × 4.2 MW = 420.0 MW
+  const fleet_rated_mw = windRows.reduce(
+    (sum, r) => sum + r.count * (r.physics!.rated_mw_per_unit ?? 0), 0
+  );
+  assets.wind = { model: windRows[0].id, fleet_rated_mw };
 }
+
+const solarRows = byType('pv_panel');
+if (solarRows.length > 0) {
+  // fleet_capacity_mw: sum of (count × panel_mw_per_unit)
+  const fleet_capacity_mw = solarRows.reduce(
+    (sum, r) => sum + r.count * (r.physics!.panel_mw_per_unit ?? 0), 0
+  );
+  assets.solar = { model: solarRows[0].id, fleet_capacity_mw };
+}
+
+const battRows = byType('battery');
+if (battRows.length > 0) {
+  // fleet_capacity_mwh: sum of (count × capacity_mwh_per_unit)
+  // fleet_power_mw: sum of (count × power_mw_per_unit)
+  const fleet_capacity_mwh = battRows.reduce(
+    (sum, r) => sum + r.count * (r.physics!.capacity_mwh_per_unit ?? 0), 0
+  );
+  const fleet_power_mw = battRows.reduce(
+    (sum, r) => sum + r.count * (r.physics!.power_mw_per_unit ?? 0), 0
+  );
+  assets.battery = { model: battRows[0].id, fleet_capacity_mwh, fleet_power_mw };
+}
+
+const gridRows = byType('grid_connection');
+if (gridRows.length > 0) {
+  // Grid: only model ID needed; max_export_mw / max_import_mw are resolved server-side
+  // from device_models — no per-unit computation required on the frontend.
+  assets.grid = { model: gridRows[0].id };
+}
+
+// Build POST body.
+// device_models is omitted — server uses its own loaded catalogue for E-BAT-CRATE checks.
+// tariffPriceTable: the (12,24) seasonal price table fetched from §5.4.
+// location and scenarioBasePowerActive are not fields config_validation.py checks (v1).
+const body = {
+  site_config: {
+    assets,
+    ...(tariffPriceTable !== null && {
+      tariff: { price_table_yuan_per_mwh: tariffPriceTable }
+    }),
+  },
+  // device_models absent → device-dependent rules (E-BAT-CRATE, E-BAT-UNIT) silently skipped
+};
 ```
+
+**Key invariants:**
+- `assets.fleet` (flat list) MUST NOT appear in the body — only category keys (`wind`, `solar`, `battery`, `grid`).
+- `tariff_region` (string) MUST NOT appear in the body — only the full (12,24) `price_table_yuan_per_mwh`.
+- If `tariffPriceTable` is null (region not yet selected or detail fetch failed), the `tariff` key is omitted entirely; `E-TAR-SHAPE` will fire on the backend.
+- Rows with `valid === false` or `physics === undefined` are excluded (avoids sending 0-MW rows that would trigger E-CAP-POS).
 
 **Error handling:** if `POST /api/site/validate` returns a non-200 response or network error:
 - Set `validationPending = false`
@@ -494,22 +597,33 @@ radio buttons are disabled.
 **Invariant:** `[T-API-SEARCH-1]` `[Add ✓]` button is disabled while the search is
 in flight or has not yet returned a result for the current input value.
 
-### 5.4 Tariff regions — `GET /api/tariff/regions`
+### 5.4 Tariff regions — `GET /api/tariff/regions` + `GET /api/tariff/regions/{region_id}`
 
-**Trigger:** on `StageOneConfig` mount (once; no re-fetch).
+**List fetch:** `GET /api/tariff/regions` fires on `StageOneConfig` mount (once; no re-fetch).
 
-**Usage:** populates the province → tariff default map and the tariff dropdown options.
-Each tariff region entry shows: `region_id` + a summary line
+**Usage:** populates `useSiteMetaForm.availableTariffs` (province → tariff default map and
+the tariff dropdown options). Each entry shows: `region_id` + a summary line
 `"¥{price_min}–{price_max}/MWh · 12×24 TOU"`.
 
-**On error:** `tariffsError` is set; tariff dropdown renders an error placeholder
+**Detail fetch:** `GET /api/tariff/regions/{region_id}` fires whenever `tariffRegion` changes
+to a non-empty value. The response's `price_table_yuan_per_mwh` (12×24 array) is stored via
+`store.receiveTariffPriceTable(table)`. This table is used in the §5.1 validate body as
+`site_config.tariff.price_table_yuan_per_mwh`.
+
+**On list error:** `tariffsError` is set; tariff dropdown renders an error placeholder
 `"Tariff list unavailable"` (tariff selection is blocked until resolved; `[↺ Retry]`).
+
+**On detail error:** `tariffPriceTable` remains `null`; the next validate call omits the
+`tariff` key → `E-TAR-SHAPE` fires → stageState cannot reach COMPLETE. No explicit error
+UI for this case (the validation error message is sufficient).
 
 ---
 
 ## 6. `Continue` invariants
 
-**`[T-CONTINUE-1]`** `StageSaveButton` is enabled (not aria-disabled) iff `stageState === 'COMPLETE'`.
+**`[T-CONTINUE-1]`** `StageSaveButton` is enabled (not `aria-disabled`) iff
+`stageState === 'COMPLETE' || stageState === 'STALE'`. (B3 fix: both states allow save;
+STALE label is "Save & Update →", COMPLETE label is "Save & Continue →".)
 
 **`[T-CONTINUE-2]`** `stageState` can only be `COMPLETE` when:
 - `lastValidation` is non-null
@@ -546,9 +660,11 @@ a hard error.
 **`[T-UNHAPPY-5]` Device ID not found:** `GET /api/devices/search` returns no match for the
 typed ID → `fleet-id-error` shown inline, `[Add ✓]` disabled.
 
-**`[T-UNHAPPY-6]` NaN / extreme coordinates:** If lat/lon inputs are cleared or set to NaN,
-`MapPicker` clears the pin but does NOT call `onLatLonChange` with invalid values.
-`location` in the store becomes `null`.
+**`[T-UNHAPPY-6]` NaN / extreme coordinates / cleared inputs:** If lat/lon inputs are both
+cleared, `MapPicker` calls `onLatLonChange(null)` (§4.2 T-MAP-11). If either input is set to
+a value outside [-90,90] / [-180,180], an inline range error is shown and `onLatLonChange` is
+NOT called (§4.2 T-MAP-10). `onLatLonChange` is never called with a `NaN` value.
+`location` in the store becomes `null` when `onLatLonChange(null)` is received. (B4 fix.)
 
 **`[T-UNHAPPY-7]` Concurrent validation + save:** If the user clicks `[Save & Continue →]`
 and a validation debounce is still pending (i.e., `validationPending === true`), the save

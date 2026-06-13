@@ -1027,6 +1027,90 @@ describe("§T9 API call debounce and race-condition guard", () => {
     expect(callsAfter).toBe(1);
   });
 
+  it("[T-API-VAL-2] validate body is category-keyed assets+tariff (B1+B2 fix)", async () => {
+    // B1 fix: body must be category-keyed (assets.wind/solar/battery/grid), NOT a flat fleet list.
+    // B2 fix: this test pins the exact body shape and units so contract+impl stay in sync.
+    //
+    // Arithmetic (shown per contract requirement):
+    //   wind:    100 units × 4.2 MW/unit  = 420.0 MW → assets.wind.fleet_rated_mw
+    //   battery: 1 unit  × 300 MWh/unit   = 300.0 MWh → assets.battery.fleet_capacity_mwh
+    //            1 unit  × 100 MW/unit     = 100.0 MW  → assets.battery.fleet_power_mw
+    //   tariff:  (12,24) table, all 250.0 ¥/MWh
+
+    let capturedBody: Record<string, unknown> | null = null;
+
+    globalThis.fetch = vi.fn((url: string, options?: RequestInit) => {
+      if (String(url).includes("/api/site/validate")) {
+        capturedBody = JSON.parse((options?.body as string) ?? "{}");
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(MOCK_VALIDATION_CLEAN) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    // Render StageOneConfig so its debounce effect is active (same as T-API-VAL-1 pattern).
+    const StageOneConfig = await loadStageOneConfig();
+    render(<StageOneConfig />);
+
+    const { useStageOneStore } = await import("../../src/stores/stageOneStore");
+    await act(async () => { useStageOneStore.getState().reset(); });
+
+    // Mock (12,24) tariff table — 12 months × 24 hours, all 250 ¥/MWh
+    const mockPriceTable: number[][] = Array.from({ length: 12 }, () => Array(24).fill(250.0));
+
+    await act(async () => {
+      useStageOneStore.getState().receiveTariffPriceTable(mockPriceTable);
+      // Wind turbine: 100 units × 4.2 MW
+      useStageOneStore.getState().addDevice({
+        id: "vestas-v150-4.2", count: 100,
+        type: "wind_turbine", label: "Wind turbine · 4.2 MW · 105m hub", valid: true,
+        physics: { rated_mw_per_unit: 4.2 },
+      });
+      // Battery: 1 unit × 300 MWh / 100 MW
+      useStageOneStore.getState().addDevice({
+        id: "catl-lmp-300mwh", count: 1,
+        type: "battery", label: "Battery · 300 MWh / 100 MW", valid: true,
+        physics: { capacity_mwh_per_unit: 300.0, power_mw_per_unit: 100.0 },
+      });
+      // Device with valid=false must be excluded from body
+      useStageOneStore.getState().addDevice({
+        id: "unknown-device", count: 5,
+        type: "wind_turbine", valid: false,
+      });
+      vi.advanceTimersByTime(350);  // fire 300ms debounce
+    });
+
+    await waitFor(() => expect(capturedBody).not.toBeNull());
+
+    const sc = (capturedBody as { site_config: Record<string, unknown> }).site_config;
+    const assets = sc.assets as Record<string, Record<string, unknown>>;
+    const tariff = sc.tariff as Record<string, unknown>;
+
+    // Category-keyed — flat fleet list must NOT be present
+    expect(assets.fleet).toBeUndefined();
+
+    // Wind: 100 × 4.2 = 420.0 MW
+    expect(assets.wind).toBeDefined();
+    expect(assets.wind.model).toBe("vestas-v150-4.2");
+    expect(assets.wind.fleet_rated_mw).toBeCloseTo(420.0);
+
+    // Battery: 1 × 300 MWh, 1 × 100 MW
+    expect(assets.battery).toBeDefined();
+    expect(assets.battery.model).toBe("catl-lmp-300mwh");
+    expect(assets.battery.fleet_capacity_mwh).toBeCloseTo(300.0);
+    expect(assets.battery.fleet_power_mw).toBeCloseTo(100.0);
+
+    // Tariff: (12,24) price table, not a region_id string
+    expect(tariff).toBeDefined();
+    expect(sc.tariff_region).toBeUndefined();  // string region_id MUST NOT appear
+    const table = tariff.price_table_yuan_per_mwh as number[][];
+    expect(table).toHaveLength(12);     // 12 months
+    expect(table[0]).toHaveLength(24);  // 24 hours
+    expect(table[0][0]).toBe(250.0);    // ¥/MWh
+
+    // Invalid device excluded: no second wind entry with "unknown-device"
+    expect(JSON.stringify(capturedBody)).not.toContain("unknown-device");
+  });
+
   it("[T-API-COV-1] coverage fires 500ms after lat/lon change; Historical disabled while pending", async () => {
     globalThis.fetch = mockFetch();
     const MapPicker = await loadMapPicker();
@@ -1205,7 +1289,9 @@ describe("§T11 Unhappy paths", () => {
     expect(useStageOneStore.getState().stageState).not.toBe("COMPLETE");
   });
 
-  it("[T-UNHAPPY-6] NaN/cleared lat/lon does NOT call onLatLonChange", async () => {
+  it("[T-UNHAPPY-6] clearing lat/lon calls onLatLonChange(null); never calls with NaN (B4 fix)", async () => {
+    // B4 fix: onLatLonChange: (LatLon | null) => void — null is the canonical cleared signal.
+    // See contract §4.2 T-MAP-11 and §7 T-UNHAPPY-6.
     const MapPicker = await loadMapPicker();
     const onLatLonChange = vi.fn();
     render(
@@ -1220,11 +1306,17 @@ describe("§T11 Unhappy paths", () => {
       />
     );
     const latInput = screen.getByTestId("lat-input");
+    const lonInput = screen.getByTestId("lon-input");
     await userEvent.clear(latInput);
+    await userEvent.clear(lonInput);
     fireEvent.blur(latInput);
-    // Cleared input = NaN → must NOT call onLatLonChange
+    // Both inputs cleared → must call onLatLonChange(null) — not NaN, not stale value
+    expect(onLatLonChange).toHaveBeenCalledWith(null);
     expect(onLatLonChange).not.toHaveBeenCalledWith(
       expect.objectContaining({ lat: NaN })
+    );
+    expect(onLatLonChange).not.toHaveBeenCalledWith(
+      expect.objectContaining({ lat: 38.0 })
     );
   });
 
