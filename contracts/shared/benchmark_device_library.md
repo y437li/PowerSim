@@ -34,7 +34,7 @@ at their next write), citing the data source. The SST stub carries
 `provenance: "USER-provided, pending"` — no proprietary values committed.
 
 **Versioning:** Adding new model entries and a new device type is an additive (minor) change.
-`config/device_models.yaml` schema_version bumps from `"2.0.0"` to `"2.1.0"`. No re-LOCK
+`config/device_models.yaml` schema_version bumps from `"2.1.0"` to `"2.2.0"`. No re-LOCK
 of `device_model_schema.md` is required; the physics field contract for the Gansu 4 entries
 is unchanged. The existing 4 Gansu models are NOT modified; their entries are stable.
 
@@ -342,7 +342,7 @@ Tests live in `tests/shared/test_shared_benchmark_device_library.py`.
 The test file loads `config/device_models.yaml` via `yaml.safe_load`.
 
 ### T1 — Schema version
-`device_models.yaml` carries `schema_version: "2.1.0"` after the benchmark entries land.
+`device_models.yaml` carries `schema_version: "2.2.0"` after the electrolyzer entries land (D35).
 
 ### T2 — All expected IDs present
 The following model IDs MUST be present in `models:`:
@@ -360,7 +360,7 @@ EXPECTED_IDS = [
     "pcc-traditional-220kv", "pcc-sst-stub",
     # Electrolyzer benchmark
     "electrolyzer-alk-20mw", "electrolyzer-pem-10mw",
-    "electrolyzer-aem-1mw", "electrolyzer-soec-5mw",
+    "electrolyzer-aem-2.4mw", "electrolyzer-soec-5mw",
 ]
 ```
 
