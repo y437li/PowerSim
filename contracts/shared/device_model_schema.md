@@ -23,6 +23,15 @@ flat `(24,)` site YAML input.  Real seasonal data arrives later via `tariff_mode
 **Breaking shape change → major version bump; re-LOCK required** (both reviewers advisory +
 rl-architect re-LOCK).  Combined contract+impl PR per rl-architect sequencing ruling.
 
+**v2.1.0 amendment (task #63):** adds the optional `provenance:` top-level field on every model
+entry, and 9 new China 2024 benchmark model entries (wind/PV/BESS/grid + SST stub — see
+`contracts/shared/benchmark_device_library.md` v1.0.0).  The `provenance:` field is **resolver-ignored**
+(no `EnvParams` or resolver change — identical pattern to `economics:`); it is required for
+public-repo compliance (D32): committed public entries cite their data sources; proprietary values
+live only in the gitignored private overlay with a `"USER-provided, pending"` stub.  See §1.4
+for the field definition.
+**Minor version bump (additive optional field + additive model entries → no re-LOCK; §11 rules).**
+
 ---
 
 ## Overview
@@ -57,6 +66,7 @@ schema_version: "1.0.0"
 models:
   <model_id>:
     type: <wind_turbine | pv_panel | battery | grid_connection>
+    provenance: "<access_keyword>; <source>; …"  # optional; resolver ignores; D32 — see §1.4
     physics:
       <field>: <value>
     economics:    # reserved; consumed only by finance workstream; resolver ignores
@@ -177,7 +187,35 @@ The battery CAPEX formula is two-part:
 | `residual_value_fraction` | float | — | ∈ [0, 1) |
 | `decommissioning_cost_yuan` | float | ¥ | Decommissioning lump sum |
 
-### 1.4 Gansu v1.1.0 default economics values
+### 1.4 `provenance:` field (v2.1.0 — task #63)
+
+**Resolver ignores** the `provenance:` field — identical pattern to `economics:`.  It is
+**required for public-repo compliance (D32)** on all committed model entries, and SHOULD be
+present on every entry added at or after v2.1.0.
+
+```yaml
+provenance: "<access_keyword>; <source1>; [<source2>; …]"
+```
+
+| Access keyword | Meaning |
+|---|---|
+| `public` | Publicly available data — manufacturer datasheets, IRENA, IEA, NEA, CNREC, CNESA, peer-reviewed literature, etc. |
+| `USER-provided, pending` | Data awaiting USER input; all values are placeholder stubs |
+
+**Format and compliance rules:**
+- **Public entries** start `"public; …"` followed by at least one source citation.
+- **Proprietary or partner-confidential data MUST NOT be committed** (CLAUDE.md D32).
+  Such data lives only in the gitignored private overlay (`ENERGY_GO_PRIVATE_CONFIG` env var).
+  The stub in public config MUST carry `provenance: "USER-provided, pending"` and placeholder
+  physics values (e.g. `pcc-sst-stub` — SST data PAUSED by USER).
+- The field is **optional in the resolver** (absent = unavailable to finance layer, not an error).
+- For entries added after v2.1.0, omitting `provenance:` is a style warning, not a schema error —
+  but the finance layer SHOULD reject un-provenanced entries when computing LCOE/LCOS.
+
+`contracts/shared/benchmark_device_library.md` §1 also describes the provenance convention for
+the benchmark library context; this §1.4 is the canonical schema-level definition (D18 single source).
+
+### 1.5 Gansu v1.1.0 default economics values
 
 Initial estimates (2024/25 Chinese utility-scale market; source: IRENA/NEA public data; to be
 refined by task #63 benchmark library).  All values are **non-zero documented estimates**,
@@ -672,6 +710,7 @@ all `m ∈ [0,11]` and `h ∈ [0,23]`.  The parity bit-identity test is the acce
 | `"1.0.0"` | Initial release — 4 Gansu device models, `physics:` catalogue (PR #79) | First LOCK |
 | `"1.1.0"` | Adds `economics:` field catalogue, Gansu initial estimates (task #57) | No — additive optional fields |
 | `"2.0.0"` | `price_table` reshaped `(24,)→(12,24)` seasonal; Gansu replicated ×12 (bit-identical) | Yes — shape change |
+| `"2.1.0"` | Adds optional `provenance:` field (§1.4) + 9 China 2024 benchmark entries (wind/PV/BESS/grid + SST stub) — task #63 | No — additive optional field + new entries |
 
 **Rules:**
 - Additive new model entries or `economics:` fields = minor bump — no re-LOCK required.
