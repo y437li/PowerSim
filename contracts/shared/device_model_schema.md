@@ -32,6 +32,15 @@ live only in the gitignored private overlay with a `"USER-provided, pending"` st
 for the field definition.
 **Minor version bump (additive optional field + additive model entries → no re-LOCK; §11 rules).**
 
+**v2.2.0 amendment (task #63 follow-up — LINEAGE D35):** adds the `electrolyzer` device type
+(§1.2) and 4 INERT reference entries (ALK/PEM/AEM/SOEC) — see `benchmark_device_library.md`
+v1.1.0.  The resolver ignores `type: electrolyzer` entries entirely (same as `economics:` pattern);
+no `EnvParams` change.  **§8.2 specifies PEM and Alkaline only** — AEM/SOEC physics are
+benchmark-sourced and carry explicit public provenance (D35 condition 2).  `warmup_minutes` is
+provisional (§8.2 prose only; D35 condition 1).  H₂ scenario stays gated until
+`contracts/env/electrolyzer.md` activates it.
+**Minor version bump (additive new device type + new entries → no re-LOCK; §11 rules; D35).**
+
 ---
 
 ## Overview
@@ -65,13 +74,18 @@ support config-only:
 schema_version: "1.0.0"
 models:
   <model_id>:
-    type: <wind_turbine | pv_panel | battery | grid_connection>
+    type: <wind_turbine | pv_panel | battery | grid_connection | electrolyzer>
     provenance: "<access_keyword>; <source>; …"  # optional; resolver ignores; D32 — see §1.4
     physics:
       <field>: <value>
     economics:    # reserved; consumed only by finance workstream; resolver ignores
       {}
 ```
+
+**`electrolyzer` type** is resolver-INERT (LINEAGE D35): the resolver ignores entries with
+`type: electrolyzer` entirely — no `EnvParams` change — until `contracts/env/electrolyzer.md`
+activates the H₂ scenario.  Site configs MUST NOT reference electrolyzer entries in `assets:`
+blocks until the gate lifts.  See §1.2 for the electrolyzer physics field catalogue.
 
 `model_id` format: `^[a-z0-9][a-z0-9.-]*$` — identical to the `registry.json` key
 format (binding cross-area invariant, D23).  The 4 Gansu entries MUST use the
@@ -116,6 +130,26 @@ All `physics` fields listed below are **required** for the given type.
 |-------|------|------|-------------|
 | `max_export_mw` | float | MW | PCC export limit; D5; site-overridable |
 | `max_import_mw` | float | MW | Grid import limit; D12; site-overridable |
+
+#### `electrolyzer` (v2.2.0 — LINEAGE D35; resolver-INERT)
+
+All fields are **non-overridable** by site (intrinsic device physics, parallel to `eta_ch`/`soc_min`
+for battery).  The resolver ignores this entire type until the H₂ scenario gate lifts.
+
+§8.2 specifies **PEM and Alkaline only**.  AEM and SOEC entries are **benchmark-sourced** (not
+§8.2-sanctioned) and MUST carry explicit public-source provenance citations (D35 condition 2).
+
+| Field | Type | Unit | Description |
+|-------|------|------|-------------|
+| `min_load_fraction` | float | — | Minimum operating load as fraction of P_max; ∈ (0, 1] |
+| `standby_fraction` | float | — | Standby power draw as fraction of P_max; ∈ [0, min_load_fraction) |
+| `e_spec_kwh_per_kg` | float | kWh/kg | System-level specific energy (kWh per kg H₂); §8.2 table for PEM/ALK |
+| `degradation_yuan_per_mwh` | float | ¥/MWh | Degradation cost per MWh of electrical throughput; §8.2 table for PEM/ALK |
+| `rated_mw_per_unit` | float | MW | Nameplate electrical power per unit (P_max_ely); §8.2 reference 20 MW |
+| `warmup_minutes` | float | min | **Provisional** — cold-start warm-up duration; §8.2 prose only (not formal table); env ignores at Δt=1h (D35 condition 1) |
+
+**Physics invariants:** `0 < min_load_fraction ≤ 1`; `0 ≤ standby_fraction < min_load_fraction`;
+`e_spec_kwh_per_kg > 0`; `degradation_yuan_per_mwh ≥ 0`; `rated_mw_per_unit > 0`; `warmup_minutes ≥ 0`.
 
 ### 1.3 `economics:` field catalogue (v1.1.0 — task #57)
 
@@ -711,6 +745,7 @@ all `m ∈ [0,11]` and `h ∈ [0,23]`.  The parity bit-identity test is the acce
 | `"1.1.0"` | Adds `economics:` field catalogue, Gansu initial estimates (task #57) | No — additive optional fields |
 | `"2.0.0"` | `price_table` reshaped `(24,)→(12,24)` seasonal; Gansu replicated ×12 (bit-identical) | Yes — shape change |
 | `"2.1.0"` | Adds optional `provenance:` field (§1.4) + 9 China 2024 benchmark entries (wind/PV/BESS/grid + SST stub) — task #63 | No — additive optional field + new entries |
+| `"2.2.0"` | Adds `electrolyzer` device type (§1.2) as resolver-INERT; 4 reference entries (ALK/PEM/AEM/SOEC) — task #63 D35 | No — additive new type + new entries; D35 |
 
 **Rules:**
 - Additive new model entries or `economics:` fields = minor bump — no re-LOCK required.

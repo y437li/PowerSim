@@ -1,12 +1,13 @@
-schema_version: "2.1.0"
+schema_version: "2.2.0"
 # Device model library — physics constants keyed by LOCKED registry.json IDs (D23).
 #
-# Contract: contracts/shared/device_model_schema.md v2.0.0 (LOCKED)
+# Contract: contracts/shared/device_model_schema.md v2.1.0 (LOCKED)
 #           contracts/shared/benchmark_device_library.md v1.0.0 (task #4)
 #
 # Schema version history:
 #   "2.0.0" — price_table (24,)→(12,24) seasonal reshape (PR #87)
-#   "2.1.0" — multi-brand China benchmark library: wind/PV/BESS/grid/electrolyzer (task #4)
+#   "2.1.0" — multi-brand China benchmark library: wind/PV/BESS/grid + provenance field (PR #103)
+#   "2.2.0" — electrolyzer device type + 4 entries (ALK/PEM/AEM/SOEC); INERT per D35 (this PR)
 #
 # Non-overridable constants (device_model_schema.md §3.1):
 #   wind_turbine:  v_cutin_mps, v_rated_mps, v_cutout_mps
@@ -316,12 +317,125 @@ models:
       max_import_mw: 200.0  # MW — placeholder; site-overridable
     economics: {}
 
-  # --------------------------------------------------------
-  #  ELECTROLYZERS — HELD pending rl-architect ruling
-  #  Adding the `electrolyzer` device type extends device_model_schema in a way
-  #  that needs an architecture ruling (new type + H2 scenario currently GATED).
-  #  Proposed entries, physics field catalogue, and benchmark values are fully
-  #  documented in contracts/shared/benchmark_device_library.md §2–§4.
-  #  These 4 entries (ALK/PEM/AEM/SOEC) will be added in a follow-up commit
-  #  once rl-architect clears the device-type extension.
-  # --------------------------------------------------------
+  # ============================================================
+  #  H₂ SCENARIO — GATED, INERT REFERENCE DATA (LINEAGE D35)
+  #  rl-architect ruling (D35): electrolyzer entries land as INERT reference data
+  #  while the H₂ scenario remains gated — direct analog of D23 (3D assets
+  #  cleared before env-side gate).  Schema version: "2.1.0"→"2.2.0" (minor additive;
+  #  new device type + new entries; no re-LOCK; rl-architect authority).
+  #
+  #  INERT contract (mirrors economics: "ignored" pattern):
+  #    - Resolver ignores `electrolyzer` type entries entirely — no EnvParams change,
+  #      no H₂ dispatch logic activated.
+  #    - Site configs MUST NOT reference these entries in assets: blocks until the
+  #      H₂ scenario gate lifts (contracts/env/electrolyzer.md lands).
+  #    - Activation path: contracts/env/electrolyzer.md → resolver extension
+  #      → site YAML assets: block → agent action space expansion.
+  #
+  #  Physics fields: §8.2-verbatim for PEM + ALK (5 non-overridable fields).
+  #    AEM + SOEC: NOT in §8.2 — benchmark-sourced, public provenance required (D35 condition 2).
+  #    warmup_minutes: provisional — mentioned in §8.2 prose; env ignores at Δt=1h (D35 cond. 1).
+  #  Public data only (CLAUDE.md D32).  All provenance strings start "public; …".
+  # ============================================================
+
+  # ---- Alkaline (ALK) electrolyzer — 20 MW class ----
+  electrolyzer-alk-20mw:
+    # §8.2-VERBATIM physics (PEM/Alkaline are the only §8.2-specified types).
+    # Reference manufacturers: PERIC HG-Alk; Longi H₂ 500 Nm³/h; Suzhou Jingli (China domestic).
+    type: electrolyzer
+    provenance: "public; PERIC HG-Alk 2000 Nm³/h product literature (public 2024); Longi H2 LH2-S series public data; IRENA Green Hydrogen Cost Reduction 2020; IEA Global Hydrogen Review 2023; CNREC China Hydrogen Development Report 2023"
+    physics:
+      # §8.2-verbatim non-overridable fields (PEM/Alkaline table):
+      min_load_fraction:         0.20  # —       — ALK turndown limit: 20–100% P_max (§8.2 table)
+      standby_fraction:          0.02  # —       — standby draw: 2% P_max (§8.2 table)
+      e_spec_kwh_per_kg:        52.0   # kWh/kg  — system-level specific energy (§8.2 table: 52)
+      degradation_yuan_per_mwh:  4.0   # ¥/MWh   — degradation per MWh throughput (§8.2 table: 4)
+      rated_mw_per_unit:        20.0   # MW      — nameplate P_max (§8.2 reference: "P_max_ely 20 MW")
+      # provisional — §8.2 prose only; env ignores at Δt=1h (D35 condition 1):
+      warmup_minutes:           30.0   # min     — ALK cold-start: typically 30–60 min
+    economics:
+      capex_per_kw_yuan:              3500.0  # ¥/kW — ≈490 USD/kW; China domestic ALK ¥2500–4000/kW 2024; IRENA 2023 mid-case
+      opex_fixed_per_kw_year_yuan:      90.0  # ¥/kW·yr — ~2.5% of CAPEX; IEA benchmark
+      opex_var_per_mwh_yuan:             0.0  # ¥/MWh
+      stack_life_years:                  8.0  # yr  — ALK stack 80,000–100,000 hrs; IEA 2023
+      replacement_cost_fraction:         0.30 # —   — stack replacement ~30% CAPEX; IEA/IRENA
+      lifetime_years:                   20.0  # yr  — system design life; IEA 2023
+      residual_value_fraction:           0.05 # —
+      construction_months:              12.0  # months
+
+  # ---- PEM electrolyzer — 10 MW class ----
+  electrolyzer-pem-10mw:
+    # §8.2-VERBATIM physics (PEM/Alkaline are the only §8.2-specified types).
+    # Reference manufacturers: Siemens Energy Silyzer 300; Nel H₂ M-Series; ITM Power HGas.
+    type: electrolyzer
+    provenance: "public; Siemens Energy Silyzer 300 product data (public 2024); Nel Hydrogen M-Series public data; ITM Power HGas public data; IRENA Green Hydrogen Cost Reduction 2020; IEA Global Hydrogen Review 2023"
+    physics:
+      # §8.2-verbatim non-overridable fields (PEM/Alkaline table):
+      min_load_fraction:         0.05  # —       — PEM turndown: 5–100% P_max (§8.2 table)
+      standby_fraction:          0.01  # —       — standby draw: 1% P_max (§8.2 table)
+      e_spec_kwh_per_kg:        55.0   # kWh/kg  — system-level specific energy (§8.2 table: 55)
+      degradation_yuan_per_mwh:  8.0   # ¥/MWh   — higher than ALK (§8.2 table: 8)
+      rated_mw_per_unit:        10.0   # MW      — nameplate P_max
+      # provisional — §8.2 prose only; env ignores at Δt=1h (D35 condition 1):
+      warmup_minutes:            5.0   # min     — PEM fast warm-up: ~5 min from cold
+    economics:
+      capex_per_kw_yuan:              6500.0  # ¥/kW — ≈910 USD/kW; China domestic PEM ¥5000–8000/kW 2024; IRENA 2023
+      opex_fixed_per_kw_year_yuan:     130.0  # ¥/kW·yr — ~2% of CAPEX; IEA benchmark
+      opex_var_per_mwh_yuan:             0.0  # ¥/MWh
+      stack_life_years:                  5.0  # yr  — PEM membrane: 60,000–80,000 hrs; IEA 2023
+      replacement_cost_fraction:         0.40 # —   — PEM membrane/catalyst ~40% CAPEX; IEA
+      lifetime_years:                   15.0  # yr  — system life (with stack replacements); IEA 2023
+      residual_value_fraction:           0.05 # —
+      construction_months:               9.0  # months
+
+  # ---- AEM electrolyzer — 2.4 MW class (emerging technology) ----
+  electrolyzer-aem-2.4mw:
+    # BENCHMARK-SOURCED: AEM is NOT in §8.2 (only PEM/Alkaline are §8.2-specified).
+    # Values sourced from public manufacturer data + IEA 2023 projections (D35 condition 2).
+    # Reference manufacturer: Enapter EL 4.0 (2.4 MW modular unit, 2024 commercial release).
+    type: electrolyzer
+    provenance: "public; Enapter EL 4.0 product datasheet rev.2024 (public); Enapter 2023 Annual Report (public); IEA Global Hydrogen Review 2023 AEM projections; IRENA Green Hydrogen Cost Reduction 2020"
+    physics:
+      # Benchmark-sourced (NOT §8.2-verbatim — AEM not in §8.2 table; D35 condition 2):
+      min_load_fraction:         0.05  # —       — Enapter EL 4.0 public spec: turndown 5–100%
+      standby_fraction:          0.01  # —       — Enapter: standby ~1% rated power (public datasheet)
+      e_spec_kwh_per_kg:        53.0   # kWh/kg  — Enapter EL 4.0: ~53 kWh/kg system-level (public 2024)
+      degradation_yuan_per_mwh: 10.0   # ¥/MWh   — IEA 2023 AEM: higher than PEM due to membrane immaturity
+      rated_mw_per_unit:         2.4   # MW      — Enapter EL 4.0 nominal rating (public spec 2024)
+      # provisional — §8.2 prose only; env ignores at Δt=1h (D35 condition 1):
+      warmup_minutes:            5.0   # min     — Enapter EL 4.0: fast warm-up ~5 min (public datasheet)
+    economics:
+      capex_per_kw_yuan:              8500.0  # ¥/kW — ≈1190 USD/kW; Enapter EL 4.0 public pricing 2024
+      opex_fixed_per_kw_year_yuan:     200.0  # ¥/kW·yr — higher O&M for emerging technology; IEA estimate
+      opex_var_per_mwh_yuan:             0.0  # ¥/MWh
+      stack_life_years:                  3.0  # yr  — AEM membrane: ~30,000–40,000 hrs; IEA 2023
+      replacement_cost_fraction:         0.50 # —   — membrane replacement; IEA 2023
+      lifetime_years:                   10.0  # yr  — shorter system life; membrane degradation rate
+      residual_value_fraction:           0.03 # —
+      construction_months:               6.0  # months
+
+  # ---- SOEC electrolyzer — 5 MW class (high-temperature; baseload H₂) ----
+  electrolyzer-soec-5mw:
+    # BENCHMARK-SOURCED: SOEC is NOT in §8.2 (only PEM/Alkaline are §8.2-specified).
+    # Values sourced from public manufacturer data + IEA 2023 (D35 condition 2).
+    # Reference manufacturers: Sunfire Refuel; Bloom Energy Electrolyte.
+    type: electrolyzer
+    provenance: "public; Sunfire Refuel product literature rev.2024 (public); Bloom Energy Electrolyte public data; IEA Global Hydrogen Review 2023 SOEC projections; IRENA Green Hydrogen Cost Reduction 2020"
+    physics:
+      # Benchmark-sourced (NOT §8.2-verbatim — SOEC not in §8.2 table; D35 condition 2):
+      min_load_fraction:         0.20  # —       — SOEC thermal stability: ≥20% P_max (Sunfire public)
+      standby_fraction:          0.05  # —       — thermal maintenance at ~800°C: 5% P_max (Sunfire public)
+      e_spec_kwh_per_kg:        40.0   # kWh/kg  — lowest electrical e_spec (uses heat input); IEA 2023
+      degradation_yuan_per_mwh: 15.0   # ¥/MWh   — highest (ceramic cells; IEA 2023 SOEC estimate)
+      rated_mw_per_unit:         5.0   # MW      — Sunfire Refuel module rating (public)
+      # provisional — §8.2 prose only; env ignores at Δt=1h (D35 condition 1):
+      warmup_minutes:          240.0   # min     — SOEC cold-start: ~4h (high-temp ceramics ~800°C; Sunfire public)
+    economics:
+      capex_per_kw_yuan:             14000.0  # ¥/kW — ≈1960 USD/kW; SOEC premium 2024; Sunfire public; IEA 2023
+      opex_fixed_per_kw_year_yuan:     350.0  # ¥/kW·yr — ~2.5% of CAPEX; complex thermal management; IEA
+      opex_var_per_mwh_yuan:             0.0  # ¥/MWh
+      stack_life_years:                  2.0  # yr  — SOEC ceramic cells: 15,000–20,000 hrs; IEA 2023
+      replacement_cost_fraction:         0.60 # —   — ceramic stack most expensive; IEA/Sunfire public
+      lifetime_years:                   10.0  # yr  — system design life
+      residual_value_fraction:           0.03 # —
+      construction_months:              18.0  # months — complex heat integration; longest construction
