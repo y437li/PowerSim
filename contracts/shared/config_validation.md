@@ -300,23 +300,30 @@ Negative is the error — zero is legal for fields that represent "none".)
 
 Fires when a required asset category is absent or not a dict under `site.assets`.
 
-**v1 power-composite required set** (rl-architect ruling, task #8):
+**v1 power-composite required set** (rl-architect ruling, task #8; grid added per F1 correction):
 
 | Required | check |
 |----------|-------|
 | `assets.battery` | present AND is a dict |
 | at least one of `assets.wind`, `assets.solar` | ≥ 1 present AND is a dict |
+| `assets.grid` | present AND is a dict |
 
-Battery is structurally required in v1: the Gansu env's 6-dim action space assumes a
+**Battery** is structurally required in v1: the Gansu env's 6-dim action space assumes a
 battery (D32(d) scenario composition; a battery-less site is a different composition
 with a different action_dim and its own checkpoint namespace).
 
-Generation requirement is **at least one of {wind, solar}**, not both — wind-only and
+**Generation** requirement is **at least one of {wind, solar}**, not both — wind-only and
 solar-only renewable sites are physically valid.  E-SCHEMA fires when **neither** wind
 nor solar is present (no generation source at all).
 
-Grid is NOT a required-section check here — `max_export_mw`/`max_import_mw` are
-resolved from device-model physics and already covered by `E-CAP-POS`.
+**Grid** is a direct section check (F1 correction — rl-architect ruling, task #8):
+`_resolve_grid_limits()` returns `(None, None)` when `assets.grid` is absent, and
+`E-CAP-POS` guards with `if max_export is not None` → **skips** on a missing grid.
+A grid-less config therefore passes both E-SCHEMA and E-CAP-POS under the original
+ruling — validating clean but breaking at `resolve_site()`.  v1 is a grid-connected
+merchant exporter (PCC export/import is the revenue core), so a missing grid section
+is as invalid as a missing battery.  The previous "covered by E-CAP-POS" rationale
+was factually incorrect and is withdrawn.
 
 **Forward-compat note (D32(d)):** this required-set is the **v1 power-composite**
 requirement, not a permanent universal rule.  Future scenario activations (H₂,
@@ -329,6 +336,7 @@ should validate the obs/action physics assumptions when that happens.
 assets.battery absent or not a dict               → E-SCHEMA on "assets.battery"
 (assets.wind absent or not dict)
   AND (assets.solar absent or not dict)            → E-SCHEMA on "assets"
+assets.grid absent or not a dict                  → E-SCHEMA on "assets.grid"
 ```
 
 Each failing check produces a separate `ValidationIssue` with `rule_id="E-SCHEMA"`.
@@ -336,12 +344,14 @@ Each failing check produces a separate `ValidationIssue` with `rule_id="E-SCHEMA
 **field values:**
 - Missing battery: `"assets.battery"`
 - No generation source: `"assets"` (covers the absence of both wind and solar)
+- Missing grid: `"assets.grid"`
 
 **Constraint format examples:**
 - `"assets.battery absent — battery required for v1 power-composite dispatch"`
 - `"assets.wind and assets.solar both absent — at least one generation source required"`
+- `"assets.grid absent — grid connection required for v1 power-composite dispatch"`
 
-**Gansu:** battery, wind, and solar all present → no error.
+**Gansu:** battery, wind, solar, and grid all present → no error.
 
 ---
 
@@ -607,9 +617,10 @@ panel), `field` must encode the device index or ID (e.g.,
 
 ## 12. Implementation checklist (for QA)
 
-- [ ] `E-SCHEMA` fires when `assets.battery` absent/non-dict (one issue per case)
-- [ ] `E-SCHEMA` fires when both `assets.wind` and `assets.solar` absent/non-dict
-- [ ] `E-SCHEMA` does NOT fire when battery present + at least one of wind/solar present
+- [ ] `E-SCHEMA` fires when `assets.battery` absent/non-dict (one issue)
+- [ ] `E-SCHEMA` fires when both `assets.wind` and `assets.solar` absent/non-dict (one issue)
+- [ ] `E-SCHEMA` fires when `assets.grid` absent/non-dict (one issue)
+- [ ] `E-SCHEMA` does NOT fire when battery + grid present + at least one of wind/solar present
 - [ ] `ValidationIssue`, `ValidationResult`, `ConfigValidationError` defined as specified
 - [ ] `validate()` non-raising on all test inputs including malformed dicts
 - [ ] All rules exhaustive (no early exit)
