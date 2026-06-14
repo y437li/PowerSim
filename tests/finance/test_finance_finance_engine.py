@@ -1684,10 +1684,95 @@ def test_fin59_lifecycle_vector4():
     cf_costs = [-1_000_000.0, 0.0, -700_000.0, 0.0, +50_000.0]
     e_net    = [0.0, 10_000.0, 10_000.0, 10_000.0, 10_000.0]
     lcoe_val = lcoe(cf_costs, e_net, rate=0.10)
-    # PV(costs) = 1M + 700k/1.21 − 50k/1.4641 = 1,000,000 + 578,512.40 − 34,150.67 = 1,544,361.73
+    # PV(costs) = 1M + 700k/1.21 - 50k/1.4641 = 1,000,000 + 578,512.40 - 34,150.67 = 1,544,361.73
     # PV(energy) = 31,698.65
-    # LCOE = 1,544,361.73 / 31,698.65 = ¥48.72/MWh
+    # LCOE = 1,544,361.73 / 31,698.65 = 48.72 yuan/MWh
     assert lcoe_val == pytest.approx(48.72, abs=TOL_LCOE_YUAN_MWH), (
-        "LCOE with replacement+residual must be ¥48.72/MWh "
-        "(vs ¥31.55 without, ~54% understatement when lifecycle omitted)"
+        "LCOE with replacement+residual must be 48.72 yuan/MWh "
+        "(vs 31.55 without, ~54% understatement when lifecycle omitted)"
+    )
+
+    # ── MIRR (finance-expert PR #114 confirms 17.85%; IRR has multi-root risk) ─
+    # The yr-2 replacement creates three sign changes in CF (-, +, -, +, +)
+    # -> up to 3 IRR roots (Descartes); gate on MIRR per section 13.8 literal.
+    # CF = [-1M, 600k, -100k, 600k, 630k], N=4, r=0.10 (finance and reinvest)
+    # FV_pos = 600k * 1.10^3 + 600k * 1.10^1 + 630k * 1.10^0
+    #        = 798,600 + 660,000 + 630,000 = 2,088,600
+    # PV_neg = 1,000,000 / 1.10^0 + 100,000 / 1.10^2
+    #        = 1,000,000 + 82,644.63 = 1,082,644.63
+    # MIRR = (2,088,600 / 1,082,644.63)^(1/4) - 1
+    #      = 1.92917^0.25 - 1 = 1.17854 - 1 = 17.85%
+    cf_v4 = [-1_000_000.0, 600_000.0, -100_000.0, 600_000.0, 630_000.0]
+    mirr_val = mirr(cf_v4, finance_rate=0.10, reinvest_rate=0.10)
+    assert mirr_val == pytest.approx(0.1785, abs=TOL_RATE_PP), (
+        "Vector 4 MIRR must be 17.85%; gating on MIRR avoids multi-root IRR ambiguity"
+    )
+
+
+# ---------------------------------------------------------------------------
+# FIN-60 -- Lifecycle throughput arm: cycle-life fires BEFORE calendar.
+# Source: finance-expert PR #114 section B (INV-DEG EOL cash half, throughput variant).
+# First-to-fire(calendar=3yr, throughput=2 FEC x 100MWh = 200 MWh): fires at yr2.
+# ---------------------------------------------------------------------------
+
+def test_fin60_lifecycle_throughput_arm_beats_calendar():
+    """FIN-60: Throughput-triggered replacement fires before calendar EOL.
+
+    Fixture:
+      econ: total_capex=1M yuan, replacement_cost_fraction=0.50, lifetime_years=3,
+            cycle_life_full_equiv=2.0, bat_capacity_mwh=100.0
+      cycle trigger threshold: 2.0 x 100.0 = 200 MWh cumulative throughput
+      Calendar trigger: lifetime_years=3 -> would fire at yr3
+      Trajectory (N=4):
+        yr1: bat_throughput=120 MWh -> cumulative=120 < 200 -> no trigger
+        yr2: bat_throughput=100 MWh -> cumulative=220 >= 200 -> CYCLE TRIGGER
+             t_replace = min(calendar=3, cycle=2) = 2 -> fires at yr2 (< N=4)
+        yr3: new asset (reset); cumulative=0; years_since_start=1 < 3 -> no trigger
+        yr4: N=4 (last year) -> no replacement; terminal fires
+
+    Expected CF (capex_yuan not set -> cf[0]=0):
+      CF[1] = 600k (no trigger: cum=120 < 200)
+      CF[2] = 600k - 500k = 100k  <- throughput arm fires here (NOT yr3=calendar)
+      CF[3] = 600k (post-replacement; new asset life started at yr2)
+      CF[4] = 600k + terminal(0) = 600k (residual=0, decom=0 not set)
+
+    Anti-example (wrong): if calendar used, CF[3]=100k and CF[2]=600k.
+    """
+    yr_heavy = _make_eval_result(
+        grid_export_yuan=600_000.0,
+        bat_throughput_mwh=120.0,   # yr1: cum=120 MWh -> below cycle trigger
+    )
+    yr_light = _make_eval_result(
+        grid_export_yuan=600_000.0,
+        bat_throughput_mwh=100.0,   # yr2: cum=120+100=220 >= 200 -> cycle fires
+    )
+    from energy_go.finance.econ_params import DeviceEconParams
+    econ = DeviceEconParams(
+        total_capex_yuan=1_000_000.0,
+        replacement_cost_fraction=0.50,   # replacement = 500k yuan
+        lifetime_years=3,                  # calendar fires at yr3 (3 yr since start)
+        cycle_life_full_equiv=2.0,         # 2 full-equivalent cycles = 200 MWh threshold
+        bat_capacity_mwh=100.0,           # 100 MWh nameplate; threshold = 2.0 x 100 = 200
+    )
+    # 4-year trajectory: [yr_heavy, yr_light, yr_light, yr_light]
+    cf = build_cash_flow_series([yr_heavy, yr_light, yr_light, yr_light], econ=econ)
+
+    # CF[0] = 0 (no capex_yuan passed)
+    # CF[1] = 600k (no trigger yet: cum=120 < 200)
+    assert cf[1] == pytest.approx(600_000.0, abs=TOL_NPV_YUAN), (
+        "CF[1] must be 600k yuan -- cycle trigger not yet reached (cum=120 MWh < 200)"
+    )
+    # CF[2] = 600k - 500k = 100k (cycle fires at yr2; confirms throughput arm)
+    # If calendar were (wrongly) used: CF[3] = 100k, CF[2] = 600k
+    assert cf[2] == pytest.approx(100_000.0, abs=TOL_NPV_YUAN), (
+        "CF[2] must be 100k yuan = EBITDA(600k) - replacement(500k); "
+        "cycle arm fired at yr2 (cum=220 >= 200), NOT calendar arm at yr3"
+    )
+    # CF[3] = 600k (post-replacement; new asset started at yr2; not re-triggered)
+    assert cf[3] == pytest.approx(600_000.0, abs=TOL_NPV_YUAN), (
+        "CF[3] must be 600k yuan -- no second replacement (new asset; 1 yr since last replace < 3)"
+    )
+    # CF[4] = 600k (last year N=4; terminal fires but residual=0, decom=0)
+    assert cf[4] == pytest.approx(600_000.0, abs=TOL_NPV_YUAN), (
+        "CF[4] must be 600k yuan -- terminal fires (N=4) but residual+decom both 0"
     )

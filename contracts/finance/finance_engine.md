@@ -470,7 +470,8 @@ shown in comments** (engineering rule). The tolerance table (from PR #107 §C cr
 | FIN-56 | **Tax assembly end-to-end:** `finance(tax_toggle=True, depreciation_years=2)` on Vector-1 ensemble → after-tax NPV = −¥2,066.12 AND delta = −¥43,388.43 | finance-expert REQUEST_CHANGES PR #110 |
 | FIN-57 | **Debt assembly end-to-end:** `finance(debt_toggle=True, target_de_ratio=1.5, loan_term_years=2, r_d_override=0.05)` on Vector-1 ensemble → equity_irr = 24.8565% AND min_dscr = 1.8594 | finance-expert REQUEST_CHANGES PR #110 |
 | FIN-58 | **INV-DEG §3.6 cash half:** `build_cash_flow_series([yr,yr], econ=econ_lifecycle)` with `degradation_yuan=¥100k` (decoy) and `lifetime_years=1, replacement_cost_fraction=0.70` → CF[1]=−¥100k (EBITDA ¥600k − replacement ¥700k); degradation NOT subtracted (if wrong: −¥200k) | PR #114 §B; team-lead GO |
-| FIN-59 | **Vector 4 lifecycle:** `finance()` on N=4 ensemble, `lifetime_years=2, replacement_cost_fraction=0.70, residual_value_fraction=0.05, decommissioning_yuan=¥20k` → NPV=¥343,897.27; LCOE=¥48.72/MWh (§13.8 `PV(CAPEX+Replacement−Residual)/PV(E_net)`, decommissioning excluded from LCOE numerator) | finance-expert PR #114 §A Vector 4 |
+| FIN-59 | **Vector 4 lifecycle:** `finance()` on N=4 ensemble, `lifetime_years=2, replacement_cost_fraction=0.70, residual_value_fraction=0.05, decommissioning_yuan=¥20k` → NPV=¥343,897.27; LCOE=¥48.72/MWh (§13.8 `PV(CAPEX+Replacement−Residual)/PV(E_net)`, decommissioning excluded from LCOE numerator); MIRR(0.10)=17.85% (multi-root IRR risk on 3 sign changes → gate on MIRR per §13.8) | finance-expert PR #114 §A Vector 4 |
+| FIN-60 | **Lifecycle throughput arm beats calendar:** `build_cash_flow_series([yr_heavy, yr_light, yr_light, yr_light], econ=econ)` with `lifetime_years=3, cycle_life_full_equiv=2.0, bat_capacity_mwh=100.0` (threshold=200 MWh) and bat_throughput=[120,100,100,100] → cycle fires at yr2 (cum=220≥200) before calendar yr3; CF[2]=EBITDA−replacement, CF[1]=CF[3]=CF[4]=EBITDA; degradation NOT subtracted | finance-expert PR #114 §B (INV-DEG throughput arm) |
 
 ### 5.2 Pending test group (R3 — PENDING D39 merge)
 
@@ -515,5 +516,5 @@ shown in comments** (engineering rule). The tolerance table (from PR #107 §C cr
 - [ ] Provenance block: all 12 required fields
 - [ ] `finance` area added to CLAUDE.md `<area>` list + `check_conventions.sh` (D39)
 - [ ] `finance` added to STACK.md as a new area with stack = "pure Python + NumPy"
-- [ ] All FIN-00–FIN-46, FIN-53–FIN-59 tests pass; FIN-47–FIN-52 remain skipped until D39 lands
+- [ ] All FIN-00–FIN-46, FIN-53–FIN-60 tests pass; FIN-47–FIN-52 remain skipped until D39 lands
 - [ ] No hardcoded Gansu constants — works for any `PolicyEnsemble` + `DeviceEconParams`
