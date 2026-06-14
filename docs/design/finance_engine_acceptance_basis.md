@@ -209,6 +209,43 @@ MIRR(0.10) = 17.85 %                                                  # assert �
 
 ---
 
+## Vector 5 — VIEW II: incremental battery, battery-CAPEX-only (§13.1; "does the battery pay")
+
+**Exercises:** the **View II** definition (§13.1) — incremental storage value: `CAPEX basis = battery CAPEX only`, benefit = Δ(operating) of the with-battery policy **vs the no-battery baseline**. **This vector closes a real defect + an oracle hole:** the original FIN-41/42 tested only View II *presence/absence*, never its **capex-charging**. With a single shared `econ` applied to all policies incl. the baseline, the year-0 `−total_capex` (and battery replacement/terminal) **cancels** in `NPV(π) − NPV(no_battery)` → View II charges **zero** battery cost → structurally overstates battery value by the full battery lifecycle cost (a misleading "battery pays" headline). The fix (contract-first to `finance()`): the **no-battery baseline uses a battery-EXCLUDED econ** (full site minus the battery device) — e.g. a `baseline_econ` arg — so battery costs do **not** cancel and View II = the §13.1 battery-capex-only number. The §11 same-hardware policies keep the shared `econ` (preserves §13.12 inv 2 — only the baseline is a different-hardware counterfactual).
+
+**Identity (the binding semantics):**
+```
+View_II = NPV(π, full_econ) − NPV(no_battery, battery_excluded_econ)
+        = −battery_CAPEX − PV(battery replacement) + PV(battery residual) − PV(battery O&M) + PV(Δ operating)
+# the full-site (wind/solar/grid) CAPEX/OPEX is identical with/without the battery ⇒ correctly cancels.
+# battery year-0 CAPEX + lifecycle costs are battery-specific ⇒ MUST be charged (do NOT cancel).
+```
+
+**V-II-A — battery does NOT pay** (the capex IS charged): N=2, r=0.10; site CAPEX ¥1,000,000 of which **battery = ¥300,000**; with-battery EBITDA ¥700,000/yr, no-battery ¥600,000/yr (Δop = ¥100,000/yr).
+```
+NPV(with_bat, ¥1,000,000)             = −1,000,000 + 700,000/1.10 + 700,000/1.21 = ¥214,876.03   [= View I]
+NPV(no_bat, battery-excluded ¥700,000) = −700,000  + 600,000/1.10 + 600,000/1.21 = ¥341,322.31
+View II = 214,876.03 − 341,322.31 = −¥126,446.28                                  # assert ±¥1
+  cross-check: −battery_CAPEX + Δop_PV = −300,000 + (100,000/1.10+100,000/1.21) = −300,000 + 173,553.72 = −126,446.28 ✓
+```
+**The defect this catches:** the buggy single-econ View II = +¥173,553.72 (Δop only) — it **flips the sign** ("battery pays") by omitting the ¥300,000 capex. The test MUST assert −¥126,446.28, which **fails** the capex-cancelled impl.
+
+**V-II-B — battery DOES pay:** battery CAPEX ¥100,000; Δop ¥150,000/yr.
+```
+View II = −100,000 + (150,000/1.10 + 150,000/1.21) = −100,000 + 260,330.58 = +¥160,330.58   # > 0 → battery pays
+```
+
+**V-II-C — lifecycle charged in View II** (battery replacement must NOT cancel): battery CAPEX ¥300,000; battery `lifetime_years=1` ⇒ replacement ¥210,000 (0.70·CAPEX) at yr1; Δop ¥400,000/yr; N=2. (Baseline is battery-excluded ⇒ **no** replacement in the baseline.)
+```
+View II = −300,000 − 210,000/1.10 + (400,000/1.10 + 400,000/1.21)
+        = −300,000 − 190,909.09 + 694,214.88 = +¥203,305.79                       # assert ±¥1
+```
+**Catches:** if the engine wrongly cancels the battery replacement (baseline also charged it), View II = +¥394,214.88 — overstated by the ¥190,909.09 replacement PV. The test asserts ¥203,305.79.
+
+**Asserts:** (1) View II charges battery year-0 CAPEX (V-II-A sign); (2) charges battery replacement − residual + O&M (V-II-C); (3) the full-site CAPEX/OPEX correctly cancels (no double-charge of wind/solar/grid); (4) baseline uses the **battery-excluded** econ while the §11 policies share `econ` (§13.12 inv 2 preserved); (5) View II omitted when `baseline_policy_id` absent (existing FIN-42). *Test fixture finalizes once the `finance()` baseline-econ surface is blessed (rl-architect); the numbers above are the §13.1 semantics and are API-independent.*
+
+---
+
 ## §A — Downside-stat definitions as testable formulas (§13.10b), with a worked M=50 ensemble
 
 All downside metrics are computed on the **M weather draws at a fixed price path** (M is the *only* stochastic axis — INV-FINLAYER; price paths are a separate deterministic family, never cross-producted). Worked numbers use a clean linear ensemble so every stat is hand-checkable.
@@ -338,7 +375,7 @@ The implementation is accepted (finance-expert verdict toward QA) only if **all*
 6. **CRN structural** (§13.12 inv 1): every policy's `runs` list has length M with index-aligned draws from `ensemble.seed`; the seed travels into `provenance`. Per-policy deltas are pure dispatch under a synthetic two-policy fixture with identical draws.
 7. **Determinism & provenance.** Fixed inputs → identical `FinanceResult` (incl. seeded bootstrap CI). `provenance` carries seed, M, `valuation_date`, `r_f(curve_date, tenor, yield)`, `r_e`/WACC, discount params, escalation/price_path, scenario_id, code_version; mismatched-assumption results are refused for comparison.
 8. **Econ defaults sourced from #103** (`config/device_models.yaml` 2.1.0) with per-value provenance; CAPM values from §13.5b (`USER-confirmed/2026-06-13`); none hardcoded in engine code — all UI-editable.
-9. **View II gating + definition** (§13.12 inv 3; D39 §2 `engine.py` facade): View II = **NPV(π) − NPV(`baseline_policy_id`) over the CRN-shared draws** (index-aligned m ⇒ pure-dispatch delta, P2), computed in the facade. `baseline_policy_id ∈ runs.keys()` ⇒ incremental-storage view produced; absent ⇒ View II **omitted** (never fabricated), View I still produced.
+9. **View II — battery-CAPEX-only incremental (§13.1; Vector 5), gating + definition** (§13.12 inv 3; D39 §2 `engine.py` facade): View II = **NPV(π, full econ) − NPV(`baseline_policy_id`, battery-EXCLUDED econ)** over the CRN-shared draws (index-aligned m). **The baseline MUST use a battery-excluded econ** (full site minus the battery device, e.g. a `baseline_econ` arg) so the battery year-0 CAPEX + replacement − residual + O&M are **charged**, not cancelled — View II = `−battery_CAPEX − PV(replacement) + PV(residual) − PV(O&M) + PV(Δoperating)` per §13.1. ⚠️ **A single shared econ applied to the baseline cancels the battery CAPEX and structurally overstates battery value — a hard REQUEST_CHANGES** (the defect Vector 5 gates). The §11 same-hardware policies keep the shared `econ` (§13.12 inv 2). `baseline_policy_id ∈ runs.keys()` ⇒ View II produced; absent ⇒ View II **omitted** (never fabricated), View I still produced.
 10. **Client/server parity** (§13.4): the stage-⑤ client library reproduces the engine within ≤0.01 pp (IRR/MIRR) and ≤¥1k (NPV) per draw on a shared ≥(M=5 × N=20 × ≥2 multiplier vectors) test vector.
 
 **finance-expert is the acceptance gate.** QA (qa-engineer) issues the closing verdict; finance-expert's APPROVE on the finance semantics is required for the contract test-gate and again at implementation audit.
