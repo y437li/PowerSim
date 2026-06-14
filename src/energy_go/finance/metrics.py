@@ -3,7 +3,7 @@
 All functions operate on a plain Python list/array [cf[0], cf[1], ..., cf[N]]
 where cf[0] = year-0 CAPEX (negative), cf[1..N] = annual operating cash flows.
 
-No I/O; no JAX — pure NumPy + scipy. (finance() purity requirement §3.1)
+No I/O; no JAX — pure NumPy (no scipy). (finance() purity requirement §3.1)
 
 References: §13.8, PR #107 Vectors 1–3.
 Units: ¥ (yuan), ¥/MWh, years, decimal rates (e.g. 0.10 = 10%).
