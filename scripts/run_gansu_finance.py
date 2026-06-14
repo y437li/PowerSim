@@ -71,43 +71,58 @@ PV_FLEET_MW        = 330.0      # MW (site_gansu.yaml)
 BAT_CAPACITY_MWH   = 294.5      # MWh fleet (catl-lmp-300mwh)
 BAT_POWER_MW       = 98.16      # MW
 
-# Generation asset CAPEX (¥/kW — standard CN 2024-2026 onshore wind + utility PV)
-WIND_CAPEX_PER_KW  = 5_800.0   # ¥/kW onshore wind
-PV_CAPEX_PER_KW    = 3_200.0   # ¥/kW utility-scale PV
-GRID_CAPEX_YUAN    = 15_000_000.0  # ¥15M PCC substation interconnect
+# Generation asset CAPEX (¥/kW — from device_models.yaml per-model economics blocks)
+WIND_CAPEX_PER_KW  = 5_800.0   # ¥/kW  vestas-v150-4.2.economics.capex_per_kw_yuan
+PV_CAPEX_PER_KW    = 3_200.0   # ¥/kW  trina-vertex-n-670w.economics.capex_per_kw_yuan
+GRID_CAPEX_YUAN    = 0.0        # ¥     pcc-substation-945mw.economics.capex_lump_sum_yuan = 0 (sunk at Gansu)
 
 # Battery CAPEX + O&M (CATL LMP-300MWh, device_models.yaml)
-CAPEX_PER_KWH      = 1_000.0   # ¥/kWh
-OPEX_PER_KWH_YR    = 20.0      # ¥/kWh·yr fixed O&M
+CAPEX_PER_KWH      = 1_000.0   # ¥/kWh catl-lmp-300mwh.economics.capex_energy_per_kwh_yuan
+OPEX_PER_KWH_YR    = 20.0      # ¥/kWh·yr catl-lmp-300mwh.economics.opex_fixed_per_kwh_year_yuan
 LIFETIME_YEARS_CAL = 12        # battery calendar EOL → fires replacement at yr12 (N=20 horizon)
 
-# Generation asset O&M (¥/kW·yr — standard CN rates)
-WIND_OM_PER_KW_YR  = 80.0      # ¥/kW·yr onshore wind
-PV_OM_PER_KW_YR    = 30.0      # ¥/kW·yr utility PV
+# Generation + Grid O&M (¥/kW·yr or ¥/MW·yr — from device_models.yaml)
+WIND_OM_PER_KW_YR  = 180.0     # ¥/kW·yr  vestas-v150-4.2.economics.opex_fixed_per_kw_year_yuan
+PV_OM_PER_KW_YR    =  80.0     # ¥/kW·yr  trina-vertex-n-670w.economics.opex_fixed_per_kw_year_yuan
+GRID_OM_PER_MW_YR  = 5_000.0   # ¥/MW·yr  pcc-substation-945mw.economics.opex_fixed_per_mw_year_yuan
+GRID_EXPORT_MW     = 945.0      # MW       pcc-substation-945mw.physics.max_export_mw
 
 # Derived FULL-SITE totals (¥)
-_WIND_CAPEX    = WIND_FLEET_MW * WIND_CAPEX_PER_KW * 1_000    # 615 MW × 5,800 ¥/kW = ¥3,567M
-_PV_CAPEX      = PV_FLEET_MW   * PV_CAPEX_PER_KW   * 1_000    # 330 MW × 3,200 ¥/kW = ¥1,056M
+_WIND_CAPEX    = WIND_FLEET_MW * WIND_CAPEX_PER_KW * 1_000    # 615 MW × ¥5,800/kW = ¥3,567M
+_PV_CAPEX      = PV_FLEET_MW   * PV_CAPEX_PER_KW   * 1_000    # 330 MW × ¥3,200/kW = ¥1,056M
 _BAT_CAPEX     = CAPEX_PER_KWH * BAT_CAPACITY_MWH  * 1_000    # 294.5 MWh × ¥1,000/kWh = ¥294.5M
-TOTAL_CAPEX    = _WIND_CAPEX + _PV_CAPEX + _BAT_CAPEX + GRID_CAPEX_YUAN  # ¥4,932.5M
+TOTAL_CAPEX    = _WIND_CAPEX + _PV_CAPEX + _BAT_CAPEX + GRID_CAPEX_YUAN  # ¥4,917.5M
 
-_WIND_OM       = WIND_FLEET_MW * WIND_OM_PER_KW_YR  * 1_000  # ¥49.2M/yr
-_PV_OM         = PV_FLEET_MW   * PV_OM_PER_KW_YR    * 1_000  # ¥9.9M/yr
-_BAT_OM        = OPEX_PER_KWH_YR * BAT_CAPACITY_MWH * 1_000  # ¥5.89M/yr
-FIXED_OM_YR    = _WIND_OM + _PV_OM + _BAT_OM                  # ¥64.99M/yr ≈ ¥65M/yr
+_WIND_OM       = WIND_FLEET_MW   * WIND_OM_PER_KW_YR  * 1_000  # 615 MW × ¥180/kW·yr = ¥110.7M/yr
+_PV_OM         = PV_FLEET_MW     * PV_OM_PER_KW_YR    * 1_000  # 330 MW × ¥80/kW·yr  = ¥26.4M/yr
+_BAT_OM        = OPEX_PER_KWH_YR * BAT_CAPACITY_MWH   * 1_000  # 294.5 MWh × ¥20/kWh·yr = ¥5.89M/yr
+_GRID_OM       = GRID_EXPORT_MW  * GRID_OM_PER_MW_YR           # 945 MW × ¥5,000/MW·yr = ¥4.73M/yr
+FIXED_OM_YR    = _WIND_OM + _PV_OM + _BAT_OM + _GRID_OM        # ≈ ¥147.7M/yr
 
 # Battery replacement cost = 0.70 × ¥294.5M = ¥206.15M, expressed as fraction of TOTAL CAPEX.
 # DeviceEconParams.replacement_cost_fraction × total_capex_yuan = absolute replacement ¥.
-# MUST divide by full-site CAPEX so the absolute replacement stays ¥206.15M (not 0.70×¥4.93B).
-_BAT_REPL_ABS  = 0.70 * _BAT_CAPEX                            # ¥206.15M
-REPL_FRACTION  = _BAT_REPL_ABS / TOTAL_CAPEX                  # ≈ 0.04179 of ¥4,932.5M
+# MUST divide by full-site CAPEX so the absolute replacement stays ¥206.15M (not 0.70×¥4.92B).
+_BAT_REPL_ABS  = 0.70 * _BAT_CAPEX                              # ¥206.15M (catl: replacement_cost_fraction=0.70)
+REPL_FRACTION  = _BAT_REPL_ABS / TOTAL_CAPEX                    # ≈ 0.04191 of ¥4,917.5M
 
-# Site-wide residual value at horizon N: 5% scrap (battery + wind/PV steel/silicon)
-# 0.05 × ¥4,932.5M = ¥246.6M — reasonable for 20yr wind+PV+BESS project.
-RESID_FRACTION = 0.05
+# Site-wide residual value at horizon N=20yr (per-device fractions from device_models.yaml):
+# Wind (lifetime 25yr; residual_value_fraction=0.05): 0.05 × ¥3,567M = ¥178.4M
+# PV   (lifetime 25yr; residual_value_fraction=0.02): 0.02 × ¥1,056M = ¥21.1M
+# Battery (residual_value_fraction=0.05): 0.05 × ¥294.5M = ¥14.7M
+# Grid   (residual_value_fraction=0.10): 0.10 × ¥0 = ¥0
+# Total residual: ≈ ¥214.2M → fraction of TOTAL: 0.0436 ≈ 4.36%
+_RESID_SITE = (0.05 * _WIND_CAPEX + 0.02 * _PV_CAPEX + 0.05 * _BAT_CAPEX)  # ¥214.2M
+RESID_FRACTION = _RESID_SITE / TOTAL_CAPEX                      # ≈ 0.0436
 
-# Site-wide decommissioning: battery teardown (¥30/kWh × 294.5 MWh × 1000) + generation removal
-DECOMM_YUAN    = 30.0 * BAT_CAPACITY_MWH * 1_000 + 70_000_000.0  # ¥8.84M bat + ¥70M gen = ¥78.8M
+# Site-wide decommissioning (per-device rates from device_models.yaml):
+# Wind (decommissioning_cost_per_kw_yuan=100): 615,000 kW × ¥100 = ¥61.5M
+# PV   (decommissioning_cost_per_kw_yuan=60):  330,000 kW × ¥60  = ¥19.8M
+# Battery (decommissioning_cost_per_kwh_yuan=30): 294,500 kWh × ¥30 = ¥8.84M
+# Grid: 0
+_DECOMM_WIND = WIND_FLEET_MW * 1_000 * 100.0                    # ¥61.5M
+_DECOMM_PV   = PV_FLEET_MW   * 1_000 *  60.0                    # ¥19.8M
+_DECOMM_BAT  = BAT_CAPACITY_MWH * 1_000 * 30.0                  # ¥8.84M
+DECOMM_YUAN  = _DECOMM_WIND + _DECOMM_PV + _DECOMM_BAT          # ¥90.1M
 
 N_YEARS   = 20    # §13.6 primary 20yr horizon; battery calendar-EOL fires at yr12 → replacement
 M         = 50    # R2: M≥50 + sample_kind='bootstrap' → distribution_valid=True
@@ -259,9 +274,11 @@ def main():
     print(f"Policies: {', '.join(pols)}  |  HEADLINE: greedy (finance-expert ruling c)")
     print(f"FULL-SITE CAPEX ¥{TOTAL_CAPEX/1e6:,.1f}M  "
           f"(wind ¥{_WIND_CAPEX/1e6:.0f}M + PV ¥{_PV_CAPEX/1e6:.0f}M + "
-          f"bat ¥{_BAT_CAPEX/1e6:.1f}M + grid ¥{GRID_CAPEX_YUAN/1e6:.0f}M)")
-    print(f"Full-site O&M ¥{FIXED_OM_YR/1e6:.2f}M/yr  |  "
-          f"bat {BAT_CAPACITY_MWH} MWh  r_e=6.1%  N={N_YEARS}yr  M={M}")
+          f"bat ¥{_BAT_CAPEX/1e6:.1f}M + grid ¥{GRID_CAPEX_YUAN/1e6:.0f}M sunk)")
+    print(f"Full-site O&M ¥{FIXED_OM_YR/1e6:.2f}M/yr  "
+          f"(wind ¥{_WIND_OM/1e6:.1f}M + PV ¥{_PV_OM/1e6:.1f}M + "
+          f"bat ¥{_BAT_OM/1e6:.2f}M + grid ¥{_GRID_OM/1e6:.2f}M)")
+    print(f"bat {BAT_CAPACITY_MWH} MWh  r_e=6.1%  N={N_YEARS}yr  M={M}")
     print(f"Battery EOL=12yr → replacement at yr12 (¥{_BAT_REPL_ABS/1e6:.2f}M = "
           f"{REPL_FRACTION*100:.3f}% of site CAPEX)")
     print()
@@ -505,13 +522,16 @@ def main():
     print("  Data integrity:")
     print("  ✓ INV-STREAM-AUTHORITY: EBITDA from _build_streams() real r_export/c_import")
     print("  ✓ A4: degradation_yuan unchanged across cycle_life (env-layer field)")
-    print(f"  ✓ CF[0] = −¥{TOTAL_CAPEX/1e6:,.1f}M FULL-SITE CAPEX for ALL policies (View-I absolute)")
-    print(f"     wind ¥{_WIND_CAPEX/1e6:.0f}M + PV ¥{_PV_CAPEX/1e6:.0f}M + bat ¥{_BAT_CAPEX/1e6:.1f}M + grid ¥{GRID_CAPEX_YUAN/1e6:.0f}M")
+    print(f"  ✓ CF[0] = −¥{TOTAL_CAPEX/1e6:,.1f}M FULL-SITE CAPEX (wind+PV+bat; grid=¥0 sunk)")
+    print(f"     wind ¥{_WIND_CAPEX/1e6:.0f}M + PV ¥{_PV_CAPEX/1e6:.0f}M + bat ¥{_BAT_CAPEX/1e6:.1f}M")
     print("  ✓ View-II = same econ for smart vs greedy (capex cancels = correct dispatch value)")
     print("  ✓ R2: M=50 + bootstrap → distribution_valid → P50/CI90/DownsideRisk")
     print("  ✓ CRN: PRNGKey(m) shared across all policies")
     print(f"  ✓ Battery replacement ¥{_BAT_REPL_ABS/1e6:.2f}M = {REPL_FRACTION*100:.3f}% of site CAPEX (fires at yr12)")
-    print(f"  ✓ Full-site O&M ¥{FIXED_OM_YR/1e6:.2f}M/yr (wind ¥{_WIND_OM/1e6:.1f}M + PV ¥{_PV_OM/1e6:.1f}M + bat ¥{_BAT_OM/1e6:.2f}M)")
+    print(f"  ✓ Full-site O&M ¥{FIXED_OM_YR/1e6:.2f}M/yr")
+    print(f"     wind ¥{_WIND_OM/1e6:.1f}M (@¥{WIND_OM_PER_KW_YR:.0f}/kW·yr) + PV ¥{_PV_OM/1e6:.1f}M (@¥{PV_OM_PER_KW_YR:.0f}/kW·yr)")
+    print(f"     bat ¥{_BAT_OM/1e6:.2f}M (@¥{OPEX_PER_KWH_YR:.0f}/kWh·yr) + grid ¥{_GRID_OM/1e6:.2f}M (@¥{GRID_OM_PER_MW_YR:.0f}/MW·yr)")
+    print(f"  ✓ Decommissioning ¥{DECOMM_YUAN/1e6:.1f}M (wind ¥{_DECOMM_WIND/1e6:.1f}M + PV ¥{_DECOMM_PV/1e6:.1f}M + bat ¥{_DECOMM_BAT/1e6:.2f}M)")
 
 
 if __name__ == "__main__":
