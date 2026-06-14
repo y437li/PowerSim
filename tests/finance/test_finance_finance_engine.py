@@ -137,9 +137,18 @@ def _make_eval_result(
 
 
 def _make_base_config(**overrides) -> FinanceConfig:
-    """FinanceConfig with a pinned r_f override so Vector-1 arithmetic is reproducible."""
+    """FinanceConfig with a pinned discount rate = 0.10 for Vector-1–3 arithmetic.
+
+    r_f_override=0.10 sets the risk-free rate; equity_risk_premium=0.0 collapses
+    CAPM to r_e = r_f + β_L·ERP = 0.10 + 0.60·0.0 = 0.10 (no ERP premium).
+    Without equity_risk_premium=0.0 the engine would use r_e=0.136 (0.10+0.60·0.06),
+    which breaks FIN-56 base NPV (−¥6,893 vs +¥41,322.31) and FIN-34 P50 NPV.
+    Vector 0 (FIN-00*) is unaffected — it uses _CAPM_CONFIG_BASE (equity_risk_premium=0.06).
+    (finance-expert REQUEST_CHANGES; discount-config bug confirmed numerically.)
+    """
     defaults = dict(
         r_f_override=0.10,          # round placeholder for Vector 1–3 (≠ production CAPM)
+        equity_risk_premium=0.0,    # collapse r_e → r_f = 0.10 (test-fixture pin, not production)
         tax_toggle=False,
         debt_toggle=False,
         horizon_years=2,            # N=2 for all vectors 1–3
