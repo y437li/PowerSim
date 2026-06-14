@@ -670,13 +670,16 @@ class TestCompareFinance:
             "m_draws is nested under provenance in FinanceResultSummary v1.1.0."
         )
 
-    def test_finance_irr_pct_p90_confidence_at_r3(self, client, monkeypatch):
-        """reviewer: R3 irr_pct.p90 may have confidence='indicative_low_confidence' (D39 §4).
+    def test_finance_irr_pct_tail_suppressed_at_r3(self, client, monkeypatch):
+        """reviewer: R3 irr_pct exposes p50 ONLY — p75/p90/p95/p99 SUPPRESSED (absent/null).
 
-        At R3 (M≈10, empirical), high tail percentiles are unreliable. The engine marks
-        them confidence='indicative_low_confidence' rather than suppressing them entirely.
-        This test verifies the confidence field is present (not null) and the value is a
-        PercentileResult with a recognized confidence level.
+        SUPERSEDES the old D39 §4 'mark-low-confidence-rather-than-suppress' framing:
+        D45 (#135 §3 rule 3 / line 108) LOCKS R3 to 'every metric's p50 only
+        (p75/p90/p95/p99 null)'. At M≈10 under the locked nearest-rank estimator a tail
+        percentile collapses onto the worst draw, so surfacing it as 'P90' would relabel
+        worst-of-N — hence suppressed entirely, NOT shown with a low-confidence tag.
+        This is the POSITIVE assertion of the suppression (the old permissive 'if present'
+        check passed vacuously and documented the now-reversed rule).
         """
         stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=10,
                                             sample_kind="empirical")
@@ -685,18 +688,27 @@ class TestCompareFinance:
         resp = client.post(self.ENDPOINT, json=self._finance_request())
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
-        if fr.get("regime") == "R3" and fr.get("irr_pct") is not None:
-            irr_p90 = fr["irr_pct"].get("p90")
-            if irr_p90 is not None:
-                assert irr_p90.get("confidence") in {
-                    "sound", "indicative_low_confidence"
-                }, (
-                    "irr_pct.p90.confidence must be 'sound' or 'indicative_low_confidence'; "
-                    "R3 tail values may carry low-confidence marking per D39."
-                )
+        assert fr.get("regime") == "R3", "stub M=10/empirical must derive R3"
+        irr = fr.get("irr_pct")
+        assert irr is not None, "irr_pct present at R3 (carries the p50)"
+        # p50 present and ALWAYS indicative_low_confidence at R3 (#135 line 95)
+        assert irr.get("p50") is not None, "irr_pct.p50 must be present at R3"
+        assert irr["p50"]["confidence"] == "indicative_low_confidence", (
+            "R3 p50 confidence is ALWAYS 'indicative_low_confidence' (#135 line 95 / D45)"
+        )
+        # tails SUPPRESSED — absent OR explicitly null (both satisfy 'no distribution')
+        for tail in ("p75", "p90", "p95", "p99"):
+            assert irr.get(tail) is None, (
+                f"irr_pct.{tail} must be suppressed (null/absent) at R3 — D45 #135 rule 3 "
+                f"(p50 only); got {irr.get(tail)}"
+            )
 
-    def test_finance_npv_pct_p90_at_r3_if_present(self, client, monkeypatch):
-        """reviewer: R3 npv_yuan.p90, if present, must have a valid confidence marker."""
+    def test_finance_npv_yuan_tail_suppressed_at_r3(self, client, monkeypatch):
+        """reviewer: R3 npv_yuan exposes p50 ONLY — p75/p90/p95/p99 suppressed (D45 #135 rule 3).
+
+        Same suppression rule as irr_pct above, asserted on the NPV metric (the only one
+        that carries bootstrap_ci at R2 — confirm no CI leaks at R3 either).
+        """
         stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=10,
                                             sample_kind="empirical")
         monkeypatch.setattr("energy_go.serving.compare.cache",
@@ -704,14 +716,19 @@ class TestCompareFinance:
         resp = client.post(self.ENDPOINT, json=self._finance_request())
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
-        if fr.get("regime") == "R3" and fr.get("npv_yuan") is not None:
-            npv_p90 = fr["npv_yuan"].get("p90")
-            if npv_p90 is not None:
-                assert npv_p90.get("confidence") in {
-                    "sound", "indicative_low_confidence"
-                }, (
-                    "npv_yuan.p90.confidence at R3 must be a recognized confidence level"
-                )
+        assert fr.get("regime") == "R3", "stub M=10/empirical must derive R3"
+        npv = fr.get("npv_yuan")
+        assert npv is not None, "npv_yuan present at R3 (carries the p50)"
+        assert npv.get("p50") is not None, "npv_yuan.p50 must be present at R3"
+        assert npv["p50"]["confidence"] == "indicative_low_confidence", (
+            "R3 p50 confidence is ALWAYS 'indicative_low_confidence' (#135 line 95 / D45)"
+        )
+        # NPV p50 may carry bootstrap_ci; tails must be fully suppressed (no CI leak)
+        for tail in ("p75", "p90", "p95", "p99"):
+            assert npv.get(tail) is None, (
+                f"npv_yuan.{tail} must be suppressed (null/absent) at R3 — D45 #135 rule 3; "
+                f"got {npv.get(tail)}"
+            )
 
 
 # ===========================================================================
