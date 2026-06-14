@@ -35,6 +35,29 @@ _No public symbols exported._
 | `validation_error_handler` | `function` | — |
 | `request_validation_error_handler` | `function` | Convert Pydantic request-body validation errors to HTTP 400 for geo routes. |
 
+### `compare.py`
+
+> energy_go.serving.compare — Compare-workbench endpoints (SC2).
+
+| Symbol | Kind | Purpose |
+|--------|------|---------|
+| `EnsembleCache` | `class` | In-memory LRU cache for PolicyEnsemble objects (§5). |
+| `PolicyRef` | `class` | — |
+| `VariantRequest` | `class` | — |
+| `SharedScenario` | `class` | — |
+| `PlanRequest` | `class` | — |
+| `FinanceParamField` | `class` | One tunable parameter in FinanceParamSet. |
+| `FinanceParamSet` | `class` | Request body for POST /api/compare/recompute-finance (§2.3). |
+| `RecomputeFinanceRequest` | `class` | — |
+| `RunRequest` | `class` | — |
+| `SizingSweepRequest` | `class` | — |
+| `compare_plan` | `function` | Tier estimation — pure read; does NOT modify the PolicyEnsemble LRU cache. |
+| `compare_recompute_finance` | `function` | Instant-tier synchronous finance recompute (§4). |
+| `compare_run` | `function` | Submit async batch eval + finance run (202 Accepted). |
+| `compare_run_status` | `function` | Poll batch run status (§7). |
+| `compare_sizing_sweep` | `function` | Submit sizing sweep (202 Accepted). Stub — expands in task #18. |
+| `compare_sizing_sweep_status` | `function` | Poll sizing sweep status (§9). |
+
 ### `geo_site_api.py`
 
 > energy_go.serving.geo_site_api — Workstream A serving surface (wizard stage ①).
@@ -61,6 +84,12 @@ _No public symbols exported._
 |--------|------|---------|
 | `policy_forward` | `function` | Run the §6 actor forward pass for a canonical CheckpointData. |
 | `ws_inference` | `function` | — |
+
+### `main.py`
+
+> energy_go.serving.main — Application entry point re-export.
+
+_No public symbols exported._
 
 ### `rest_api.py`
 
