@@ -72,7 +72,9 @@ _EXPECTED_SOC_MAX              = 0.9      # — D4
 _EXPECTED_SOC_INIT             = 0.5      # — EnvParams default (not in site YAML)
 
 # §3.6 grid (pcc-substation-945mw, D5, D12)
-_EXPECTED_GRID_MAX_EXPORT_MW   = 945.0    # MW — model default (D5)
+# NOTE: site_gansu.yaml overrides max_export_mw to 567.0 MW (USER-directed, 0.6×nameplate;
+# D5 device default 945.0 remains in EnvParams() but Gansu site uses the binding cap).
+_EXPECTED_GRID_MAX_EXPORT_MW   = 567.0    # MW — site override (PR #127, USER-directed)
 _EXPECTED_GRID_MAX_IMPORT_MW   = 400.0    # MW — model default (D12)
 
 # §3.4 costs
@@ -429,10 +431,13 @@ class TestGansuParity:
     # --- Grid scalars ---
 
     def test_grid_max_export_mw(self, resolved):
-        """grid_max_export_mw = 945.0 MW (pcc model default; D5)."""
+        """grid_max_export_mw = 567.0 MW (site override; USER-directed 0.6×nameplate, PR #127).
+
+        Device default (D5) is 945.0 MW in EnvParams(); site_gansu.yaml overrides to 567.0 MW.
+        This is an intentional site-level binding cap — NOT equal to EnvParams() default by design.
+        """
         params, _, _ = resolved
         assert params.grid_max_export_mw == pytest.approx(_EXPECTED_GRID_MAX_EXPORT_MW)
-        assert params.grid_max_export_mw == EnvParams().grid_max_export_mw
 
     def test_grid_max_import_mw(self, resolved):
         """grid_max_import_mw = 400.0 MW (pcc model default; D12)."""
@@ -576,14 +581,23 @@ class TestGansuParity:
 
     @pytest.mark.parametrize("field", [
         f for f in EnvParams()._fields
-        if f != "price_table"  # (24,) array — tested by test_price_table_* above
+        if f not in (
+            "price_table",         # (24,) array — tested by test_price_table_* above
+            "grid_max_export_mw",  # intentional site override (567 MW ≠ device default 945 MW);
+                                   # tested by test_grid_max_export_mw. Backend-reviewer approved
+                                   # exclusion (PR #127); rl-architect (# reviewer: author) looped.
+        )
     ])
     def test_all_envparams_scalar_fields_parity(self, resolved, field):
         """Every scalar EnvParams field from resolve_gansu() must equal EnvParams() default.
 
         # reviewer: complete-by-construction parametric parity sweep (rl-architect, PR #79)
         # Auto-covers any scalar field added to EnvParams in the future.
-        # price_table is excluded (array type, tested separately).
+        # Exclusions (complete-by-construction property preserved — each excluded field has
+        # a dedicated test that pins its expected value):
+        #   price_table       — (24,) array, tested by test_price_table_* above
+        #   grid_max_export_mw — intentional site-level override (567 MW), tested by
+        #                        test_grid_max_export_mw; backend-reviewer APPROVE PR #127
         # Arithmetic: resolved values come from site YAML float literals; they must
         # reproduce the same IEEE-754 value as the EnvParams() Python float literals.
         # pytest.approx(rel=1e-9) catches unit-conversion bugs while allowing
