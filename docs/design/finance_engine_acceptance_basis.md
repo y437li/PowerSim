@@ -185,7 +185,7 @@ P_q  =  np.quantile(sorted_ascending(metric), 1 − q, method='lower')
 | **R2 bootstrap** (v1 default) | `sample_kind=bootstrap`, M ≥ 50 (D34) | true | **P50/P75/P90/P95** + bootstrap CI + per-percentile `confidence`; full downside panel incl. **CVaR-5%** (k=ceil(0.05·M)=3 at M=50), worst-case NPV, P(NPV<0), P(IRR<hurdle), max drawdown+year, worst-year CF | P99 (optional `indicative_low_confidence` only, never a bare headline) |
 | **R3 empirical small-sample** | `sample_kind=empirical`, M≈10 (`weather.mode: real`) | true | **per-year trajectories** (headline) + **empirical P50** + **empirical worst/best-of-N** (labeled "worst/best of N observed years," **NOT** percentiles) + **P(NPV<0)** frequency; all empirical-caveat-tagged | **P75/P90/P95/P99 AND CVaR-5%** as labeled stats — under the locked nearest-rank estimator at M≈10, P90 = `x[floor(0.10·(M−1))]` = the min and CVaR-5% (k=1) = the single worst, so all three would relabel one number; the honest worst-case is surfaced once as "worst-of-N" |
 
-R3 is rl-architect's D39 §4 ruling (finance-expert domain call, team-lead-backed). The §A worked ensemble below is the **R2** case (M=50). CVaR-5% is a full headline in R2 (k=3 meaningful) and suppressed only in R3.
+R3 is rl-architect's D39 §4 ruling (finance-expert domain call, team-lead-backed). The §A worked ensemble below is the **R2** case (M=50); the **R3** empirical worked vector is **§A.1**. CVaR-5% is a full headline in R2 (k=3 meaningful) and suppressed only in R3.
 
 **Worked ensemble (M=50):**  `NPV_m = −100,000 + (m−1)·10,000`, m = 1…50  (ascending; range −100,000 … +390,000).
 
@@ -220,6 +220,48 @@ worst single-year CF    = min CF(y)       = −¥250,000  (year 3)
 - Property asserts: point estimate ∈ CI; CI width ≥ 0; **degenerate case** (all M draws equal) ⇒ CI width = 0; `confidence` tag = `indicative_low_confidence` when width exceeds the §13.10a thresholds (IRR ≥ 2 pp, NPV ≥ 20%·|P50|), else `sound`.
 
 **M=1 honesty (§13.10c) reasserted here:** at M=1 every §A distributional stat is **absent** (not P50=P90=single draw); only `single_trajectory` (max drawdown+year, worst-year CF, point NPV) is emitted.
+
+---
+
+## §A.1 — R3 empirical small-sample worked vector (real-weather, M≈10)
+
+This is the **R3** regime of the §A.0 canonical table (D39 §4): `sample_kind="empirical"`, the ~10 ERA5 historical calendar years used **as-is** (not block-bootstrapped). The output uses the **same ONE locked estimator** as R2 (`np.quantile(sorted, 1−q, method='lower')` / `'higher'`) — only the *populated set* is narrower, per the small-sample honesty discipline. `distribution_valid=True` (it is a valid empirical distribution; just narrow). All R3 outputs carry `empirical_caveat=true`.
+
+**Worked ensemble (M=10).** Per-draw NPV over 10 historical years — each draw is one calendar year's full N-year degraded trajectory (§13.7/F-B) — shown ascending for the arithmetic (in practice keyed by calendar year, unsorted):
+```
+NPV_m (¥) = [ −80,000, −30,000, +10,000, +40,000, +60,000, +90,000, +120,000, +150,000, +200,000, +260,000 ]   # m = 1…10
+sorted ascending (0-based): x[0]=−80,000 … x[9]=+260,000
+```
+
+**R3 POPULATED** (the honest small-sample set):
+
+| Stat | Formula (M=10) | Worked value |
+|---|---|---|
+| **per-year trajectory strip** | all N=10 observed years surfaced **individually** — THE headline | 10 per-year entries (each: NPV + CF series) |
+| **empirical P50** | `np.quantile(sorted, 1−0.50, method='lower')` → `x[floor(0.50·9)] = x[4]` | **¥60,000** |
+| **empirical worst-of-N** | `min_m NPV_m` — labeled **"worst of 10 observed years"**, NOT a percentile | **−¥80,000** |
+| **empirical best-of-N** | `max_m NPV_m` — labeled **"best of 10 observed years"**, NOT a percentile | **+¥260,000** |
+| **P(NPV<0)** | `#{NPV_m < 0} / M` — empirical frequency over the actual years | 2/10 = **0.20** ("2 of 10 historical years lose money") |
+
+**R3 SUPPRESSED** (absent = `None`, **never fabricated** — the §13.10c discipline). Each would collapse to the observed worst at M≈10, so labeling it as a fitted percentile/tail is a relabel of the worst-of-N:
+
+| Stat | Why suppressed (M=10) |
+|---|---|
+| **P90** | `x[floor(0.10·9)] = x[0] = −80,000` = the **worst-of-N** → labeling it "P90" claims a 90%-exceedance probability 10 samples can't support |
+| **P95 / P99** | even deeper than P90 → `x[0]` (= worst) → not credible at M=10 (P95 needs M≥50 / R2) |
+| **P75** | `x[floor(0.25·9)] = x[2] = +10,000` — a coarse small-sample value; **only P50 is kept** in R3 |
+| **CVaR-5%** | `k = ceil(0.05·10) = 1` → mean of 1 worst = −80,000 = **worst-of-N** → would double-label the same number |
+| **bootstrap CI** | optional; if shown, every R3 percentile is `confidence="indicative_low_confidence"` and never a bare headline |
+
+**One estimator, identical schema (D39).** R3 reuses R2's estimator verbatim — a second estimator is a review-fail. The `FinanceResult` shape is **identical** across R1/R2/R3; R3 simply leaves the suppressed fields `None` (a represented "no distribution available"), exactly as R1 (M=1) leaves the whole distributional block `None`. `sample_kind` selects the populated set; there is **no schema branch**.
+
+**Maps to FIN-47–52** (currently skip-stubbed pending this section; finance-engineer un-skips + encodes):
+- **FIN-47** — `distribution_valid=True` at M=10 empirical.
+- **FIN-48** — `P75`, `P90`, `P95`, `P99`, **and** `CVaR-5%` are all `None`.
+- **FIN-49** — empirical `P50 = ¥60,000` (`x[4]`, rank `floor(0.50·9)=4`).
+- **FIN-50** — `worst_of_n = −¥80,000`, `best_of_n = +¥260,000`, labeled (not percentiles).
+- **FIN-51** — `P(NPV<0) = 0.20` (2 of 10).
+- **FIN-52** — R3 uses the **same** `np.quantile(...,'lower')` estimator as R2.
 
 ---
 
