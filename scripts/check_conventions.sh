@@ -39,6 +39,12 @@ if [ -d tests ]; then
   # Playwright E2E tests (.spec.ts) only under tests/frontend_e2e/ (D20)
   straye2e=$(find tests -name '*.spec.ts' -not -path 'tests/frontend_e2e/*' 2>/dev/null)
   [ -n "$straye2e" ] && err "Playwright .spec.ts tests must live under tests/frontend_e2e/: $straye2e"
+
+  # Finance engine tests must live under tests/finance/ (D39)
+  # (the generic loop above enforces test_finance_<feature>.py + matching contract;
+  #  this guard prevents finance pytest files from leaking into other area dirs)
+  strayfinance=$(find tests -name 'test_finance_*.py' -not -path 'tests/finance/*' 2>/dev/null)
+  [ -n "$strayfinance" ] && err "finance engine tests must live under tests/finance/: $strayfinance"
 fi
 
 # 4. Review record must exist for every non-example contract
