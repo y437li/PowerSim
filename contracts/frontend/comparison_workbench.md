@@ -674,8 +674,8 @@ export function ComparisonTable(props: {
   sortMetric: string | null;
   sortDir: "asc" | "desc";
   onSort: (metric: string) => void;
-  /** D45: show the levered view (Equity IRR + Min DSCR rows from debt_metrics) */
-  debt_toggle: boolean;
+  /** D45: show the levered view (Equity IRR + Min DSCR rows from debt_metrics). Default false. */
+  debt_toggle?: boolean;
 }): JSX.Element;
 // debt_toggle render rules (D45):
 //   - Show debt rows only when debt_toggle=true AND variant.finance_result.debt_metrics != null

@@ -2235,7 +2235,9 @@ describe("§19 D45 binding rules — rule A (confidence equal-across-metrics), r
   });
 
   it("T-DEBT-5: debt_metrics direction-of-good — equity IRR delta positive = green (higher-better)", () => {
-    // variant equity_irr_pct=10.5 (better than baseline 9.8); Δ=+0.7pp → good
+    // Baseline equity_irr_pct=9.8%; variant=10.5% → Δ = 10.5 - 9.8 = +0.7 pp → good
+    // higher-better + positive delta → data-delta-direction="good"
+    // Consistent with §7.8 derivation rule and T-DELTA-5 (LCOE lower-better, negative Δ → "good")
     const baseline = makeVariant({
       id: "var-baseline",
       is_baseline: true,
@@ -2246,7 +2248,7 @@ describe("§19 D45 binding rules — rule A (confidence equal-across-metrics), r
       is_baseline: false,
       finance_result: {
         ...FINANCE_RESULT_R2,
-        debt_metrics: { equity_irr_pct: 10.5, min_dscr: 1.38 },  // Δ IRR = +0.7pp (good)
+        debt_metrics: { equity_irr_pct: 10.5, min_dscr: 1.38 },  // Δ IRR = +0.7 pp (good)
       },
     });
     render(
@@ -2261,9 +2263,11 @@ describe("§19 D45 binding rules — rule A (confidence equal-across-metrics), r
         debt_toggle={true}
       />
     );
+    // Delta "+0.7 pp" (or "+0.7%") inside the Equity IRR row must carry data-delta-direction="good"
+    // Pattern mirrors T-DELTA-5: find by text, traverse to closest [data-delta-direction] element
     const irrRow = screen.getByTestId("debt-equity-irr-row");
-    const deltaCell = within(irrRow).getByTestId("delta-var-a");
-    // Δ = 10.5 - 9.8 = +0.7pp → higher-better → "good"
-    expect(deltaCell.getAttribute("data-delta-direction")).toBe("good");
+    const deltaText = within(irrRow).getByText(/\+0\.7/);
+    const deltaCell = deltaText.closest("[data-delta-direction]");
+    expect(deltaCell?.getAttribute("data-delta-direction")).toBe("good");
   });
 });
