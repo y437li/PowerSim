@@ -253,3 +253,31 @@ SC4/D45 gate.**
 conformance (uniform p50/p75/p90/p95 across all 5 metrics + npv-only bootstrap_ci). The reference-swap,
 §2.3, §7.8, and R1/R3 fixtures are all correct. SC1/SC2/SC3 standing conditions unchanged. Re-gate on the
 fixture fix — should be the last round.
+
+## Round 5 — `62e494e` — REQUEST_CHANGES (2026-06-14) — D45 conformance, rule C still open
+
+Round 5 added the rule-A/rule-B enforcement tests + the `debt_toggle` prop + debt rows. **Good work on
+those — verified sound:**
+- **Rule B ✓** — `npv_yuan.p50.bootstrap_ci = {lo:125M, hi:162M}` added; T-RULE-B-1 (absent on
+  irr/mirr/lcoe/payback), T-RULE-B-2 (npv bracketing 125<142<162), T-RULE-B-3 (absent at R1 + R3 —
+  verified R3 npv_yuan.p50 has no bootstrap_ci). NPV-only CI correctly modeled.
+- **Rule A ✓** — T-RULE-A-1 (R2 confidence identical across metrics at same q), T-RULE-A-2 (R3 all
+  `data-q="p50"` cells `data-confidence="indicative_low_confidence"`). Composes cleanly with T-CONF-3/4
+  (both use `data-confidence`; no collision — different queries).
+- **debt_toggle ✓** — `ComparisonTable.debt_toggle` renders Equity IRR + Min DSCR rows (scalar "9.8%"/"1.45×",
+  no p50/p75 sub-rows, T-DEBT-3), gated on `debt_toggle && debt_metrics!=null` (T-DEBT-1/2/4), delta
+  direction higher-better via §7.8 (T-DEBT-5). Matches the §7.8 debt rows + the locked scalar `debt_metrics`.
+
+**Blocker — BD45-1 rule C STILL OPEN (the primary part of my Round-4 finding).** Round 5 addressed rule B
+but NOT rule C. The R2 fixture is still **non-uniform**: `irr_pct` = {p50,p75,p90,p95}; `npv_yuan` =
+{p50,p90}; `mirr_pct`/`lcoe_yuan_per_mwh`/`payback_discounted_yr` = {p50} only. Locked #135 rule C requires
+the regime-driven percentile set ({p50,p75,p90,p95} at R2, p99 optional) to be **IDENTICAL for every
+metric** ("reject any cross-metric presence mismatch"). The fixture is still an invalid R2 payload, so the
+suite under-tests the real R2 shape (mirr/lcoe/payback p75/p90/p95 are never exercised → a missing/wrong
+non-IRR percentile in the table wouldn't be caught). **Fix:** give all 5 R2 metrics `p50/p75/p90/p95`;
+extend T-RULE-B-1 to also assert `bootstrap_ci` undefined on the NEW non-NPV percentile nodes (p75/p90/p95),
+and add `bootstrap_ci` to `npv_yuan`'s p75/p90/p95 nodes (rule B applies to all NPV percentile nodes at R2,
+not just p50). R1/R3 already conform.
+
+**Verdict: REQUEST_CHANGES** — narrow: R2 fixture rule-C uniformity (the one item Round 5 didn't address).
+Everything else (rule A/B tests, debt_toggle, §2.4 reference, §7.8, R1/R3) is correct. Should be the last round.
