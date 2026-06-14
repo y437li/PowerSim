@@ -577,8 +577,10 @@ def _synthesize_from_stub(
     Hint fields on the stub (all optional, default to sensible values):
       _irr_decimal        → irr_pct.p50.value × 100 (percent)
       _wacc_decimal       → finance_assumptions.wacc (decimal, NOT ×100)
-      _equity_irr_decimal → equity_irr_pct.p50.value × 100 (when debt on)
-      _min_dscr_ratio     → min_dscr (bare ratio, NOT ×100)
+      _equity_irr_decimal → debt_metrics.equity_irr_pct SCALAR × 100 (percent, D45)
+                            NOT MetricPercentiles — engine.py:679-680 returns a
+                            single float mean, not per-percentile.
+      _min_dscr_ratio     → debt_metrics.min_dscr SCALAR (bare ratio, NOT ×100, D45)
     """
     M = ensemble.M
     sample_kind = ensemble.sample_kind  # "bootstrap" | "empirical"
