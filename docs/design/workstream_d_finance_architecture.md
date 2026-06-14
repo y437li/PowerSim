@@ -82,7 +82,7 @@ off-wire). The realizing PR adds `finance` to the CLAUDE.md `<area>` list + `che
 | **D1d distributions** | `finance/distributions.py` | M-axis aggregation: exceedance percentiles, bootstrap CI, per-percentile confidence, downside-risk panel (§13.10), `distribution_valid` + percentile-regime honesty (§4 below). Estimator **LOCKED by finance-expert** (PR #107): `np.quantile(sorted, 1−q, method='lower')` (higher-better) / `method='higher'` (lower-better); CVaR-5% over `k=ceil(0.05·M)` worst draws; drawdown = §13.10b literal `min(0, min_y cumCF_excl_CAPEX)` (shortfall-below-zero, **not** peak-to-trough). **ONE estimator** serves R2 and R3 (R3 = same estimator, reduced percentile set). | pure |
 | **D1e discount** | `finance/discount.py` | CAPM→WACC from `finance_config` (CGB-curve linear-interp to horizon, Hamada relever, §13.5) | pure |
 | **D1f sensitivity** | `finance/sensitivity.py` | §13.11 NPV-vs-r fan, tornado, sensitivity surface | pure |
-| **D1 facade** | `finance/engine.py` | the `finance(ensemble, price_paths, econ, finance_config) -> FinanceResult` entry point (§13.12) | pure |
+| **D1 facade** | `finance/engine.py` | the `finance(ensemble, price_paths, econ, finance_config) -> FinanceResult` entry point (§13.12). **Owns View I/II aggregation** (orchestration, not its own module): **View I** = absolute per-policy distribution; **View II** = incremental `NPV(π) − NPV(baseline_policy_id)` computed **over the CRN-shared draws** (index-aligned m, so the delta is pure dispatch — P2). `baseline_policy_id` from `finance_config`; absent → View II omitted, never fabricated (§13.12 inv 3). | pure |
 | **D2 econ loader** | `finance/econ_params.py` | `device_models.yaml` econ block (#103 benchmarks) → `DeviceEconParams`; site fleet → per-device CAPEX/OPEX/lifecycle | pure (reads pre-resolved config) |
 | **D3 ensemble builder** | workstream-C (`harness`/`training`) — **NOT D** | runs π × M × N → `PolicyEnsemble`; owns the weather toggle (§3) | impure (calls env) |
 | **D4 serving** | `serving/` `GET /api/finance/compare` | thin wrapper: build ensemble (D3) → `finance()` → serialize; provenance join | I/O at the edge only |
@@ -130,15 +130,19 @@ shape is **identical** across all three (absent fields are a represented "no dis
 |---|---|---|---|---|
 | **R1 fast-iteration** | M = 1 | **false** | none (point estimate only) | §13.10c existing; single-trajectory downside only; non-dismissable M=1 banner |
 | **R2 bootstrap (default v1)** | `sample_kind=bootstrap`, M ≥ 50 | true | **P50 / P75 / P90 / P95** + bootstrap CI per percentile (D34) | P95 = decision tail; P99 dropped from headline (optional `indicative_low_confidence` only); full downside-risk panel |
-| **R3 empirical small-sample** | `sample_kind=empirical`, M small (~10) | true | **P50 / P90 only** + per-year trajectories surfaced; each tagged with an **empirical small-sample caveat** | **P75 / P95 / P99 ABSENT (not fabricated)** — the 2.5th-worst of ~10 is the worst sample, not a defensible P95; a credible P95 gates on M ≥ 50. Downside panel: worst-case NPV, P(NPV<0), P(IRR<hurdle), and max-drawdown are well-defined empirically over the actual years (surfaced with the caveat). **CVaR-5% at M~10 collapses to k=`ceil(0.05·10)`=1 = the single worst draw = worst-case NPV** → it is tagged `indicative_low_confidence` (degenerate, equals worst-case), not shown as an independent tail stat. |
+| **R3 empirical small-sample** | `sample_kind=empirical`, M small (~10) | true | **per-year trajectory strip (headline)** + **empirical P50 (median)** + **empirical worst/best-of-N observed-year range** + **P(NPV<0)** (empirical frequency, e.g. "2 of 10 historical years lose money"); all **empirical-caveat-tagged** | **P75 / P90 / P95 / P99 AND CVaR-5% are ABSENT as labeled stats (not fabricated)** — finance-expert correctness call (PR #107): under the LOCKED nearest-rank estimator, at M≈10 `P90 = quantile(sorted, 0.10, method='lower')` → index `floor(0.10·9)=0` = the MIN, and `CVaR-5% k=ceil(0.05·10)=1` = the single worst → P90/CVaR/worst-case would be **three labels for one number** (the §13.10c relabel trap). The empirical worst/best are surfaced as **"worst/best of N observed years," NOT as percentiles** (a real historical fact, not a fitted tail). A credible P90 needs M≳15–20; P95 gates on the R2 M≥50 path. |
 
-R3 is the honest treatment of "10 real calendar years used as-is" — it reuses R1/R2's exact
-"absent-not-fabricated" + per-percentile `confidence` machinery **and the same single LOCKED
-estimator** (finance-expert PR #107), only with the reduced {P50, P90} set; the schema does not
-change (the user's narrowed directive: a different M-set, NO `FinanceResult` rework). The
-**convergence hint** (§13.10a; IRR CI ≥ 2pp, NPV CI ≥ 20%|P50|) fires in R3 by construction.
-**finance-expert confirmed (PR #107) the small-M mode reuses this one estimator — finance-engineer
-implements ONE estimator, not two.**
+R3 is the honest treatment of "10 real calendar years used as-is" (finance-expert's domain ruling,
+team-lead-backed). It reuses R1/R2's exact "absent-not-fabricated" + `confidence` machinery **and the
+same single LOCKED estimator** (finance-expert PR #107 §A) — only the *populated set* differs:
+{per-year strip + P50 + empirical worst/best-of-N range + P(NPV<0)}, with **no labeled tail
+percentile or CVaR** (those collapse to min/2nd-min at N≈10 under the locked nearest-rank estimator).
+Schema unchanged — a different M-set + a tighter "what's populated" rule, NO `FinanceResult` rework
+(the user's narrowed directive). **finance-engineer implements ONE estimator, not two** — R3 is the
+same estimator with a reduced, honestly-labeled output set. If a P90-ish number is ever wanted in R3
+it MUST switch to an interpolating estimator AND be tagged `indicative_low_confidence` — but the
+locked v1 call is the explicit empirical-range framing. The **convergence hint** (§13.10a) fires in
+R3 by construction. The canonical R1/R2/R3 acceptance table is finance-expert PR #107 (§6.7 ref).
 
 ---
 
@@ -174,8 +178,12 @@ implementer is not an independent acceptance gate.
    of `price_path` (D3-side test).
 6. **CRN:** identical M draws across policies → per-policy metric deltas are pure dispatch; ragged
    ensemble rejected.
-7. **Three regimes (R1/R2/R3, §4):** M=1 → point estimates only, banner; bootstrap M≥50 →
-   P50/P75/P90/P95 + CI; empirical ~10 → P50/P90 + per-year + caveat, P75/P95/P99 absent (not faked).
+7. **Three regimes (R1/R2/R3, §4; canonical table = PR #107 §6.7):** M=1 → point estimates only,
+   banner; bootstrap M≥50 → P50/P75/P90/P95 + CI; **empirical ~10 → per-year strip + empirical P50 +
+   empirical worst/best-of-N range + P(NPV<0); NO labeled P75/P90/P95/P99 or CVaR-5%** (they collapse
+   to min/2nd-min at N≈10 under the locked nearest-rank estimator — absent, not faked).
+   **View II naming:** `engine.py` computes View II = `NPV(π) − NPV(baseline_policy_id)` over
+   CRN-shared draws; `baseline_policy_id` absent → View II omitted (never fabricated).
 8. **View II:** `baseline_policy_id` present → incremental-battery NPV vs no-battery; absent → View I
    only, View II omitted (never fabricated).
 9. **Debt toggle:** equity-IRR / min-DSCR emitted ONLY when debt ON (absent, not zero/null, when off).
