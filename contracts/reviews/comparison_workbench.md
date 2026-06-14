@@ -150,3 +150,65 @@ shown as frequency); canonical sample_kind enum.
 `resolveComparisonRegime`) and **B3** (complete direction-of-good table + delta-coloring rule + lower-better
 delta tests) remain. Strongly converged — both are bounded contract edits; I add the held tests on the next
 revision. SC1/SC2/SC3/SC5 carry to implementation; SC4 resolved.
+
+## Round 3 — `a745cc2` (v1.2.0-draft) + reviewer test — APPROVE (2026-06-14)
+
+All three blockers resolved and code-verified:
+
+- **B1 ✓** — `resolveComparisonRegime(variants): FinanceRegime` added (§2.5): severity `{R1:0, R3:1, R2:2}`,
+  returns the min over `v.finance_result?.regime`, default R2 when empty/no-result. Reads the backend
+  `regime` field (consistent with B2 — not deriveRegime). §7.3 + the §2.5 docstring state whole-table-min,
+  per-column **rejected**, and mixed-regime **delta cells suppressed** (not just the banner). **Q5 CLOSED.**
+  Tests T-RESOLVE-1..6 (all-R2→R2, R1+R2→R1, R3+R2→R3, R1+R3→R1, empty/null→R2, single-string return) +
+  T-DELTA-7 (IRR delta suppressed when table regime=R1). Correct.
+
+- **B2 ✓** — `FinanceResultSummary.regime` docstring: "Read DIRECTLY from the backend response — NEVER
+  recompute client-side"; `deriveRegime()` docstring: "use ONLY when you do not yet have a
+  FinanceResultSummary (raw PolicyEnsemble)." Single source documented; the prior dual-source nit closed.
+
+- **B3 ✓** — §7.8 added: a **complete per-metric direction-of-good table** (all 11 metrics — higher-better:
+  IRR/MIRR/NPV/CVaR/WorstNPV/MaxDD/BestOfN; lower-better: LCOE/payback/P(NPV<0)/P(IRR<hurdle)), with display
+  units, `Δ = variant − baseline`, and the coloring rule ("green/red derived from direction + sign, NOT sign
+  alone"). Unit guards: IRR/MIRR delta in **pp**, P-metric delta in **pp-from-fraction**, LCOE in **¥/MWh**
+  (the ¥/kWh ×1000 trap). Tests T-DELTA-5 (LCOE lower-better → negative Δ = good), T-DELTA-6 (¥/MWh not
+  ¥/kWh; `0.312` must not appear).
+
+**Finance-expert precision (incorporated + tested):** `single_trajectory` present at all M (HEADLINE at R1);
+`best_of_n_npv_yuan` R3-only — gate by regime not truthiness (T-R3-9); `cvar5_yuan` R2-only, null at R1+R3
+(T-R3-10); R3 frequencies as "X of N years" not smooth % (T-R3-8, `X = round(p·m_draws)`). **SC5 RESOLVED:**
+`useFinanceRecompute` → `POST /api/compare/finance` `(eval_result_id, finance_config)`, 404
+`EVAL_RESULT_NOT_FOUND` + re-run CTA. Canonical `sample_kind {bootstrap|empirical}` (per #133) applied.
+
+### Reviewer test added this round (`// reviewer:`)
+- **T-DELTA-8** — P(NPV<0) delta: lower-better + shown in **pp** (fraction→pp), `−0.08` must NOT appear,
+  cell `data-delta-direction="good"`. Covers the lower-better *probability* category (T-DELTA-5 covered the
+  lower-better *price* category LCOE) and the §7.8 line-967 fraction→pp unit guard. esbuild parse-clean.
+
+### Minor should-fix (non-blocking — fold into implementation)
+- **Attribute-name alignment:** §7.8 (line 962) specifies `data-direction="higher-better"|"lower-better"`
+  (the metric property), but T-DELTA-5/T-DELTA-8 assert `data-delta-direction="good"` (the derived verdict).
+  Both are reasonable (metric property vs computed cell verdict) — but the contract should document BOTH
+  attributes explicitly so the implementer adds the right ones (recommend: `data-direction` = metric
+  property; `data-delta-direction = "good"|"bad"|"neutral"` = derived from direction + Δ sign). The tests
+  pin `data-delta-direction`; §7.8 should name it.
+
+### Standing conditions for implementation (NOT blocking the contract+tests gate)
+- **SC1** — serving config-library contract (`GET/POST /api/configs`, `/configs/:id/fork`, `/comments`).
+- **SC2 — serving compare endpoints (PR #134).** *Active cross-area item:* #134's `FinanceResultSummary`
+  §2.4 is currently the **superseded flat shape** (`sample_kind:"synthetic"` — violates the #133 LOCK; no
+  per-percentile `confidence`; `point_irr_pct` vs the R1 correction). I posted REQUEST_CHANGES on #134 and
+  **escalated the canonical-shape direction to rl-architect + finance-expert.** #132's v1.2.0 nested shape is
+  the finance-expert-aligned + #133-aligned target; #134 must serialize TO it. **Implementation of #132 is
+  blocked until #134 conforms.** (If the ruling unexpectedly reverses to flat, §2.4/§2.5/§7.8 reopen — but
+  that would require relaxing #133 + dropping finance-expert's confidence contract, so I expect it to confirm
+  the nested shape.)
+- **SC3** — dashboard-engineer confirms `SurfaceChartProps` + `NpvFanChartProps` (§5 `[PENDING]`; charts
+  stubbed in tests per DV-5).
+- **SC4 RESOLVED** (finance-expert regime corrections applied). **SC5 RESOLVED** (recompute endpoint).
+
+### Approved suite = developer cases (§1–§18, incl. T-RESOLVE-1..6, T-DELTA-1..7, T-R3-8/9/10, §15 confidence,
+§16 diff, §17 finance, §18 comments) + the reviewer case **T-DELTA-8**.
+
+**Verdict: APPROVE** (contract + tests gate). B1/B2/B3 resolved + code-verified; finance-expert precision +
+SC4/SC5 in; one non-blocking attribute-name nit; SC1/SC2/SC3 carry to implementation (SC2 = the #134
+nested-shape convergence I escalated). Strong contract — implementation may proceed once SC1/SC2/SC3 clear.

@@ -1085,6 +1085,42 @@ describe("§7 ComparisonTable — delta display vs baseline", () => {
     // var-baseline shows delta: 8.2 - 8.7 = -0.5 pp
     expect(screen.getByText(/−0\.5 pp|-0\.5 pp/)).toBeTruthy();
   });
+
+  // reviewer: T-DELTA-5 covers LCOE (lower-better, ¥/MWh). This adds the OTHER lower-better
+  // category — a probability metric whose delta unit is pp-from-fraction (§7.8 unit guard
+  // line 967: "P(NPV<0) deltas: pp, NOT decimal fraction"). Guards both direction-of-good
+  // AND the fraction→pp conversion in one case.
+  it("reviewer: T-DELTA-8: P(NPV<0) delta lower-better, shown in pp (not raw fraction)", () => {
+    // Baseline p_npv_neg=0.18 (18%); variant=0.10 (10%) → delta = (0.10−0.18)×100 = −8 pp.
+    // Lower-better + negative Δ → improvement → data-delta-direction="good".
+    const baseline = makeVariant({ id: "var-baseline", is_baseline: true, finance_result: FINANCE_RESULT_R2 });
+    const variantA = makeVariant({
+      id: "var-a",
+      label: "A (SST)",
+      is_baseline: false,
+      finance_result: {
+        ...FINANCE_RESULT_R2,
+        downside_risk: { ...FINANCE_RESULT_R2.downside_risk!, p_npv_neg: 0.10 },
+      },
+    });
+    render(
+      <ComparisonTable
+        variants={[baseline, variantA]}
+        baselineId="var-baseline"
+        regime="R2"
+        hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
+      />
+    );
+    // Delta shown as "−8 pp" (fraction→pp); the raw fraction "−0.08" must NOT appear.
+    expect(screen.getByText(/−8 pp|-8 pp/)).toBeTruthy();
+    expect(screen.queryByText(/−0\.08|-0\.08/)).toBeNull();
+    // Lower-better metric + negative delta → cell flagged good (matches §7.8 + T-DELTA-5 convention).
+    const cell = screen.getByText(/−8 pp|-8 pp/).closest("[data-delta-direction]");
+    expect(cell?.getAttribute("data-delta-direction")).toBe("good");
+  });
 });
 
 // ─── §8. Workbench store ──────────────────────────────────────────────────────
