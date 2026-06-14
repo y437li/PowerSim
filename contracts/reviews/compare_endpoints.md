@@ -68,14 +68,26 @@ Both resolved at `dd36db1`. rl-architect cleared RC; D45 decision also issued (D
 | `1cfcd69` | Initial implementation — 6 endpoints, `EnsembleCache` LRU, stub fast path, `_synthesize_from_stub`, `_serialize_view` |
 | `75399ac` | D45 producer fixes — §2.4→pointer, `equity_irr_pct` scalar in `debt_metrics`, `payback_discounted_yr`, `bootstrap_ci` NPV-only, `single_trajectory` always non-null |
 
-### backend-reviewer — code audit @ `75399ac` (pending re-gate for D45 test changes)
+### backend-reviewer — code audit APPROVE @ `ef95b69` (2026-06-14)
 
-D45-driven test updates requiring re-gate (spec-driven, not implementation-driven):
-- `test_finance_single_trajectory_null_at_r2` → `test_finance_single_trajectory_nonnull_at_r2`
-  (D45 §3 rule 3 supersedes old INV-CE-18 "null at R2/R3")
-- `payback_yr` → `payback_discounted_yr` in field assertion lists
-- `equity_irr_pct` / `min_dscr` accessed via `debt_metrics` dict (SCALAR) not top-level
-- `TestUnitContracts`: `equity_irr_pct` removed from MetricPercentiles loop
+All 4 D45 producer fixes verified correct against locked #135 (head 1524f5e):
+- §2.4 → pointer: clean defer, no re-inline ✓
+- `debt_metrics` scalar: `equity_irr_pct` ×100 percent, `min_dscr` bare ratio; gated on `debt_on AND regime≠R1` in BOTH `_serialize_view` and `_synthesize_from_stub` ✓
+- `payback_discounted_yr` using engine `payback_disc_yr` attr ✓
+- `bootstrap_ci` NPV-only (`include_ci=True` only for `npv_yuan`) ✓
+
+`single_trajectory` null→nonnull test flip confirmed spec-mandated (#135 line 42 "present at ALL M").
+
+**Reviewer pushed commit `ef95b69` — two R3 tests rewritten:**
+
+| Old test | Issue | New test |
+|---|---|---|
+| `test_finance_p90_confidence_at_r3` | Written under D39 §4 "mark tails low-confidence"; passed vacuously after D45 reversed to R3=p50-only | Positively asserts: regime==R3, p50 present + `"indicative_low_confidence"`, p75/p90/p95/p99 all `None` |
+| `test_finance_p90_at_r3_if_present` | Same issue — permissive guard let R3 tail-presence pass silently | Same rewrite |
+
+**Non-blocking follow-up (not gating):** `_serialize_view` delegates R3 tail-nulling to the engine's view rows rather than enforcing it explicitly — sound today because #120's engine R3 impl guarantees it. Add explicit R3 guard in `_serialize_view` if real `PolicyEnsemble` path is wired without that guarantee.
+
+**Approved test-file version:** `tests/serving/test_serving_compare_endpoints.py` @ `ef95b69` (75 tests, 0 skipped). **Gate = APPROVE.** (issuecomment-4702438387)
 
 ---
 
