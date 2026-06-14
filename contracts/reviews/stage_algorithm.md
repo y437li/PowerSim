@@ -117,3 +117,62 @@ gamma=0 vs 1.0 boundary structure (T-HYPER-5/6, modulo C2); bufferSize exact-min
 **Verdict: REQUEST_CHANGES.** Blockers C1 (field-name/serving-contract conformance), C2 (gamma lock —
 rl-architect), C3 (n_envs range — training-engineer) must be resolved, then the 15 test additions
 folded in. Re-review on the reworked contract + suite.
+
+## Round 2 — `dee1b3f` — REQUEST_CHANGES (2026-06-14) — re-gate after rl-architect CALL 1 + CALL 2
+
+Re-reviewed the amended contract + 78-case suite. **Two rl-architect rulings correctly applied** —
+genuine progress:
+- **CALL 1 (DV-3 resolved — §5 wins) ✓** — defaults corrected to canonical §5 values
+  (`totalSteps=500_000`, `batchSize=512`, `lr=1e-4`, `gamma=0.999`, `nEnvs=4`); constants
+  `tau`/`ent_coef="auto"`/`train_freq=1`/`gradient_steps=1` added; DV-3 struck in §8;
+  T-HYPER-7/8 cross-field + T-BODY golden examples updated to the new defaults. Good.
+- **CALL 2 (heuristic-first) ✓** — store default → `baseline_only`; SAC coming-soon copy mandated
+  (§4.2) and **tested** (T-INIT-5 → `algo-sac-coming-soon-notice`); baseline notice on initial
+  render; hyperparam section absent on initial render; ~20 tests flipped coherently (spot-checked
+  T-INIT-1/4 — correct). DV-7 added; §12 records the PENDING-USER SAC-prominence call. Good.
+
+**But CALL 1/CALL 2 were about default *values* and product direction — they did NOT address the
+Round-1 structural blockers, which remain:**
+
+- **C1 — STILL OPEN (primary).** The POST body still uses `total_steps` / `eval_freq` /
+  `learning_rate` / `hidden_layers` (contract §3.8; tests L638-649, L1055-1067) — unchanged from
+  Round 1; still diverges from `RunConfig`'s `total_env_steps` / `eval_every_steps` / `lr` /
+  `hidden_sizes`. No serving contract for `/api/training/config` was added/cited. **New wrinkle:**
+  the added constants `train_freq` / `gradient_steps` are **not fields in `RunConfig`** at all
+  (RunConfig has `ent_coef` ✓ but no train_freq/gradient_steps), so the body now mixes
+  canonical names, divergent names, AND fields absent from the canonical schema. CALL 1 ("§5 wins")
+  fixed the *values*, not the *names/shape*. Resolution unchanged: (a) rename the 4 divergent keys
+  to `RunConfig` names + reconcile train_freq/gradient_steps with training-engineer (do they belong
+  in RunConfig, or not in the body?), OR (b) land + cite a serving `/api/training/config` contract
+  defining the body + wizard→RunConfig mapping. Given SAC is now deferred (CALL 2), the sac_hyperparams
+  wire shape is forward-compat — fine to defer the *serving contract*, but then §3.8 must mark the
+  shape PROVISIONAL and the body tests must not assert it as final. As written, T-BODY-1/T-CONFIRM-1
+  still lock divergent names. **Recommended:** the rename (cheap, permanent, D37-compatible).
+
+- **C2 — PARTIALLY resolved; mechanism still open.** Default is now correctly `gamma=0.999` ✓.
+  But gamma is **still a user-editable field with range `0 < γ ≤ 1`** (§3.2), and **T-HYPER-6 still
+  pins `gamma=1.0` as VALID** (tests L306-309). The locked rule (`training_pipeline.md §3.1`) is
+  `gamma` **MUST be 0.999** — so the wizard still accepts (and a test still blesses) values the
+  training contract forbids. CALL 1 fixed the default but not the editability. **The fix the lock
+  implies:** move `gamma` into the constants block (`=0.999`, non-editable — exactly like `tau`),
+  remove it from `SacHyperparams`/the form, and replace T-HYPER-5/6 with a "body carries
+  `gamma === 0.999`" assertion. (Alternative: an explicit rl-architect DECISION that the wizard may
+  submit gamma≠0.999 — but CALL 1 did not say that; it set the default and called γ=0.999
+  "§5-justified.") Until one of these, the contract + T-HYPER-6 cannot be approved against the lock.
+
+- **C3 — downgraded to a standing condition.** `nEnvs` range is still 1–256 (T-HYPER-10 pins 512
+  invalid), but the default is now 4 (valid) and SAC is deferred, so this is non-functional in v1.
+  Confirm the intended UI cap with **training-engineer** before SAC ships (RunConfig allows up to
+  4096, no 256 cap); T-HYPER-10 reopens then. Not gating this round.
+
+**Test additions:** still pending (correctly held). **TQ13 NOT addressed** — `T-PERSIST-3` still
+fakes the downgrade (`store.setState('COMPLETE')` + manual `if` mimic) instead of exercising the real
+`persist.rehydrate()` / `onRehydrateStorage` (tests L884-893). The other algorithm-agnostic additions
+(TQ2 batchSize 16/32/4096/8192, TQ3/TQ4/TQ6 exact bounds, TQ7 NaN-parse, TQ8 cross-field-vs-changed-
+batchSize, TQ9 aria-disabled interception, TQ10 double-submit, TQ11 disabled-reason priority, TQ15 lock
+flip) can now be added — they no longer depend on C1/C2 resolution (TQ1/TQ5 still wait on C1/C3).
+TQ14 is moot (T-INIT-5 was repurposed for the coming-soon notice).
+
+**Verdict: REQUEST_CHANGES.** CALL 1/CALL 2 well applied, but C1 (field-name/serving-contract — primary)
+and C2 (gamma editability mechanism) remain; C3 becomes a standing condition; TQ13 + the held TQ
+additions still required. Re-review on the next revision.
