@@ -255,12 +255,11 @@ jobs:
           fi
 
       - name: Python tests (fast lane)
-        # Selector: not slow and not local
-        #   'slow'  = tests too slow for every PR (full install/venv, etc.)
-        #   'local' = tests that OOM the 2 GB ubuntu-latest runner (full-year JAX
-        #             jit/vmap 8760-step trajectories) — D30, D46, step-2 migration.
-        #   Until the step-2 slow→local migration: OOM tests are still tagged 'slow',
-        #   so 'not slow and not local' already excludes them — no migration needed here.
+        # Selector: not slow  (step-1; step-2 will extend to "not slow and not local"
+        #   atomically with the slow→local OOM-test migration and local marker registration
+        #   in pyproject.toml — D46 §8, contracts/meta/ci_lanes.md §10 criterion H).
+        #   OOM tests (full-year JAX jit/vmap 8760-step trajectories, D30) are tagged
+        #   'slow', so 'not slow' already excludes them from the fast lane — correct.
         # -n 2: conservative xdist parallelism for the 2 GB runner (§4 memory rule).
         # Criterion (F) peak-RSS is read from the job-cgroup AFTER pytest (cgroup v2 on
         # ubuntu-latest: /sys/fs/cgroup/memory.peak = whole-job aggregate, NOT just the
@@ -270,7 +269,7 @@ jobs:
         shell: bash
         run: |
           if [ -d tests ] && find tests -name 'test_*.py' | grep -q .; then
-            pytest tests/ -q -m "not slow and not local" -n 2
+            pytest tests/ -q -m "not slow" -n 2
             echo "=== Peak RSS report (criterion F — cgroup v2 whole-job aggregate) ==="
             if [ -f /sys/fs/cgroup/memory.peak ]; then
               peak_bytes=$(cat /sys/fs/cgroup/memory.peak)
