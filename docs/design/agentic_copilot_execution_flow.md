@@ -1,6 +1,6 @@
 # Agentic Co-pilot — Execution-Flow Design
 
-**Status:** DESIGN / contract-first — **v0.2 (review folded: both reviewers + finance-expert, #139)**; LOCKED for the surface-independent core, §2 PENDING #18/#19. **Owner:** rl-architect.
+**Status:** DESIGN / contract-first — **v1.0 LOCKED** (both reviewers folded + USER reviewed & approved §4–§8 governance, 2026-06-14; rl-architect lock). Surface-independent core (§1, §3–§8, §J) locked; **§2/§K PENDING #18/#19**; BUILD deferred. **Owner:** rl-architect. Cite under D44.
 **Realizes:** task #20 (D44 §"tiered permission/'follow' model DESIGNED in the #20 phase").
 **Phase:** v1 **fast-follow** — design now (USER-authorized), build after #18 + #19 land.
 **Reviewers (cross-area → both, advisory; rl-architect locks):** frontend-reviewer (action-API client, permission/confirm UX, NL surface, handoffs, audit thread) · backend-reviewer (eval tool, model-interface adapter, optimizer, honesty guardrails, budget caps).
@@ -89,7 +89,12 @@ Every `evaluate_config` carries a declared **`cost_tier`** derived from *what ch
 
 - **The invest decision is not in this table** — it is not an agent action at all (propose-not-commit, §0).
 - **Tier is evaluated at invocation** from the action's metadata; a `run_eval` that resolves to `instant` is act-then-log, the same call resolving to `expensive` (re-sim) escalates to propose-plan+confirm. So the *same* tool auto-tiers by its realized cost.
-- **"Follow" levels (human-set session policy, layered ON TOP):** the human may set how closely they shadow the agent — `manual` (confirm every action incl. act-then-log), `assisted` (default — auto act-then-log, confirm expensive + destructive, per the table), `autonomous-within-budget` (auto through expensive up to a pre-approved compute budget; destructive still confirmed). The follow-level only ever makes the gate *stricter or looser within these bounds* — it can **never** auto-approve a destructive action or the (non-existent) invest action.
+- **"Follow" levels (human-set session policy, layered ON TOP):** the human may set how closely they shadow the agent — `manual` (confirm every action incl. act-then-log), `assisted` (auto act-then-log, confirm expensive + destructive, per the table), `autonomous-within-budget` (auto through expensive up to a pre-approved compute budget; destructive still confirmed). The follow-level only ever makes the gate *stricter or looser within these bounds* — it can **never** auto-approve a destructive action or the (non-existent) invest action.
+
+**Governance defaults (USER-confirmed, BINDING — user reviewed & approved §4–§8, 2026-06-14):**
+1. **Default follow-level = `assisted`.** A fresh session is `assisted` — cheap+reversible acts auto-log; every expensive (re-sim) and destructive action is confirmed. The documented default.
+2. **`autonomous-within-budget` is OPT-IN, DEFAULT-OFF.** NOT active unless the human explicitly turns it on; and even when on, **destructive actions and the (non-existent) invest decision stay human-confirmed** — autonomy only ever covers cheap + expensive *within the pre-approved budget*, never destructive/invest. (User is cost-conscious; auto-spend is opt-in only.)
+3. **Budget caps (re-sim count / wall-clock / token-$) are USER-SET, with CONSERVATIVE defaults, and are HARD ceilings the agent never exceeds.** Hitting any cap is a hard stop (§8); the agent cannot raise or bypass them. Actual default numbers are set at #20 build time; the design enshrines only that the caps are **user-set, conservative, and hard**.
 
 ---
 
