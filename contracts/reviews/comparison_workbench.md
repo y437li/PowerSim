@@ -212,3 +212,44 @@ All three blockers resolved and code-verified:
 **Verdict: APPROVE** (contract + tests gate). B1/B2/B3 resolved + code-verified; finance-expert precision +
 SC4/SC5 in; one non-blocking attribute-name nit; SC1/SC2/SC3 carry to implementation (SC2 = the #134
 nested-shape convergence I escalated). Strong contract — implementation may proceed once SC1/SC2/SC3 clear.
+
+## Round 4 — `25f54e0` (v1.3.0-draft) — REQUEST_CHANGES (2026-06-14) — D45 reference-swap conformance
+
+The D45 ruling locked `contracts/shared/finance_result_summary.md` v1.1.0 **metric-major** (the recommended
+outcome — both #132 + #134 had converged on it). Round 4 swaps #132's inline `FinanceResultSummary` for a
+reference to the locked shared contract. **Mostly clean — one bounded fixture non-conformance blocks the
+SC4/D45 gate.**
+
+**Verified-good:**
+- **§2.4 reference block ✓** — inline type defs removed; references the locked `finance_result_summary.md`
+  v1.1.0; no local redefinition of `PercentileResult`/`MetricPercentiles`/`SingleTrajectoryResult`/
+  `DownsideRiskResult`/`DebtMetrics`/`FinanceResultSummary`. Field-name deltas absorbed
+  (`payback_yr`→`payback_discounted_yr`, `debt_metrics`, `view_ii_delta`, `schema_version`).
+- **§2.3 ✓** — `FinanceParamSet` stays frontend-owned; #134 §2.3 maps it (no redefinition). Matches the D45 note.
+- **§7.8 ✓** — Payback row → "Payback (discounted)"; new rows Equity IRR (`debt_metrics.equity_irr_pct`,
+  pp, higher-better) + Min DSCR (`debt_metrics.min_dscr`, × ratio, higher-better); `data-direction` lists
+  updated. Correct per the locked scalar `debt_metrics`.
+- **R1 fixture ✓** — all 5 `MetricPercentiles` null, `single_trajectory` only, `downside_risk`/`debt_metrics`
+  null. Conforms to #135 R1 nullability.
+- **R3 fixture ✓** — UNIFORM `p50`-only across all 5 metrics, every p50 `indicative_low_confidence`
+  (rule A + rule C satisfied), `best_of_n_npv_yuan` present, `p_irr_below_hurdle` present, `cvar5_yuan` null.
+
+**Blocker (D45 conformance):**
+- **BD45-1 — the R2 fixture violates the locked #135 rules C and B.** The locked schema's **rule C**
+  (line ~116: "Percentile-presence is UNIFORM across metrics … reject any cross-metric presence mismatch")
+  requires every metric at R2 to carry `p50/p75/p90/p95` (p99 optional). But `FINANCE_RESULT_R2` gives only
+  `irr_pct` the full set; `npv_yuan` has just `{p50, p90}` and `mirr_pct`/`lcoe_yuan_per_mwh`/
+  `payback_discounted_yr` only `{p50}` — a non-uniform shape the producer can never emit (rule-C reject).
+  Also **rule B** (`bootstrap_ci` present at R2 ONLY in `npv_yuan`'s nodes): the R2 `npv_yuan` nodes carry no
+  `bootstrap_ci`, so the fixture isn't a faithful R2 payload and doesn't exercise the NPV-only-CI rule. This
+  was valid under #132's old self-defined shape (per-metric independent percentiles), but the D45 reference
+  imposes #135's stricter invariants — and the "near-no-op" fixture update only renamed fields, it didn't
+  make R2 rule-C-uniform. **Fix:** give all 5 R2 metrics `p50/p75/p90/p95` (uniform), add `bootstrap_ci` to
+  `npv_yuan`'s R2 nodes (and NOT to the other metrics), keep one consistent `confidence` per percentile q
+  across metrics (rule A). R1/R3 already conform; this is R2-only. (validate-telemetry: fixtures must be
+  valid against the LOCKED schema — a non-conformant central fixture pins behavior against impossible data.)
+
+**Verdict: REQUEST_CHANGES** — narrow: only the R2 fixture must be brought into #135 rule-C/rule-B
+conformance (uniform p50/p75/p90/p95 across all 5 metrics + npv-only bootstrap_ci). The reference-swap,
+§2.3, §7.8, and R1/R3 fixtures are all correct. SC1/SC2/SC3 standing conditions unchanged. Re-gate on the
+fixture fix — should be the last round.
