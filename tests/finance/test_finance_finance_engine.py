@@ -1482,12 +1482,13 @@ def test_fin53_drawdown_no_shortfall_clamps_to_zero():
     # goes negative. A peak-to-trough impl would (wrongly) report a positive
     # "drawdown" here; the §13.10b shortfall-below-zero literal must yield 0.
     #
-    # cf = [+100k, +50k, +200k] (year-0 CAPEX excluded)
-    # cumCF = [100k, 150k, 350k]; min(cumCF) = 100k > 0
-    # max_drawdown = min(0, 100,000) = 0.0   (no shortfall ever)
+    # cf = [+100k, +50k, +200k] (ANNUAL series, year-0 CAPEX excluded)
+    # max_drawdown() cumsums internally (FIN-22b convention / §13.10b literal):
+    #   cumCF = [100k, 150k, 350k]; min(cumCF) = 100k > 0
+    #   max_drawdown = min(0, 100,000) = 0.0   (no shortfall ever)
+    # Pass the ANNUAL series (NOT pre-cumsummed) — aligns with FIN-22b's call.
     cf = [100_000.0, 50_000.0, 200_000.0]
-    cum_cf = np.cumsum(cf)  # [100k, 150k, 350k]
-    result = max_drawdown(cum_cf)
+    result = max_drawdown(cf)
     assert result["drawdown_yuan"] == pytest.approx(0.0, abs=TOL_NPV_YUAN), (
         "no-shortfall trajectory must clamp max_drawdown to 0 (shortfall-below-zero, "
         "NOT peak-to-trough)"
