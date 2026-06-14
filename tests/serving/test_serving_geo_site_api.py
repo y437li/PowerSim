@@ -1162,20 +1162,31 @@ class TestActiveDeviceFilter:
     """D38 regression: INERT/gated catalog entries must be ABSENT from the
     device-feed endpoints even when present in device_models.yaml.
 
-    This is a no-op on current main (no electrolyzer in config/device_models.yaml yet)
-    but guards the exclusion contract and MUST remain green when PR #104 lands.
+    Two inert-exclusion cases covered by the monkeypatched injection tests:
+      1. electrolyzer_pem (h-tec-pem-1mw) — a wholly NEW INERT device type added by
+         PR #104 (D35); excluded because "electrolyzer_pem" ∉ ACTIVE_DEVICE_TYPES.
+      2. pcc-sst-stub equivalent injected with type "grid_connection_stub" — demonstrates
+         that ANY non-active type is excluded regardless of whether it looks like an active
+         device category.  In the REAL config/device_models.yaml, pcc-sst-stub currently
+         has type: grid_connection (an active type); whether its type should be changed to
+         a non-active stub type to hide it from the feed is a DESIGN QUESTION for
+         backend-reviewer to settle.  This test pins the MECHANISM; the live-feed test
+         below (test_live_feed_has_no_non_active_types) catches the gap if pcc-sst-stub's
+         type ever moves to a non-active value in production.
 
     Technique: monkeypatch the module-level _device_models_cache to inject a synthetic
-    device_models dict containing one ACTIVE model and one INERT electrolyzer model.
-    _get_device_models() returns the cache directly when not None, so the patch is seen
-    by all three device endpoints during the test.  monkeypatch restores the original
-    cache value after the test (function-scoped restore, module-scoped client unaffected).
+    device_models dict.  _get_device_models() returns the cache directly when not None,
+    so the patch is seen by all three device endpoints during the test.  monkeypatch
+    restores the original cache value after the test (function-scoped restore,
+    module-scoped client unaffected).
     """
 
+    # Synthetic device_models dict injected by monkeypatch tests.
+    # Contains ONE active entry + TWO inert entries (one electrolyzer, one sst-stub).
     _FAKE_MODELS = {
         "schema_version": "2.2.0",   # D35 schema version (electrolyzer schema)
         "models": {
-            "vestas-v150-4.2": {     # ACTIVE — wind_turbine
+            "vestas-v150-4.2": {     # ACTIVE — wind_turbine ∈ ACTIVE_DEVICE_TYPES
                 "type": "wind_turbine",
                 "physics": {
                     "v_cutin_mps": 3.0, "v_rated_mps": 12.0, "v_cutout_mps": 25.0,
@@ -1183,7 +1194,7 @@ class TestActiveDeviceFilter:
                 },
                 "economics": {"capex_per_kw_yuan": 5800.0},
             },
-            "h-tec-pem-1mw": {       # INERT — electrolyzer_pem (D35/D38 excluded)
+            "h-tec-pem-1mw": {       # INERT — electrolyzer_pem ∉ ACTIVE_DEVICE_TYPES (D35/D38)
                 "type": "electrolyzer_pem",
                 "physics": {
                     "stack_efficiency_kwh_per_kg": 55.0,
@@ -1191,15 +1202,29 @@ class TestActiveDeviceFilter:
                 },
                 "economics": {"capex_per_kw_yuan": 1200.0},
             },
+            "pcc-sst-stub": {        # INERT stub — grid_connection_stub ∉ ACTIVE_DEVICE_TYPES
+                # NOTE: injected here with a non-active stub type to verify the
+                # MECHANISM excludes any non-active type.  The real on-disk
+                # pcc-sst-stub has type: grid_connection (an active type and a LOCKED
+                # benchmark_device_library contract entry) — backend-reviewer to decide
+                # whether its type should change to exclude it from the live feed.
+                "type": "grid_connection_stub",
+                "provenance": "USER-provided, pending",
+                "physics": {"max_export_mw": 200.0, "max_import_mw": 200.0},
+                "economics": {},
+            },
         },
     }
 
-    def test_inert_model_absent_from_models_list(self, client, monkeypatch):
+    def test_inert_electrolyzer_absent_from_models_list(self, client, monkeypatch):
         """INERT electrolyzer must NOT appear in GET /api/devices/models.
 
-        Injects a fake device_models dict with one active (vestas wind turbine) and
-        one INERT (h-tec-pem-1mw electrolyzer_pem) entry.  The list endpoint must
-        return the active model and exclude the INERT one.  (D38 regression guard.)
+        Injects a fake device_models dict with one ACTIVE (vestas wind_turbine), one
+        INERT electrolyzer (h-tec-pem-1mw, type electrolyzer_pem), and one INERT stub
+        (pcc-sst-stub, type grid_connection_stub).  The list endpoint must return the
+        active model and exclude BOTH inert entries.  (D38 allowlist regression guard.)
+        Arithmetic: electrolyzer_pem ∉ {wind_turbine, pv_panel, battery, grid_connection}
+                    → excluded; grid_connection_stub ∉ set → excluded.
         """
         import energy_go.serving.geo_site_api as geo_api
         monkeypatch.setattr(geo_api, "_device_models_cache", self._FAKE_MODELS)
@@ -1216,17 +1241,21 @@ class TestActiveDeviceFilter:
         assert "h-tec-pem-1mw" not in models, (
             "INERT electrolyzer_pem model must be excluded from device feed (D38)"
         )
+        # INERT pcc-sst-stub (with stub type) must be absent (D38)
+        assert "pcc-sst-stub" not in models, (
+            "INERT grid_connection_stub model must be excluded from device feed (D38)"
+        )
 
-    def test_inert_model_absent_from_search(self, client, monkeypatch):
-        """INERT electrolyzer must NOT appear in GET /api/devices/search.
+    def test_inert_electrolyzer_and_stub_absent_from_search(self, client, monkeypatch):
+        """INERT electrolyzer AND stub must NOT appear in GET /api/devices/search.
 
-        Same injection technique as test_inert_model_absent_from_models_list.
-        Search for the INERT model's prefix ('h-tec') must return no results. (D38.)
+        Same injection technique as test_inert_electrolyzer_absent_from_models_list.
+        Searches for both INERT models by prefix must return empty results. (D38.)
         """
         import energy_go.serving.geo_site_api as geo_api
         monkeypatch.setattr(geo_api, "_device_models_cache", self._FAKE_MODELS)
 
-        # Search for the INERT model by its prefix
+        # Search for the INERT electrolyzer by prefix
         resp = client.get("/api/devices/search?q=h-tec")
         assert resp.status_code == 200
         ids = [r["model_id"] for r in resp.json()["results"]]
@@ -1234,7 +1263,14 @@ class TestActiveDeviceFilter:
             "INERT electrolyzer_pem must be excluded from device search (D38)"
         )
 
-        # Active model searchable (vestas prefix)
+        # Search for the INERT pcc-sst-stub by prefix
+        resp_sst = client.get("/api/devices/search?q=pcc-sst")
+        ids_sst = [r["model_id"] for r in resp_sst.json()["results"]]
+        assert "pcc-sst-stub" not in ids_sst, (
+            "INERT grid_connection_stub (pcc-sst-stub) must be excluded from search (D38)"
+        )
+
+        # Active model remains searchable
         resp2 = client.get("/api/devices/search?q=vestas")
         ids2 = [r["model_id"] for r in resp2.json()["results"]]
         assert "vestas-v150-4.2" in ids2, (
@@ -1244,20 +1280,44 @@ class TestActiveDeviceFilter:
     def test_inert_model_detail_returns_400(self, client, monkeypatch):
         """Requesting an INERT model by ID must return 400 DEVICE_MODEL_NOT_FOUND.
 
-        The detail endpoint treats INERT models as absent from the feed — the same
+        The detail endpoint treats INERT models as absent from the feed — same
         code path as requesting a model_id that doesn't exist at all. (D38.)
+        Both the electrolyzer and the pcc-sst-stub (with stub type) must return 400.
         """
         import energy_go.serving.geo_site_api as geo_api
         monkeypatch.setattr(geo_api, "_device_models_cache", self._FAKE_MODELS)
 
-        resp = client.get("/api/devices/models/h-tec-pem-1mw")
-        assert resp.status_code == 400, (
-            f"INERT electrolyzer model must return 400 from detail endpoint, "
-            f"got {resp.status_code}"
-        )
-        assert resp.json()["code"] == "DEVICE_MODEL_NOT_FOUND", (
-            "DEVICE_MODEL_NOT_FOUND code expected for INERT model detail (D38)"
-        )
+        for inert_id in ("h-tec-pem-1mw", "pcc-sst-stub"):
+            resp = client.get(f"/api/devices/models/{inert_id}")
+            assert resp.status_code == 400, (
+                f"INERT model '{inert_id}' must return 400 from detail endpoint, "
+                f"got {resp.status_code}"
+            )
+            assert resp.json()["code"] == "DEVICE_MODEL_NOT_FOUND", (
+                f"DEVICE_MODEL_NOT_FOUND code expected for INERT model '{inert_id}' (D38)"
+            )
+
+    def test_live_feed_has_no_non_active_types(self, client):
+        """Every model returned by the live device feed has a type in ACTIVE_DEVICE_TYPES.
+
+        Runs against the REAL config/device_models.yaml (no monkeypatch).
+        This is the live-feed gate: if any entry's type is not in ACTIVE_DEVICE_TYPES,
+        the filter is broken and this test catches it.
+
+        Note on pcc-sst-stub: the real on-disk pcc-sst-stub has type: grid_connection
+        (LOCKED in benchmark_device_library contract).  Under the current D38 type-based
+        allowlist, it will APPEAR in the live feed.  Backend-reviewer to decide whether
+        its type should be changed to a non-active stub type to exclude it.
+        """
+        from energy_go.env.resolver import ACTIVE_DEVICE_TYPES
+        resp = client.get("/api/devices/models")
+        assert resp.status_code == 200
+        for model_id, entry in resp.json()["models"].items():
+            assert entry["type"] in ACTIVE_DEVICE_TYPES, (
+                f"Model '{model_id}' has non-active type '{entry['type']}' in live feed — "
+                f"D38 filter broken or this entry's type is not in ACTIVE_DEVICE_TYPES. "
+                f"ACTIVE_DEVICE_TYPES = {ACTIVE_DEVICE_TYPES}"
+            )
 
     def test_active_device_types_imported_from_resolver(self, client):
         """ACTIVE_DEVICE_TYPES must be imported from energy_go.env.resolver (D18/D38).
@@ -1266,7 +1326,6 @@ class TestActiveDeviceFilter:
         local serving literal but the canonical resolver export.  Fails if the
         serving module defines its own copy instead of importing.
         """
-        # Import from both locations — they MUST be the exact same object
         from energy_go.env.resolver import ACTIVE_DEVICE_TYPES as resolver_set
         import energy_go.serving.geo_site_api as geo_api
 
