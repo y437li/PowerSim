@@ -26,7 +26,12 @@ assets:
 
   grid:
     model: pcc-substation-945mw
-    # max_export_mw and max_import_mw not overridden — use model defaults (945 / 400 MW)
+    # max_export_mw overridden: 567 MW binding-constraint scenario (USER-directed, 0.6×nameplate).
+    # Represents a contracted/licensed export ceiling below the physical PCC capacity of 945 MW.
+    # Provenance: public estimate, 0.6×nameplate binding-constraint scenario (USER-directed);
+    #             pending real connection-agreement data.
+    # D5-locked device default (945 MW) is a site-overridable physics field (allowed).
+    max_export_mw: 567.0       # MW — binding dispatch cap (< 945 MW physical)
 
 tariff:
   # Gansu TOU tariff — flat 24-entry vector, index = hour 0–23 (D8).

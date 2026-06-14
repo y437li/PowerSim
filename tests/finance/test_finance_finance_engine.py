@@ -1412,6 +1412,39 @@ def test_fin57_debt_toggle_end_to_end():
     )
 
 
+def test_fin57b_debt_plus_tax_cfads_after_tax():
+    # reviewer: PR #127 fixes the debt-metrics block to use CFADS = EBITDA − Tax (§13.8)
+    # instead of pre-tax EBITDA. FIN-57 is debt+NO-tax (cfads==ebitda, backward-compat) and
+    # FIN-56 is tax+NO-debt — so the debt+tax path the fix actually corrects was UNTESTED
+    # (which is why the bug existed). This pins the after-tax debt metrics.
+    #
+    # Vector-3 debt structure + 25% tax (depreciation_years=2):
+    #   CAPEX=1,000,000; D/E=1.5 → debt=600k, equity=400k; r_d=0.05, term=2 → annuity=322,682.93
+    #   EBITDA=600,000/yr; dep = 1,000,000/2 = 500,000
+    #   taxable = 600,000 − 500,000 = 100,000;  tax = 0.25·100,000 = 25,000
+    #   CFADS  = 600,000 − 25,000 = 575,000  (after-tax; §13.8)
+    #   min-DSCR  = 575,000 / 322,682.93 = 1.7819   (pre-tax FIN-57 was 1.8594)
+    #   CF_eq = [−400,000, 575,000−322,682.93=252,317.07, 252,317.07]
+    #   252,317.07(u+u²)=400,000 → u²+u−1.585319=0 → u=0.854740 → equity-IRR=1/u−1=16.9953%
+    #   (pre-tax FIN-57 was 24.8565% — tax correctly lowers both metrics)
+    yr = _make_eval_result(grid_export_yuan=600_000.0)
+    ensemble = PolicyEnsemble(seed=0, M=1, sample_kind="bootstrap", runs={"policy_a": [[yr, yr]]})
+    from energy_go.finance.econ_params import DeviceEconParams
+    econ = DeviceEconParams(total_capex_yuan=1_000_000.0)
+    price_path = [PricePath(id="flat", label="Flat", multipliers=[1.0, 1.0])]
+    config = _make_base_config(
+        debt_toggle=True, target_de_ratio=1.5, loan_term_years=2, r_d_override=0.05,
+        tax_toggle=True, depreciation_years=2, horizon_years=2,
+    )
+    view = finance(ensemble, price_path, econ, config).per_policy["policy_a"].per_price_path["flat"].view_i
+    assert view.min_dscr == pytest.approx(1.7819, abs=TOL_DSCR), (
+        "debt+tax min-DSCR must use after-tax CFADS=575k → 1.7819 (§13.8), not pre-tax 1.8594"
+    )
+    assert view.equity_irr == pytest.approx(0.169953, abs=TOL_RATE_PP), (
+        "debt+tax equity-IRR must use after-tax CFADS → 16.9953% (§13.8), not pre-tax 24.8565%"
+    )
+
+
 # ---------------------------------------------------------------------------
 # FIN-47–FIN-52 — R3 regime: empirical small-sample (M≈10)
 # Source: §A.1 of docs/design/finance_engine_acceptance_basis.md (PR #113).
