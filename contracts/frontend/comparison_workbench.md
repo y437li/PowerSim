@@ -959,14 +959,28 @@ Per-metric rules for delta cell coloring. A positive arithmetic delta is NOT alw
 | Max drawdown | ¥M | higher = better (less negative) | Δ in ¥M | ✓ green |
 | Best-of-N NPV | ¥M | higher = better | Δ in ¥M | ✓ green |
 
-Each **delta cell** in `ComparisonTable` MUST carry a computed `data-delta-direction` attribute (mirrors §15 `data-confidence`):
+Two attributes govern coloring in `ComparisonTable` — both are required:
+
+**`data-direction` (static, on metric row headers)** — intrinsic direction of the metric:
+- `"higher-better"` — IRR, MIRR, NPV, CVaR-5%, Worst NPV, Best-of-N NPV, Max drawdown, Worst-year CF
+- `"lower-better"` — LCOE, Payback, P(NPV<0), P(IRR<hurdle)
+
+**`data-delta-direction` (computed, on individual delta cells)** — semantic verdict for THIS cell (mirrors §15 `data-confidence`):
 - `"good"` → render green (improvement vs baseline)
 - `"bad"` → render red (regression vs baseline)
 - `"neutral"` → no color (zero or suppressed delta)
 
-Derivation: `data-delta-direction = good iff (direction=higher-better AND delta>0) OR (direction=lower-better AND delta<0)`.
-Each **metric row header** MAY additionally carry `data-direction="higher-better"|"lower-better"` for CSS targeting.
+Derivation rule:
+```
+data-delta-direction =
+  if delta == 0 or suppressed: "neutral"
+  elif data-direction == "higher-better" and delta > 0: "good"
+  elif data-direction == "lower-better"  and delta < 0: "good"
+  else: "bad"
+```
+
 Coloring MUST derive from `data-delta-direction`, never from arithmetic sign alone.
+Tests pin `data-delta-direction` (T-DELTA-5, T-DELTA-7, T-DELTA-8).
 
 **Unit guards (hard errors in tests):**
 - IRR/MIRR deltas: **pp** (percentage points), NOT raw percent. 8.7% − 8.2% = +0.5 pp, label "+0.5 pp"
