@@ -1,6 +1,6 @@
 /**
  * Test suite: comparison_workbench.test.tsx
- * Contract: contracts/frontend/comparison_workbench.md v1.2.0-draft
+ * Contract: contracts/frontend/comparison_workbench.md v1.3.0-draft
  *
  * Tests must be RED until implementation. Do NOT modify approved tests to make them pass.
  * Reviewer-added cases marked: // reviewer:
@@ -24,6 +24,17 @@
  *   - Fixtures updated: FINANCE_RESULT_R2 and R3 have non-null single_trajectory
  *       (finance-expert: backend provides it at ALL M, not R1-only)
  *   - best_of_n_npv_yuan: R3 only; cvar5_yuan: R2 only (gated by regime in fixtures)
+ *
+ * Round 4 amendments (2026-06-14 — D45 shared contract single-source):
+ *   - All fixtures updated to FinanceResultSummary v1.1.0 (D45 LOCK):
+ *       payback_yr → payback_discounted_yr
+ *       schema_version: "1.1.0" added to all fixtures
+ *       provenance expanded: +hurdle_rate_pct, valuation_date, horizon_years, seed, code_version
+ *       debt_metrics added (scalar; null at R1)
+ *       view_ii_delta: null added (null on View-I results)
+ *       best_of_n_npv_yuan: undefined explicitly in R2 downside_risk (R3-only field)
+ *   - §2.4 replaced with reference block (types defined in contracts/shared/finance_result_summary.md v1.1.0)
+ *   - §7.8 table: payback row renamed; debt_metrics rows added; data-direction lists updated
  */
 
 import React from "react";
@@ -90,11 +101,17 @@ const SHARED_SCENARIO_R2: SharedScenario = {
  *   backend provides it at ALL M, not R1-only; primary display at R1 only)
  */
 const FINANCE_RESULT_R2: FinanceResultSummary = {
+  schema_version: "1.1.0",               // D45: added
   regime: "R2",
   provenance: {
-    sample_kind: "bootstrap",    // CORRECTED
+    sample_kind: "bootstrap",    // CORRECTED from v1.0.0 "synthetic"
     m_draws: 50,
     distribution_valid: true,
+    hurdle_rate_pct: 7.0,               // D45: added (+5 provenance fields)
+    valuation_date: "2026-06-14",
+    horizon_years: 20,
+    seed: 42,
+    code_version: "1.1.0",
   },
   // Non-null at R2 (finance-expert: backend provides single_trajectory at ALL M).
   // At R2 it supplements the percentile view but is NOT the primary cell.
@@ -121,18 +138,24 @@ const FINANCE_RESULT_R2: FinanceResultSummary = {
   lcoe_yuan_per_mwh: {
     p50: { value: 312, confidence: "sound" },
   },
-  payback_yr: {
+  payback_discounted_yr: {               // D45: renamed from "payback_yr"
     p50: { value: 8.3, confidence: "sound" },
   },
   downside_risk: {
     worst_case_npv_yuan: -38_000_000,   // CORRECTED: was "worst_npv_yuan"
+    best_of_n_npv_yuan: undefined,      // D45: R3-ONLY; explicitly absent at R2
     p_npv_neg: 0.18,                    // fraction 0-1; display as 18%
     p_irr_below_hurdle: 0.24,           // fraction 0-1; display as 24%
-    cvar5_yuan: -76_000_000,
+    cvar5_yuan: -76_000_000,            // R2-only (null at R3)
     max_drawdown_yuan: 842_000_000,
     max_drawdown_year: 3,
     worst_year_cf_yuan: -12_000_000,
   },
+  debt_metrics: {                        // D45: added; scalar (not distributional)
+    equity_irr_pct: 9.8,               // % — higher=better
+    min_dscr: 1.45,                    // ratio — higher=better
+  },
+  view_ii_delta: null,                   // D45: null on View-I results
 };
 
 /**
@@ -143,11 +166,17 @@ const FINANCE_RESULT_R2: FinanceResultSummary = {
  * downside_risk = null.
  */
 const FINANCE_RESULT_R1: FinanceResultSummary = {
+  schema_version: "1.1.0",               // D45: added
   regime: "R1",
   provenance: {
     sample_kind: "bootstrap",    // doesn't matter at R1 (distribution_valid=false)
     m_draws: 1,
     distribution_valid: false,   // KEY: this triggers R1 regime
+    hurdle_rate_pct: 7.0,               // D45: added (+5 provenance fields)
+    valuation_date: "2026-06-14",
+    horizon_years: 20,
+    seed: 42,
+    code_version: "1.1.0",
   },
   single_trajectory: {
     point_npv_yuan: 142_000_000,  // labeled "NPV (single scenario)" — NOT "P50"
@@ -159,8 +188,10 @@ const FINANCE_RESULT_R1: FinanceResultSummary = {
   npv_yuan: null,            // ABSENT at M=1 — use single_trajectory.point_npv_yuan
   mirr_pct: null,
   lcoe_yuan_per_mwh: null,
-  payback_yr: null,
+  payback_discounted_yr: null,           // D45: renamed from "payback_yr"
   downside_risk: null,       // ABSENT at M=1
+  debt_metrics: null,                    // D45: null — no debt toggle in R1 single-run
+  view_ii_delta: null,                   // D45: null on View-I results
 };
 
 /**
@@ -173,11 +204,17 @@ const FINANCE_RESULT_R1: FinanceResultSummary = {
  * - Round 3: single_trajectory non-null (finance-expert: backend provides at all M)
  */
 const FINANCE_RESULT_R3: FinanceResultSummary = {
+  schema_version: "1.1.0",               // D45: added
   regime: "R3",
   provenance: {
     sample_kind: "empirical",
     m_draws: 10,
     distribution_valid: true,
+    hurdle_rate_pct: 7.0,               // D45: added (+5 provenance fields)
+    valuation_date: "2026-06-14",
+    horizon_years: 20,
+    seed: 42,
+    code_version: "1.1.0",
   },
   // Non-null at R3 (finance-expert precision note B)
   single_trajectory: {
@@ -199,19 +236,24 @@ const FINANCE_RESULT_R3: FinanceResultSummary = {
   lcoe_yuan_per_mwh: {
     p50: { value: 318, confidence: "indicative_low_confidence" },
   },
-  payback_yr: {
+  payback_discounted_yr: {               // D45: renamed from "payback_yr"
     p50: { value: 8.7, confidence: "indicative_low_confidence" },
   },
   downside_risk: {
-    worst_case_npv_yuan: -45_000_000,   // CORRECTED: was "worst_npv_yuan"
-    best_of_n_npv_yuan: 195_000_000,    // CORRECTED: was "best_npv_yuan"; R3 only
-    p_npv_neg: 0.20,                    // 2/10 runs; display as 20%
-    p_irr_below_hurdle: 0.30,           // CORRECTED: WAS null in v1.0.0; IS present at R3 (3/10 runs)
-    cvar5_yuan: null,                   // null at R3 (M≈10 too small for CVaR)
+    worst_case_npv_yuan: -45_000_000,   // min of 10 empirical runs
+    best_of_n_npv_yuan: 195_000_000,    // D45: R3-ONLY (gate by regime, not truthiness)
+    p_npv_neg: 0.20,                    // 2/10 runs; display as "2 of 10 observed years" (DV-8)
+    p_irr_below_hurdle: 0.30,           // 3/10 runs; present at R3 (finance-expert correction)
+    cvar5_yuan: null,                   // null at R3 (M≈10 too small for stable CVaR tail)
     max_drawdown_yuan: 890_000_000,
     max_drawdown_year: 4,
     worst_year_cf_yuan: -15_000_000,
   },
+  debt_metrics: {                        // D45: added; scalar (engine emits float means)
+    equity_irr_pct: 9.3,               // % — higher=better
+    min_dscr: 1.38,                    // ratio — higher=better
+  },
+  view_ii_delta: null,                   // D45: null on View-I results
 };
 
 /** Default stub for FinanceParamSet (minimal; real implementation fills in all fields) */

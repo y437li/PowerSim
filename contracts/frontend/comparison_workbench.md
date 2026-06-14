@@ -1,12 +1,12 @@
 # Frontend Contract — Comparison Workbench
 
 > **Area:** frontend
-> **Contract version:** v1.2.0-draft (Round 3 — B1 whole-table-min + resolveComparisonRegime + B2 regime-direct-read + B3 direction-of-good + SC5 endpoint confirmed + finance-expert precision notes)
-> **Status:** DRAFT — awaiting frontend-reviewer gate
+> **Contract version:** v1.3.0-draft (Round 4 — D45 reference amendment: FinanceResultSummary → shared contract; FinanceParamSet note; field-name deltas absorbed)
+> **Status:** DRAFT — awaiting frontend-reviewer + finance-expert (SC4) gate
 > **Branch:** `feat/frontend-comparison-workbench`
 > **Owner:** frontend-engineer
-> **Realizes:** docs/design/ux/comparison_workbench.md v0.7; LINEAGE D42; D43; D41; D39
-> **Finance-expert corrections applied:**
+> **Realizes:** docs/design/ux/comparison_workbench.md v0.7; LINEAGE D42; D43; D41; D39; **D45**
+> **Finance-expert corrections applied (Round 2):**
 >   - `sample_kind="bootstrap"` for R2 (not "synthetic")
 >   - per-percentile `PercentileResult.confidence` field (cross-cutting)
 >   - R1 = `single_trajectory` only; IRR/MIRR/LCOE/payback ABSENT at M=1
@@ -15,14 +15,16 @@
 >   - R3 P50 always `indicative_low_confidence`
 >   - `deriveRegime` reads `FinanceResult.provenance.sample_kind` (nested path)
 > **D43 applied:** config carries a comment THREAD (`ConfigComment[]`); `parent_param_delta` for fork provenance
-> **Pending:** SC3 (dashboard-engineer chart interfaces); SC5 (serving recompute-finance endpoint)
-> **Reviewer:** frontend-reviewer
+> **D45 applied (Round 4):** `FinanceResultSummary` + related types (`PercentileResult`, `MetricPercentiles`, `SingleTrajectoryResult`, `DownsideRiskResult`, `DebtMetrics`) now REFERENCE `contracts/shared/finance_result_summary.md` v1.1.0 — NOT redefined here. Field-name deltas absorbed: `payback_yr` → `payback_discounted_yr`; `debt_metrics`/`view_ii_delta`/`schema_version` added.
+> **Pending:** SC3 (dashboard-engineer chart interfaces) — non-blocking standing condition
+> **Gate:** frontend-reviewer + finance-expert (SC4 — confirms this contract matches the locked D45 shape)
 > **REBUILD_SPEC refs:** §3 (env), §5 (training), §13 (finance)
 > **Depends on:**
+> - **`contracts/shared/finance_result_summary.md` v1.1.0 (D45 LOCK)** — canonical `FinanceResultSummary` wire shape
 > - `contracts/shared/telemetry_schema.md` v1.0.0 (D39 regime fields)
 > - `contracts/frontend/design_system.md` (TOKEN system — no hex literals)
 > - `contracts/frontend/stage_config.md` (Stage ① → config-library save flow)
-> - Serving contracts (design-level; serving-engineer owns `contracts/serving/compare_*.md`)
+> - `contracts/serving/compare_endpoints.md` (#134) — endpoint surface + `FinanceParamSet` → `FinanceConfig` mapping (§2.3)
 
 ---
 
@@ -101,6 +103,8 @@ export type ConfigSortKey = "created_at" | "label" | "battery_energy_mwh";
 Finance parameters are the **instant tier** — changing them triggers `POST /api/compare/finance`
 on cached dispatch data with NO env re-run. Physical params (battery sizing, fleet counts) are NOT here.
 
+> **Single-source note (D45 / rl-architect):** `FinanceParamSet` remains **frontend-owned** here (it is a UI representation of live-scrubbable parameters, not a pure wire type). The serving layer (#134 §2.3) single-sources the mapping from `FinanceParamSet` → `FinanceConfig` (the finance engine's request dataclass). #132 DEFINES `FinanceParamSet`; #134 §2.3 MAPS it. No redefinition in #134.
+
 ```typescript
 /**
  * Scope determines whether a param applies uniformly across all configs
@@ -149,119 +153,81 @@ export interface FinanceParamSet {
 export type FinanceParamTier = "instant" | "re_sim";
 ```
 
-### 2.4 Finance result types (corrected per finance-expert)
+### 2.4 Finance result types — D45 shared contract reference
+
+> **SINGLE-SOURCE (D45 LOCK):** `FinanceResultSummary` and its constituent types are defined in
+> **`contracts/shared/finance_result_summary.md` v1.1.0**. They are NOT redefined here.
+> Redefining any of these in component code or another contract is a review-fail.
+>
+> **Import path (implementation):** from TypeScript types generated from the D45 shared contract.
+> Do NOT import from local type definitions.
+
+Types referenced from `contracts/shared/finance_result_summary.md` v1.1.0:
+
+| Type | Summary |
+|------|---------|
+| `PercentileResult` | `{ value, confidence, bootstrap_ci? }`. `confidence` is PERCENTILE-level = equal across all metrics at same q (rule A). `bootstrap_ci` is NPV-ONLY (rule B). |
+| `MetricPercentiles` | `{ p50?, p75?, p90?, p95?, p99? }`. Presence is UNIFORM across metrics at same regime (rule C). |
+| `SingleTrajectoryResult` | `{ point_npv_yuan, max_drawdown_yuan, max_drawdown_year, worst_year_cf_yuan }`. Present at ALL M; HEADLINE at R1. |
+| `DownsideRiskResult` | `{ worst_case_npv_yuan, best_of_n_npv_yuan?, p_npv_neg, p_irr_below_hurdle, cvar5_yuan, max_drawdown_yuan, max_drawdown_year, worst_year_cf_yuan }` |
+| `DebtMetrics` | `{ equity_irr_pct: number \| null, min_dscr: number \| null }` — null when `debt_toggle=false` |
+| `FinanceResultSummary` | Canonical shape below. Read `.regime` directly (B2 resolution). |
+
+Canonical `FinanceResultSummary` shape (from D45 §2 — summarized for this contract's readers):
 
 ```typescript
-/**
- * Per-percentile result — EVERY percentile carries a confidence tag.
- * Cross-cutting rule: the UI must read EACH percentile's confidence, not just the regime.
- *
- * "sound"                   → display normally; can be a bold headline
- * "indicative_low_confidence" → MUST be rendered muted + caveat "(indicative)";
- *                              MUST NOT appear as a bold headline;
- *                              MUST NOT be the primary focus of the cell
- */
-export interface PercentileResult {
-  value: number;
-  confidence: "sound" | "indicative_low_confidence";
-  /** Present only at R2 (bootstrap, M≥50) */
-  bootstrap_ci?: { lo: number; hi: number };
-}
+// ALL types below come from contracts/shared/finance_result_summary.md v1.1.0
+// Do NOT redefine locally. Import from the shared types module.
 
-/** Percentiles for a single metric */
-export interface MetricPercentiles {
-  p50?: PercentileResult;
-  p75?: PercentileResult;   // R2 only
-  p90?: PercentileResult;   // R2 only
-  p95?: PercentileResult;   // R2 only
-  p99?: PercentileResult;   // R2 only; ALWAYS indicative_low_confidence at any M
-}
-
-/**
- * Single-trajectory result — ONLY present at R1 (M=1, distribution_valid=false).
- * Contains exactly 4 fields. IRR/MIRR/LCOE/payback are ABSENT at R1.
- * Display label for point_npv_yuan: "NPV (single scenario)" — NOT "P50".
- */
-export interface SingleTrajectoryResult {
-  point_npv_yuan: number;       // labeled "NPV (single scenario)"
-  max_drawdown_yuan: number;    // unit: ¥
-  max_drawdown_year: number;    // 1-indexed year of peak drawdown
-  worst_year_cf_yuan: number;   // unit: ¥
-}
-
-/**
- * Downside risk block — present at R2 and R3 (null at R1).
- * R3 is a partial subset: worst_case / best_of_n / p_npv_neg / p_irr_below_hurdle present;
- * cvar5_yuan = null (collapses to worst-of-N at M≈10).
- */
-export interface DownsideRiskResult {
-  worst_case_npv_yuan: number;      // min NPV across M runs; unit: ¥
+interface FinanceResultSummary {
+  schema_version: string;           // "1.1.0"
   /**
-   * max NPV across M runs. PRESENT AT R3 ONLY (absent/None at R1 and R2).
-   * Gate render by regime == "R3", not by truthiness.
-   */
-  best_of_n_npv_yuan?: number;      // unit: ¥
-  p_npv_neg: number;                // #{NPV<0}/M; fraction 0–1 (display as %)
-  /** Present at R2 AND R3 (frequency count is honest at M≈10) */
-  p_irr_below_hurdle: number;       // #{IRR<hurdle}/M; fraction 0–1
-  /**
-   * PRESENT AT R2 ONLY; null at R1 AND R3 (M≈10 too small for stable CVaR tail).
-   * Gate render by regime == "R2", not by truthiness.
-   */
-  cvar5_yuan: number | null;
-  max_drawdown_yuan: number;
-  max_drawdown_year: number;
-  worst_year_cf_yuan: number;
-}
-
-/** Finance result as the workbench reads it from the backend */
-export interface FinanceResultSummary {
-  /**
-   * B2 RESOLUTION: Read DIRECTLY from the backend response.
-   * NEVER recompute this field client-side from provenance fields.
-   * Use deriveRegime() ONLY when you have a raw PolicyEnsemble (where 'regime' is absent).
+   * B2 RESOLUTION: Read DIRECTLY from the backend — NEVER recompute client-side.
+   * Use deriveRegime() ONLY for raw PolicyEnsemble (where 'regime' is absent).
    */
   regime: FinanceRegime;
   provenance: {
-    /**
-     * Data-source provenance. D42/D43 naming discipline:
-     * "bootstrap" = M≥50 block-bootstrap synthetic draws (R2)
-     * "empirical" = M≈10 real ERA5 years (R3)
-     * R1 has distribution_valid=false regardless of sample_kind.
-     */
-    sample_kind: "bootstrap" | "empirical";
+    sample_kind: "bootstrap" | "empirical";  // #133 LOCK: "synthetic" is display only
     m_draws: number;
     distribution_valid: boolean;
+    hurdle_rate_pct: number;      // % — the hurdle used for p_irr_below_hurdle
+    valuation_date: string;       // ISO date
+    horizon_years: number;
+    seed: number;
+    code_version: string;
   };
-  /**
-   * Single-trajectory fields — HEADLINE output at R1 (distribution_valid=false).
-   * The backend provides this at ALL M (not R1-only; finance-expert precision note B).
-   * At R1 it is the SOLE output (percentiles null). At R2/R3 it supplements the percentile view
-   * (peak drawdown context etc.) but is NOT the primary cell.
-   * Contains 4 fields: point_npv_yuan, max_drawdown_yuan, max_drawdown_year, worst_year_cf_yuan.
-   * Display label for point_npv_yuan: "NPV (single scenario)" — NOT "P50".
-   */
+  /** Present at ALL M; HEADLINE at R1 (sole output); supplementary at R2/R3 */
   single_trajectory: SingleTrajectoryResult | null;
-  /**
-   * Percentile distributions per metric.
-   * null at R1 (IRR/MIRR/LCOE/payback NOT AVAILABLE at M=1).
-   * Present at R2 (p50/p75/p90/p95 all "sound"; p99 always "indicative_low_confidence").
-   * Present at R3 (p50 only; p50.confidence always "indicative_low_confidence").
-   */
-  irr_pct: MetricPercentiles | null;
-  npv_yuan: MetricPercentiles | null;
-  mirr_pct: MetricPercentiles | null;
-  lcoe_yuan_per_mwh: MetricPercentiles | null;
-  payback_yr: MetricPercentiles | null;
-  /**
-   * Downside risk block. null at R1.
-   * At R3: p_irr_below_hurdle IS present; cvar5_yuan = null.
-   */
+  // ── 5 distributional metrics (null at R1; metric-major — D45 orientation ruling) ──
+  irr_pct:               MetricPercentiles | null;
+  npv_yuan:              MetricPercentiles | null;   // ONLY metric with bootstrap_ci (rule B)
+  mirr_pct:              MetricPercentiles | null;
+  lcoe_yuan_per_mwh:     MetricPercentiles | null;
+  payback_discounted_yr: MetricPercentiles | null;   // RENAMED from "payback_yr" (v1.2.0→v1.3.0)
+  // ── Downside risk (null at R1; partial at R3) ──
   downside_risk: DownsideRiskResult | null;
-  /** For client-side NPV fan re-discounting (present when regime = R2, m_draws ≥ 2) */
-  cash_flow_series_yuan?: number[][];  // [m][year]
+  // ── Debt metrics (scalar, NOT distributional; null when debt_toggle=false) ──
+  debt_metrics: DebtMetrics | null;
+  // ── View-II incremental (null on View-I summaries) ──
+  view_ii_delta: null | object;  // per-draw CRN diff P50 — D41 rule 7; null for View-I
+  /** NPV fan re-discounting (R2 only; m_draws ≥ 2) */
+  cash_flow_series_yuan?: number[][];
 }
 ```
+
+**Key deltas from v1.2.0 inline defs:**
+
+| Delta | v1.2.0 | v1.3.0 (D45) |
+|-------|---------|--------------|
+| Payback field name | `payback_yr` | `payback_discounted_yr` |
+| Debt metrics | absent | `debt_metrics: DebtMetrics \| null` |
+| View-II delta | absent | `view_ii_delta` (null on View-I) |
+| Schema version | absent | `schema_version: "1.1.0"` |
+| Provenance | 3 fields | +`hurdle_rate_pct`, `valuation_date`, `horizon_years`, `seed`, `code_version` |
+| `bootstrap_ci` | any metric (implicit) | NPV-ONLY (rule B); null on irr/mirr/lcoe/payback |
+| Confidence scope | per-cell | PERCENTILE-LEVEL = equal across all metrics at same q (rule A) |
+
+**Binding semantics rules** — see `contracts/shared/finance_result_summary.md` §3 (rules 1–11, all authoritative). Consumer MUST NOT render `indicative_low_confidence` as bold/headline (§13.10c); MUST display R3 frequencies as "X of N years" not smooth % (DV-8).
 
 ### 2.5 Finance regime (D39 binding — corrected)
 
@@ -951,19 +917,23 @@ Per-metric rules for delta cell coloring. A positive arithmetic delta is NOT alw
 | MIRR P50 | pp | higher = better | Δ in pp | ✓ green |
 | NPV P50/P90 | ¥M | higher = better | Δ in ¥M | ✓ green |
 | LCOE P50 | ¥/MWh | **lower = better** | Δ in ¥/MWh | ✗ red; **negative Δ = green** |
-| Payback P50 | years | **lower = better** | Δ in years | ✗ red; **negative Δ = green** |
+| Payback (discounted) P50 | years | **lower = better** | Δ in years | ✗ red; **negative Δ = green** |
 | P(NPV<0) | % (display from fraction) | **lower = better** | Δ in pp | ✗ red; **negative Δ = green** |
 | P(IRR<hurdle) | % (display from fraction) | **lower = better** | Δ in pp | ✗ red; **negative Δ = green** |
 | CVaR-5% | ¥M | higher = better (less negative) | Δ in ¥M | ✓ green |
 | Worst NPV | ¥M | higher = better (less negative) | Δ in ¥M | ✓ green |
 | Max drawdown | ¥M | higher = better (less negative) | Δ in ¥M | ✓ green |
 | Best-of-N NPV | ¥M | higher = better | Δ in ¥M | ✓ green |
+| Equity IRR (`debt_metrics.equity_irr_pct`) | pp | higher = better | Δ in pp | ✓ green |
+| Min DSCR (`debt_metrics.min_dscr`) | × (ratio) | higher = better | Δ in × | ✓ green |
+
+> **Debt metrics note (D45):** `DebtMetrics` fields are SCALAR (engine emits float means, not distributions). Render only when `debt_toggle=true` and `debt_metrics != null`; hide entire debt rows otherwise. No regime-conditional logic needed.
 
 Two attributes govern coloring in `ComparisonTable` — both are required:
 
 **`data-direction` (static, on metric row headers)** — intrinsic direction of the metric:
-- `"higher-better"` — IRR, MIRR, NPV, CVaR-5%, Worst NPV, Best-of-N NPV, Max drawdown, Worst-year CF
-- `"lower-better"` — LCOE, Payback, P(NPV<0), P(IRR<hurdle)
+- `"higher-better"` — IRR, MIRR, NPV, CVaR-5%, Worst NPV, Best-of-N NPV, Max drawdown, Worst-year CF, Equity IRR, Min DSCR
+- `"lower-better"` — LCOE, Payback (discounted), P(NPV<0), P(IRR<hurdle)
 
 **`data-delta-direction` (computed, on individual delta cells)** — semantic verdict for THIS cell (mirrors §15 `data-confidence`):
 - `"good"` → render green (improvement vs baseline)
