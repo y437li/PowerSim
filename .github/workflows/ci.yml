@@ -112,6 +112,14 @@ jobs:
         # exit 3 instead of exit 5.
         run: uv python install 3.11
 
+      - name: Nav-index staleness check
+        # Always run — pure Python (stdlib only; no JAX or pip installs needed).
+        # Fails if any per-folder generated index is stale relative to its source.
+        # Fix locally: python3 scripts/gen_nav_index.py  then commit updated READMEs.
+        # Not gated on docs_only: any src/ edit can stale a folder's generated index.
+        shell: bash
+        run: python3 scripts/gen_nav_index.py --check
+
       # -----------------------------------------------------------------------
       # Heavy steps — skipped for docs-only PRs (see path_check above)
       # -----------------------------------------------------------------------
