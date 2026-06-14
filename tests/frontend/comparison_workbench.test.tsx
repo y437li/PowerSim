@@ -35,6 +35,16 @@
  *       best_of_n_npv_yuan: undefined explicitly in R2 downside_risk (R3-only field)
  *   - §2.4 replaced with reference block (types defined in contracts/shared/finance_result_summary.md v1.1.0)
  *   - §7.8 table: payback row renamed; debt_metrics rows added; data-direction lists updated
+ *
+ * Round 5 amendments (2026-06-14 — finance-expert SC4 deltas 2/3/4):
+ *   - Delta 2 (rule B): bootstrap_ci added to FINANCE_RESULT_R2.npv_yuan.p50 fixture
+ *       (125M < 142M < 162M); absent on irr/mirr/lcoe/payback (rule B contract + T-RULE-B-1..3)
+ *   - Delta 3 (rule A): T-RULE-A-1..2 assert confidence equal-across-metrics at same q
+ *   - Delta 4: §19 debt_metrics levered view tests (T-DEBT-1..5);
+ *       ComparisonTable gains debt_toggle prop; levered rows are SCALAR (no P50/P75/P90)
+ *   - DebtMetrics type added to imports
+ *   - §2.4 PercentileResult description strengthened: rule A/B explicit per-field constraints
+ *   - ComparisonTable props: debt_toggle: boolean added (§4 contract)
  */
 
 import React from "react";
@@ -52,6 +62,7 @@ import {
   type FinanceResultSummary,
   type SingleTrajectoryResult,
   type DownsideRiskResult,
+  type DebtMetrics,              // D45: scalar levered metrics
   type PercentileResult,
   type MetricPercentiles,
   type SavedConfig,
@@ -129,7 +140,9 @@ const FINANCE_RESULT_R2: FinanceResultSummary = {
     // p99 would be indicative_low_confidence if present
   },
   npv_yuan: {
-    p50: { value: 142_000_000, confidence: "sound" },
+    // Rule B (D45): bootstrap_ci is NPV-ONLY. Present HERE; absent on irr/mirr/lcoe/payback.
+    // 125M < 142M < 162M: CI brackets the point estimate (block-bootstrap M=50)
+    p50: { value: 142_000_000, confidence: "sound", bootstrap_ci: { lo: 125_000_000, hi: 162_000_000 } },
     p90: { value: 118_000_000, confidence: "sound" },
   },
   mirr_pct: {
@@ -2035,5 +2048,222 @@ describe("§18 ConfigCommentThread — D43 human+agent annotation", () => {
       />
     );
     expect(screen.getByText(/no comments|be the first|add a note/i)).toBeTruthy();
+  });
+});
+
+// ─── §19 D45 binding rules A/B + debt_metrics levered view ───────────────────
+
+describe("§19 D45 binding rules — rule A (confidence equal-across-metrics), rule B (bootstrap_ci NPV-only), debt_metrics render", () => {
+  /**
+   * Rule A: at any given q, confidence is IDENTICAL across all 5 distributional metrics.
+   *   Engine sets one confidence per percentile row; the UI reads per-node but MUST NOT
+   *   assume they can differ (data mismatch = integrity bug → console.warn + conservative wins).
+   *
+   * Rule B: bootstrap_ci is NPV-ONLY. Present on npv_yuan nodes at R2; ABSENT (undefined)
+   *   on irr_pct, mirr_pct, lcoe_yuan_per_mwh, payback_discounted_yr nodes.
+   *   The NPV-fan chart reads npv_yuan.{p50..p95}.bootstrap_ci.
+   *
+   * Debt_metrics levered view (D45):
+   *   Shown only when debt_toggle=true AND debt_metrics != null.
+   *   equity_irr_pct → scalar % (e.g. "9.8%"); min_dscr → scalar ratio (e.g. "1.45×").
+   *   NOT distributional — no P50/P75/P90 sub-rows.
+   */
+
+  // ── Rule A ──────────────────────────────────────────────────────────────────
+
+  it("T-RULE-A-1: rule A — confidence is identical across all distributional metrics at same q (R2 fixture integrity)", () => {
+    // All P50 nodes at R2 must share confidence="sound"
+    // Arithmetic: engine sets confidence["P50"]="sound" for all rows; UI reads per-node
+    const r2 = FINANCE_RESULT_R2;
+    const p50conf = r2.irr_pct!.p50!.confidence;   // "sound"
+    expect(r2.npv_yuan!.p50!.confidence).toBe(p50conf);
+    expect(r2.mirr_pct!.p50!.confidence).toBe(p50conf);
+    expect(r2.lcoe_yuan_per_mwh!.p50!.confidence).toBe(p50conf);
+    expect(r2.payback_discounted_yr!.p50!.confidence).toBe(p50conf);
+  });
+
+  it("T-RULE-A-2: rule A — at R3, all rendered P50 cells carry data-confidence='indicative_low_confidence'", () => {
+    // R3: engine sets confidence["P50"]="indicative_low_confidence" for all metrics.
+    // ComparisonTable must propagate this uniformly — not just to irr_pct.
+    render(
+      <ComparisonTable
+        variants={[makeVariant({ finance_result: FINANCE_RESULT_R3 })]}
+        baselineId="var-baseline"
+        regime="R3"
+        hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
+        debt_toggle={false}
+      />
+    );
+    const p50Cells = document.querySelectorAll('[data-q="p50"]');
+    expect(p50Cells.length).toBeGreaterThanOrEqual(1);
+    p50Cells.forEach(cell => {
+      expect(cell.getAttribute("data-confidence")).toBe("indicative_low_confidence");
+    });
+  });
+
+  // ── Rule B ──────────────────────────────────────────────────────────────────
+
+  it("T-RULE-B-1: rule B — bootstrap_ci absent on irr/mirr/lcoe/payback nodes in R2 fixture", () => {
+    // Rule B: engine computes bootstrap_ci ONLY for npv_yuan.
+    // All other distributional metric nodes MUST have bootstrap_ci=undefined.
+    const r2 = FINANCE_RESULT_R2;
+    expect(r2.irr_pct!.p50!.bootstrap_ci).toBeUndefined();
+    expect(r2.mirr_pct!.p50!.bootstrap_ci).toBeUndefined();
+    expect(r2.lcoe_yuan_per_mwh!.p50!.bootstrap_ci).toBeUndefined();
+    expect(r2.payback_discounted_yr!.p50!.bootstrap_ci).toBeUndefined();
+    // Also at P90 level for irr_pct (present at R2)
+    expect(r2.irr_pct!.p90!.bootstrap_ci).toBeUndefined();
+  });
+
+  it("T-RULE-B-2: rule B — bootstrap_ci present on npv_yuan.p50 at R2 (125M < 142M < 162M)", () => {
+    // The NPV-fan chart reads npv_yuan.{p50..p95}.bootstrap_ci for CI bands.
+    // At R2 (M=50 block-bootstrap): bootstrap_ci brackets the point estimate.
+    // 125_000_000 < 142_000_000 (p50 value) < 162_000_000
+    const npvP50 = FINANCE_RESULT_R2.npv_yuan!.p50!;
+    expect(npvP50.bootstrap_ci).toBeDefined();
+    expect(npvP50.bootstrap_ci!.lo).toBe(125_000_000);
+    expect(npvP50.bootstrap_ci!.hi).toBe(162_000_000);
+    // Sanity: lo < point < hi (CI wraps the mean)
+    expect(npvP50.bootstrap_ci!.lo).toBeLessThan(npvP50.value);
+    expect(npvP50.bootstrap_ci!.hi).toBeGreaterThan(npvP50.value);
+  });
+
+  // reviewer: rule B must also hold at R1 and R3 (bootstrap_ci absent when regime != R2)
+  it("T-RULE-B-3: rule B — bootstrap_ci absent on ALL nodes at R1 and R3", () => {
+    // R1 has no distributional output at all; R3 has only P50 with no CI.
+    // Neither regime supports bootstrap_ci anywhere.
+    const r3 = FINANCE_RESULT_R3;
+    // R3 npv_yuan.p50 — no bootstrap_ci (M≈10 too small for bootstrap)
+    expect(r3.npv_yuan!.p50!.bootstrap_ci).toBeUndefined();
+    // R1 — all metric nodes are null (no percentile output)
+    const r1 = FINANCE_RESULT_R1;
+    expect(r1.npv_yuan).toBeNull();
+    expect(r1.irr_pct).toBeNull();
+  });
+
+  // ── Debt metrics levered view ────────────────────────────────────────────────
+
+  it("T-DEBT-1: debt rows rendered when debt_toggle=true and debt_metrics non-null", () => {
+    // FINANCE_RESULT_R2.debt_metrics = { equity_irr_pct: 9.8, min_dscr: 1.45 }
+    // equity_irr_pct displayed as "9.8%"; min_dscr as "1.45×" (ratio)
+    render(
+      <ComparisonTable
+        variants={[makeVariant({ finance_result: FINANCE_RESULT_R2 })]}
+        baselineId="var-baseline"
+        regime="R2"
+        hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
+        debt_toggle={true}
+      />
+    );
+    expect(screen.getByTestId("debt-equity-irr-row")).toBeTruthy();
+    expect(screen.getByTestId("debt-min-dscr-row")).toBeTruthy();
+    // Scalar % display: 9.8% (not distributional)
+    expect(screen.getByText(/9\.8%/)).toBeTruthy();
+    // Scalar ratio display: 1.45× (not P50/P90)
+    expect(screen.getByText(/1\.45[×x]/)).toBeTruthy();
+  });
+
+  it("T-DEBT-2: debt rows absent when debt_toggle=false", () => {
+    render(
+      <ComparisonTable
+        variants={[makeVariant({ finance_result: FINANCE_RESULT_R2 })]}
+        baselineId="var-baseline"
+        regime="R2"
+        hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
+        debt_toggle={false}
+      />
+    );
+    expect(screen.queryByTestId("debt-equity-irr-row")).toBeNull();
+    expect(screen.queryByTestId("debt-min-dscr-row")).toBeNull();
+  });
+
+  it("T-DEBT-3: debt_metrics are SCALAR — no P50/P75/P90 sub-labels inside debt rows", () => {
+    // Equity IRR and Min DSCR are means (engine computes them as floats, not MetricPercentiles).
+    // The cell MUST NOT render "P50", "P90", or any percentile sub-row.
+    render(
+      <ComparisonTable
+        variants={[makeVariant({ finance_result: FINANCE_RESULT_R2 })]}
+        baselineId="var-baseline"
+        regime="R2"
+        hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
+        debt_toggle={true}
+      />
+    );
+    const irrRow = screen.getByTestId("debt-equity-irr-row");
+    expect(within(irrRow).queryByText(/P50|p50/)).toBeNull();
+    expect(within(irrRow).queryByText(/P90|p90/)).toBeNull();
+
+    const dscrRow = screen.getByTestId("debt-min-dscr-row");
+    expect(within(dscrRow).queryByText(/P50|p50/)).toBeNull();
+    expect(within(dscrRow).queryByText(/P90|p90/)).toBeNull();
+  });
+
+  // reviewer: null guard — debt_metrics=null must hide rows even when debt_toggle=true
+  it("T-DEBT-4: debt rows absent when debt_metrics=null, even with debt_toggle=true", () => {
+    // When debt is toggled off on the backend (e.g. gearing_pct=0), debt_metrics=null.
+    // UI MUST gate on both conditions: debt_toggle=true AND debt_metrics != null.
+    const r2NullDebt: FinanceResultSummary = {
+      ...FINANCE_RESULT_R2,
+      debt_metrics: null,
+    };
+    render(
+      <ComparisonTable
+        variants={[makeVariant({ finance_result: r2NullDebt })]}
+        baselineId="var-baseline"
+        regime="R2"
+        hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
+        debt_toggle={true}
+      />
+    );
+    expect(screen.queryByTestId("debt-equity-irr-row")).toBeNull();
+    expect(screen.queryByTestId("debt-min-dscr-row")).toBeNull();
+  });
+
+  it("T-DEBT-5: debt_metrics direction-of-good — equity IRR delta positive = green (higher-better)", () => {
+    // variant equity_irr_pct=10.5 (better than baseline 9.8); Δ=+0.7pp → good
+    const baseline = makeVariant({
+      id: "var-baseline",
+      is_baseline: true,
+      finance_result: FINANCE_RESULT_R2,  // equity_irr_pct: 9.8
+    });
+    const variantBetter = makeVariant({
+      id: "var-a",
+      is_baseline: false,
+      finance_result: {
+        ...FINANCE_RESULT_R2,
+        debt_metrics: { equity_irr_pct: 10.5, min_dscr: 1.38 },  // Δ IRR = +0.7pp (good)
+      },
+    });
+    render(
+      <ComparisonTable
+        variants={[baseline, variantBetter]}
+        baselineId="var-baseline"
+        regime="R2"
+        hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
+        debt_toggle={true}
+      />
+    );
+    const irrRow = screen.getByTestId("debt-equity-irr-row");
+    const deltaCell = within(irrRow).getByTestId("delta-var-a");
+    // Δ = 10.5 - 9.8 = +0.7pp → higher-better → "good"
+    expect(deltaCell.getAttribute("data-delta-direction")).toBe("good");
   });
 });

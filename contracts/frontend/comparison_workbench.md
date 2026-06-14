@@ -1,7 +1,7 @@
 # Frontend Contract — Comparison Workbench
 
 > **Area:** frontend
-> **Contract version:** v1.3.0-draft (Round 4 — D45 reference amendment: FinanceResultSummary → shared contract; FinanceParamSet note; field-name deltas absorbed)
+> **Contract version:** v1.4.0-draft (Round 5 — finance-expert SC4 deltas 2/3/4: rule A/B explicit, bootstrap_ci NPV-only fixture, debt_metrics levered render spec + tests)
 > **Status:** DRAFT — awaiting frontend-reviewer + finance-expert (SC4) gate
 > **Branch:** `feat/frontend-comparison-workbench`
 > **Owner:** frontend-engineer
@@ -15,7 +15,7 @@
 >   - R3 P50 always `indicative_low_confidence`
 >   - `deriveRegime` reads `FinanceResult.provenance.sample_kind` (nested path)
 > **D43 applied:** config carries a comment THREAD (`ConfigComment[]`); `parent_param_delta` for fork provenance
-> **D45 applied (Round 4):** `FinanceResultSummary` + related types (`PercentileResult`, `MetricPercentiles`, `SingleTrajectoryResult`, `DownsideRiskResult`, `DebtMetrics`) now REFERENCE `contracts/shared/finance_result_summary.md` v1.1.0 — NOT redefined here. Field-name deltas absorbed: `payback_yr` → `payback_discounted_yr`; `debt_metrics`/`view_ii_delta`/`schema_version` added.
+> **D45 applied (Round 4+5):** `FinanceResultSummary` + related types (`PercentileResult`, `MetricPercentiles`, `SingleTrajectoryResult`, `DownsideRiskResult`, `DebtMetrics`) now REFERENCE `contracts/shared/finance_result_summary.md` v1.1.0 — NOT redefined here. Field-name deltas absorbed: `payback_yr` → `payback_discounted_yr`; `debt_metrics`/`view_ii_delta`/`schema_version` added. Round 5: rule A (confidence equal-across-metrics), rule B (bootstrap_ci NPV-only), levered render spec + tests (T-RULE-A/B, T-DEBT-1..5), `ComparisonTable.debt_toggle` prop.
 > **Pending:** SC3 (dashboard-engineer chart interfaces) — non-blocking standing condition
 > **Gate:** frontend-reviewer + finance-expert (SC4 — confirms this contract matches the locked D45 shape)
 > **REBUILD_SPEC refs:** §3 (env), §5 (training), §13 (finance)
@@ -166,7 +166,7 @@ Types referenced from `contracts/shared/finance_result_summary.md` v1.1.0:
 
 | Type | Summary |
 |------|---------|
-| `PercentileResult` | `{ value, confidence, bootstrap_ci? }`. `confidence` is PERCENTILE-level = equal across all metrics at same q (rule A). `bootstrap_ci` is NPV-ONLY (rule B). |
+| `PercentileResult` | `{ value, confidence, bootstrap_ci? }`. `confidence` is PERCENTILE-LEVEL: at any given q, the value is IDENTICAL across all 5 distributional metrics — enforced by the engine (rule A). `bootstrap_ci` is NPV-ONLY: present ONLY on `npv_yuan` nodes; MUST be absent (undefined/null) on `irr_pct`, `mirr_pct`, `lcoe_yuan_per_mwh`, `payback_discounted_yr` nodes (rule B). |
 | `MetricPercentiles` | `{ p50?, p75?, p90?, p95?, p99? }`. Presence is UNIFORM across metrics at same regime (rule C). |
 | `SingleTrajectoryResult` | `{ point_npv_yuan, max_drawdown_yuan, max_drawdown_year, worst_year_cf_yuan }`. Present at ALL M; HEADLINE at R1. |
 | `DownsideRiskResult` | `{ worst_case_npv_yuan, best_of_n_npv_yuan?, p_npv_neg, p_irr_below_hurdle, cvar5_yuan, max_drawdown_yuan, max_drawdown_year, worst_year_cf_yuan }` |
@@ -674,7 +674,15 @@ export function ComparisonTable(props: {
   sortMetric: string | null;
   sortDir: "asc" | "desc";
   onSort: (metric: string) => void;
+  /** D45: show the levered view (Equity IRR + Min DSCR rows from debt_metrics) */
+  debt_toggle: boolean;
 }): JSX.Element;
+// debt_toggle render rules (D45):
+//   - Show debt rows only when debt_toggle=true AND variant.finance_result.debt_metrics != null
+//   - data-testid="debt-equity-irr-row" (equity_irr_pct: scalar %, e.g. "9.8%"; higher=better)
+//   - data-testid="debt-min-dscr-row"   (min_dscr: scalar ratio, e.g. "1.45×"; higher=better)
+//   - Both are SCALAR (NOT distributional) — MUST NOT render P50/P75/P90 sub-rows
+//   - delta coloring: data-delta-direction per §7.8 (higher=better → "good" if Δ>0)
 
 export function PerConfigDetail(props: {
   variant: WorkbenchVariant;
@@ -927,7 +935,18 @@ Per-metric rules for delta cell coloring. A positive arithmetic delta is NOT alw
 | Equity IRR (`debt_metrics.equity_irr_pct`) | pp | higher = better | Δ in pp | ✓ green |
 | Min DSCR (`debt_metrics.min_dscr`) | × (ratio) | higher = better | Δ in × | ✓ green |
 
-> **Debt metrics note (D45):** `DebtMetrics` fields are SCALAR (engine emits float means, not distributions). Render only when `debt_toggle=true` and `debt_metrics != null`; hide entire debt rows otherwise. No regime-conditional logic needed.
+> **Debt metrics note (D45):** `DebtMetrics` fields are SCALAR (engine emits float means, not distributions). Render only when `debt_toggle=true` AND `debt_metrics != null`; hide entire debt rows otherwise. No regime-conditional logic needed.
+>
+> **Levered-view render spec (D45):**
+> - `equity_irr_pct` (unit: %) → display as `"X.X%"` · `data-testid="debt-equity-irr-row"` · `data-direction="higher-better"`
+> - `min_dscr` (unit: ratio ×) → display as `"X.XX×"` · `data-testid="debt-min-dscr-row"` · `data-direction="higher-better"`
+> - MUST NOT render P50/P75/P90 sub-rows — these are scalars, not distributions
+> - Delta: `data-delta-direction` follows §7.8 derivation rule (higher-better → "good" if Δ>0)
+> - Guard: if `debt_metrics.equity_irr_pct == null` or `debt_metrics.min_dscr == null` (levered inputs incomplete), render cell as `"—"` with `data-testid` still present
+>
+> **Rule A (confidence equal-across-metrics):** At any given `q`, `irr_pct.{q}.confidence == npv_yuan.{q}.confidence` (all 5 distributional metrics share one confidence per percentile row, set by the engine). The UI MUST read confidence from each node individually — do NOT assume they differ; do NOT hard-code regime→confidence mapping. If a mismatch is detected (data integrity bug), log a `console.warn` and render the more conservative value (`"indicative_low_confidence"` wins).
+>
+> **Rule B (bootstrap_ci NPV-ONLY):** `bootstrap_ci` is computed by the engine exclusively for `npv_yuan` (used in the NPV-fan chart). It is absent (`undefined`) on `irr_pct`, `mirr_pct`, `lcoe_yuan_per_mwh`, and `payback_discounted_yr` nodes. The UI MUST NOT attempt to read `bootstrap_ci` from non-`npv_yuan` nodes. The NPV-fan chart reads `npv_yuan.{p50..p95}.bootstrap_ci`.
 
 Two attributes govern coloring in `ComparisonTable` — both are required:
 
