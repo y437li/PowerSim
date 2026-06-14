@@ -15,16 +15,95 @@ jobs:
       - name: Convention checks
         run: bash scripts/check_conventions.sh
 
+      # -----------------------------------------------------------------------
+      # Detect docs-only changes — in-job path-skip gate (task #10 / D40)
+      #
+      # IMPORTANT: this uses an in-job conditional, NOT workflow-level
+      # paths-ignore.  paths-ignore would skip the whole job, causing the
+      # required `checks` context to never report → branch protection blocks
+      # every docs-only PR forever.  Instead:
+      #   • The `checks` job ALWAYS runs and ALWAYS reports a status.
+      #   • Only the heavy steps (Python tests / Frontend tests / etc.) are
+      #     gated with  if: steps.path_check.outputs.docs_only != 'true'.
+      #   • Convention checks always run — docs/contract PRs must still pass.
+      #
+      # Allowlist (conservative): docs/**, contracts/**, root-level *.md only.
+      # ANY other changed path → full suite.  Push to main → always full suite.
+      # -----------------------------------------------------------------------
+      - name: Detect docs-only changes
+        id: path_check
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "→ Push to main: full suite always runs"
+            exit 0
+          fi
+          git fetch origin ${{ github.base_ref }} --depth=1 2>/dev/null || {
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "→ Could not fetch base ref — safe default: full suite runs"
+            exit 0
+          }
+          changed=$(git diff --name-only FETCH_HEAD HEAD 2>/dev/null || true)
+          if [ -z "$changed" ]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "→ No file diff detected — safe default: full suite runs"
+            exit 0
+          fi
+          printf "Changed files:\n%s\n" "$changed"
+          # Conservative allowlist:
+          #   docs/**              — spec, design docs
+          #   contracts/**         — contract .md files
+          #   <root>/*.md          — LINEAGE.md, REBUILD_SPEC.md, STACK.md, etc.
+          # Anything else (src/, tests/, config/, .github/, assets/, scripts/) →
+          # non_docs non-empty → full suite.
+          non_docs=$(printf '%s\n' "$changed" | \
+            grep -vE '^(docs/|contracts/|[^/]+\.md$)' | head -1 || true)
+          if [ -z "$non_docs" ]; then
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            echo "→ Docs-only PR: heavy test steps will be skipped"
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "→ Non-docs files changed: full suite runs"
+          fi
+
+      # -----------------------------------------------------------------------
+      # Setup — always run (fast; cache restore happens here)
+      # -----------------------------------------------------------------------
+
+      - name: Pre-create pip cache dir
+        # setup-python@v5 cache:'pip' post-step saves ~/.cache/pip back to the
+        # Actions cache.  On docs-only PRs the Python-tests step is skipped →
+        # pip never runs → the directory is never created → the post-step fails
+        # with "Cache folder path is retrieved for pip but doesn't exist on disk"
+        # → checks: failure (PR #116 QA fix — qa scratch-PR #124 empirical catch).
+        # mkdir -p is idempotent: no-op when the dir already exists (code PRs).
+        run: mkdir -p ~/.cache/pip
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          # Cache pip's HTTP wheel cache keyed on pyproject.toml.
+          # Saves ~3-5 min/run re-downloading jax[cpu]/jaxlib/flax/optax/flashbax.
+          # Cache is invalidated when pyproject.toml changes (new dep version).
+          cache: 'pip'
+          cache-dependency-path: pyproject.toml
 
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+          # Cache npm's global package cache (~/.npm) keyed on package-lock.json.
+          # npm install still runs but reads wheels from local cache → ~2 min saved.
+          cache: 'npm'
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
+        with:
+          # Cache uv's download cache (~/.cache/uv) keyed on pyproject.toml.
+          # Makes `uv python install 3.11` and uv-based venv creation near-instant
+          # on warm runs (install_app.sh acceptance-test toolchain).
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
 
       - name: Install Python 3.11 via uv (acceptance-test toolchain)
         # install_app.sh uses `uv venv --python 3.11`; without this step uv cannot
@@ -33,12 +112,17 @@ jobs:
         # exit 3 instead of exit 5.
         run: uv python install 3.11
 
+      # -----------------------------------------------------------------------
+      # Heavy steps — skipped for docs-only PRs (see path_check above)
+      # -----------------------------------------------------------------------
+
       - name: Regenerate package-lock.json for Linux
         # package-lock.json is committed from macOS and omits @rollup/rollup-linux-x64-gnu.
         # npm ci inside install_app.sh (acceptance test) fails with exit 3 on Linux unless
         # the lock is regenerated here.  The Frontend-tests step already does this; this
         # pre-step makes the lock Linux-compatible before the Python acceptance tests copy
         # it from REPO_ROOT into their tmp dirs.
+        if: steps.path_check.outputs.docs_only != 'true'
         run: |
           if [ -f package.json ]; then
             rm -f package-lock.json
@@ -46,6 +130,7 @@ jobs:
           fi
 
       - name: Telemetry schema validation (golden examples)
+        if: steps.path_check.outputs.docs_only != 'true'
         shell: bash
         run: |
           pip install "jsonschema>=4.21"
@@ -54,6 +139,7 @@ jobs:
           PYTHONPATH=src python scripts/validate_telemetry.py --examples
 
       - name: Python tests
+        if: steps.path_check.outputs.docs_only != 'true'
         shell: bash
         run: |
           if [ -d tests ] && find tests -name 'test_*.py' | grep -q .; then
@@ -81,6 +167,7 @@ jobs:
           fi
 
       - name: Frontend tests
+        if: steps.path_check.outputs.docs_only != 'true'
         shell: bash
         run: |
           if [ -f package.json ] && find tests -name '*.test.ts*' 2>/dev/null | grep -q .; then
@@ -106,6 +193,7 @@ jobs:
         # partial-checkout fallback path — if the committed copy is out of sync it will
         # be used verbatim by sandboxed builds (serving fixture, etc.) that lack assets/3d/.
         # Contract: contracts/frontend/registry_build_copy.md §3
+        if: steps.path_check.outputs.docs_only != 'true'
         shell: bash
         run: |
           if [ -f assets/3d/registry.json ] && [ -f src/config/registryData.json ]; then
