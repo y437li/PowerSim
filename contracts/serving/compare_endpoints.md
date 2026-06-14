@@ -3,7 +3,7 @@
 **Area:** serving (shared — frontend + backend)
 **Feature:** compare_endpoints
 **Contract version:** v1.0.0
-**Status:** DRAFT — awaiting backend-reviewer + frontend-reviewer gate
+**Status:** APPROVED — implementation complete; D45 producer fixes applied @ 75399ac; QA_PASS_WITH_ISSUES (rl-architect sign-off pending)
 **Branch:** `feat/serving-compare-endpoints`
 **Owner:** serving-engineer
 **Realizes:** LINEAGE D42 (comparison workbench two-mode discipline), D41 (battery
