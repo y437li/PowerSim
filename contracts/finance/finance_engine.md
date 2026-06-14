@@ -180,14 +180,20 @@ class PercentileResult:
 
 @dataclass
 class DownsideRisk:
-    """§13.10b — six downside metrics. Present only when distribution_valid=True."""
-    worst_case_npv_yuan:    float      # min_m NPV_m
-    p_npv_neg:              float      # #{NPV_m < 0} / M  ∈ [0,1]
-    p_irr_below_hurdle:     float      # #{IRR_m < hurdle} / M  ∈ [0,1]
-    cvar5_yuan:             float      # mean of ceil(0.05·M) worst NPV draws
-    max_drawdown_yuan:      float      # min(0, min_y cumCF_excl_CAPEX) per §13.10b
-    max_drawdown_year:      int        # argmin year (1-indexed)
-    worst_year_cf_yuan:     float      # min annual net CF over y=1…N, all M draws
+    """§13.10b — downside metrics. Present only when distribution_valid=True.
+
+    R3 additive fields (backward-compatible; None in R1/R2):
+      cvar5_yuan:          float | None  — None in R3 (k=ceil(0.05·10)=1 = worst-of-N relabel)
+      best_of_n_npv_yuan:  float | None  — max(NPV_m) in R3; None in R1/R2
+    """
+    worst_case_npv_yuan:    float           # min_m NPV_m  (= "worst of N observed years" in R3)
+    p_npv_neg:              float           # #{NPV_m < 0} / M  ∈ [0,1]
+    p_irr_below_hurdle:     float           # #{IRR_m < hurdle} / M  ∈ [0,1]
+    cvar5_yuan:             "float | None"  # mean of ceil(0.05·M) worst draws; None in R3
+    max_drawdown_yuan:      float           # min(0, min_y cumCF_excl_CAPEX) per §13.10b
+    max_drawdown_year:      int             # argmin year (1-indexed)
+    worst_year_cf_yuan:     float           # min annual net CF over y=1…N, all M draws
+    best_of_n_npv_yuan:     "float | None" = None  # R3: max(NPV_m); None in R1/R2
 
 @dataclass
 class SingleTrajectoryResult:
