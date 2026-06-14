@@ -67,10 +67,10 @@ This is the **serialized wire view** of the in-process `FinanceResult` (which li
     "worst_year_cf_yuan": 41000.0
   },
 
-  // ── Debt metrics — null when debt_toggle=false (debt-gating) ──
+  // ── Debt metrics — BOTH SCALAR (engine emits float means, NOT distributional — engine.py:679-680); null when debt_toggle=false ──
   "debt_metrics": {
-    "equity_irr_pct": { /* MetricPercentiles */ },  // per-percentile, PERCENT (×100) — INV-CE-04; whole field null when debt off
-    "min_dscr": 1.836                  // scalar BARE RATIO (NOT ×100; <10 realism guard) — INV-CE-16; null when debt off
+    "equity_irr_pct": 14.21,           // SCALAR, PERCENT (×100 of float mean) — INV-CE-04; null when debt off
+    "min_dscr": 1.836                  // SCALAR BARE RATIO (NOT ×100; <10 realism guard) — INV-CE-16; null when debt off
   },
 
   // ── View-II incremental — present ONLY on the View-II summary; null on View-I ──
@@ -97,7 +97,7 @@ This is the **serialized wire view** of the in-process `FinanceResult` (which li
 }
 ```
 
-**Metric set (canonical):** `{irr_pct, npv_yuan, mirr_pct, lcoe_yuan_per_mwh, payback_discounted_yr}` + debt-gated `equity_irr_pct` — matching the engine row + the producer/consumer-agreed #134 dd36db1 / #132 set (NO `lcos`, single `payback_discounted_yr`; finance-expert ruling supersedes the earlier percentile-major draft's `lcos`/two-payback fields).
+**Metric set (canonical, finance-expert ruling):** the **5 DISTRIBUTIONAL metrics** carry per-percentile `MetricPercentiles` — `{npv_yuan, irr_pct, mirr_pct, lcoe_yuan_per_mwh, payback_discounted_yr}`. The **debt metrics `equity_irr_pct` + `min_dscr` are SCALAR** (engine emits `float` means, `engine.py:679-680`, NOT distributional) and live in `debt_metrics`, debt-gated — NOT in the per-percentile set. (NO `lcos`; single discounted payback; supersedes the earlier percentile-major draft's `lcos`/two-payback fields + the mistaken per-percentile `equity_irr_pct`.)
 
 ---
 
@@ -105,7 +105,7 @@ This is the **serialized wire view** of the in-process `FinanceResult` (which li
 
 1. **`sample_kind` ∈ {"bootstrap","empirical"}** — the wire value. "synthetic"/"synthetic (block-bootstrap)" is a UI display label only, never the field value. (Enforces the #133 LOCK.)
 2. **Regime is DERIVED by the producer** from `(distribution_valid, sample_kind)` — `!distribution_valid→R1; bootstrap→R2; empirical→R3` — and must agree with the nullability below. Serving never trusts a caller-supplied regime.
-3. **Regime nullability (exhaustive; metric-major):** R1 → ALL per-metric `MetricPercentiles` (`irr_pct`/`npv_yuan`/`mirr_pct`/`lcoe_yuan_per_mwh`/`payback_discounted_yr` + `equity_irr_pct`) = `null` AND `downside_risk=null`; only `single_trajectory` carries values. R2 → every metric's p50/p75/p90/p95 present, p99 optional; downside full incl. `cvar5_yuan`; `best_of_n_npv_yuan=null`. R3 → every metric's p50 only (p75/p90/p95/p99 null), `cvar5_yuan=null`, `best_of_n_npv_yuan` present, `p_irr_below_hurdle` present. (Presence is UNIFORM across metrics — rule 11.)
+3. **Regime nullability (exhaustive; metric-major):** R1 → ALL 5 per-metric `MetricPercentiles` (`npv_yuan`/`irr_pct`/`mirr_pct`/`lcoe_yuan_per_mwh`/`payback_discounted_yr`) = `null` AND `downside_risk=null` AND the scalar `debt_metrics` (`equity_irr_pct`/`min_dscr`) null (also debt-gated); only `single_trajectory` carries values. R2 → every metric's p50/p75/p90/p95 present, p99 optional; downside full incl. `cvar5_yuan`; `best_of_n_npv_yuan=null`. R3 → every metric's p50 only (p75/p90/p95/p99 null), `cvar5_yuan=null`, `best_of_n_npv_yuan` present, `p_irr_below_hurdle` present. (Presence is UNIFORM across metrics — rule 11.)
 4. **R3 confidence is forced:** every R3 percentile (only p50) carries `confidence="indicative_low_confidence"` — never "sound". Any R2 p99 likewise indicative. The consumer must NOT render an `indicative_low_confidence` value as a bare/bold headline (§13.10c).
 5. **Units (pinned; folds #134 INV-CE-04/16):** IRR/MIRR/equity_irr = **percent ×100**; `min_dscr` = **bare ratio** (not ×100); `p_npv_neg`/`p_irr_below_hurdle` = **probability ∈[0,1]** (not ×100); NPV/drawdown/CF = **¥**; LCOE/LCOS = **¥/MWh**; payback = **years**; `*_year` = **1-indexed int**.
 6. **`p_irr_below_hurdle` is POPULATED at R2 AND R3** (empirical frequency `#{IRR_m<hurdle}/M`; does NOT collapse at M≈10). Null only at R1 (block absent). [The #132 bug; #134 had it right.]
