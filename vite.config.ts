@@ -25,5 +25,20 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./tests/setup.ts"],
     include: ["tests/**/*.test.tsx", "tests/**/*.test.ts"],
+    // Redirect @testing-library/user-event to a thin wrapper that sets
+    // delay: null by default.  This prevents the direct API (userEvent.click,
+    // .type, .clear, …) from creating fake setTimeout(fn,0) calls that hang
+    // indefinitely when vi.useFakeTimers() is active in a test.
+    // See: tests/__mocks__/userEvent.ts for rationale.
+    alias: {
+      "@testing-library/user-event": new URL(
+        "./tests/__mocks__/userEvent.ts",
+        import.meta.url
+      ).pathname,
+      "@testing-library/react": new URL(
+        "./tests/__mocks__/reactTestingLibrary.ts",
+        import.meta.url
+      ).pathname,
+    },
   },
 });
