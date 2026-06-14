@@ -295,3 +295,62 @@ condition blocks the v1 implementation.
 
 **Verdict: APPROVE** (contract + tests gate, v1 scope). Clean re-gate of the simplified scope;
 data-display correctness pinned; no blockers. Implementation of the v1 stub may proceed.
+
+## Round 5 — `ed418c7` — APPROVE (2026-06-14) — IMPLEMENTATION audit
+
+Audited the v1 implementation (`src/stores/stageAlgorithmStore.ts` + `src/components/wizard/
+StageTwoAlgorithm.tsx`; +508 lines). The impl commit added **only** the two `src/` files — the
+approved test file is **untouched** (`git diff cccfe55..ed418c7 -- tests/` empty → no approved test
+weakened to pass). **Full suite 66/66 green** against the impl (incl. my §T12 + retained reviewer cases).
+
+**Data path / display correctness (prime directive) — code-verified, not claim-verified:**
+- **§5 constants preview values are CORRECT** — `SAC_CONSTANTS` displays the canonical RunConfig
+  (`training_pipeline.md §3`) values exactly: lr=1e-4, gamma=0.999 (marked LOCKED), batch_size=512,
+  total_env_steps=500,000, buffer_size=1,000,000, n_envs=4, hidden_sizes=[256,256], tau=0.005,
+  ent_coef="auto". This is v1's main data-display surface; T-ALGO-3/9 pin gamma/lr/batch/steps and the
+  remaining values are correct on inspection. No wrong/placeholder values (no 3e-4, no batch 256).
+- **No POST anywhere (DV-6)** — the only network call is `GET /api/baselines` in the store's
+  `loadBaselines`; the component issues no fetch. `confirm()` is local (`stageState→COMPLETE`).
+- **Single store source, no derived drift** — component reads state via hooks; `enabled` is re-derived
+  from the reactive `selectedBaselines` via the shared `isConfirmEnabled` (no duplicated state).
+- **No rogue sockets / duplicated parsing** — all I/O is the one GET in the store.
+
+**Behavior conformance:**
+- `confirm()` + `onContinue` fire **exactly once** — `handleConfirm` guards `!enabled` (aria-disabled
+  interception, T-CONFIRM-4/T-A11Y-7) AND `stageState==='COMPLETE'` (double-submit, T-CONFIRM-5), and
+  the store `confirm()` re-guards both. STALE→COMPLETE re-confirm path works (T-STALE-3).
+- Class A STALE rule (`_editStateTransition`): COMPLETE/STALE→STALE, PENDING→IN_PROGRESS, applied on
+  `setAlgorithmType`/`toggleBaseline` (§5.8) ✓.
+- `loadBaselines`: GET success → `availableBaselines` only (no `selectedBaselines` reset, T-BASE-FETCH-7);
+  failure → static fallback + `baselinesError` ✓. Server payload is rendered (`availableBaselines.map`
+  → server labels, T-BASE-FETCH-8) ✓.
+- LOCKED gate: `!stageOneComplete` returns a view with **no** `stage-two-content` (content absent from
+  DOM, T-LOCK-1/2/A11Y-6); `loadBaselines` fires only on the unlock transition (no fetch when locked,
+  T-LOCK-5/6) ✓.
+- `onRehydrate` COMPLETE→IN_PROGRESS, transient flags reset, persisted fields survive; wired into
+  `onRehydrateStorage` + exposed for T-PERSIST-3 ✓. `partialize` persists only
+  stageState/algorithmType/selectedBaselines ✓.
+- a11y: radiogroup/radio, role=group baselines, role=status load-error, role=alert none-error,
+  `aria-disabled` (not HTML disabled), back-as-`<span>` (DV-1) ✓. Zero hex literals (§7 hard rule met).
+
+### Should-fix (non-blocking — visual polish; no test covers it; data/behavior unaffected)
+- **Option B visual treatment is only partially implemented.** §5.2 specifies token-based card styling
+  (Baseline-only `TOKEN.accentBlue` accent; SAC greyed `TOKEN.border`) and §7 requires design tokens for
+  visual values. The impl applies only `opacity:0.75` on the SAC card + the "Future" badge — no
+  `TOKEN.*` usage, no accent/greyed borders, minimal card styling. Functionally correct (selection +
+  badge + which-is-primary all work; all tests pass) but the visual spec isn't met. Recommend a
+  token-styling polish pass before the stage is considered visually done. (Consistent with how #102's
+  S3/S4 cosmetic gaps were handled — noted, not gated.)
+
+### Minor nits (non-blocking)
+- `baseline.id as "do_nothing"|...` cast on server ids is unsafe if the server ever returns an
+  out-of-enum id (v1 server returns the 3 known ids; harmless now — consider a runtime filter when SAC/
+  dynamic baselines land).
+- `baseline-none-error` (role=alert) and `confirm-disabled-reason` both render when no baseline is
+  selected — redundant but both are contracted and harmless.
+- `act()` warnings in test stderr are cosmetic (async `loadBaselines` store updates in sync tests);
+  66/66 still pass. Optional: wrap the unlock effect's async update to silence them.
+
+**Verdict: APPROVE** (implementation). Data-display correctness verified, all 66 approved tests pass,
+no approved test weakened, no POST/rogue I/O, behavior matches the contract. The only gap is an
+untested cosmetic Option-B token-styling polish (should-fix follow-up). Ready for QA on `ed418c7`.
