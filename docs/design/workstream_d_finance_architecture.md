@@ -46,6 +46,25 @@ N degraded years) is workstream-C, OUTSIDE the pure finance engine.** The engine
 what makes `finance()` pure (§13.12) and keeps INV-FINLAYER structural: no price/escalation/contract
 term can reach `step` because the engine never calls `step`.
 
+**The exact data-handoff object (the §11→D seam — team-lead ask).** Per scenario, the engine
+consumes ONE `PolicyEnsemble`:
+
+```
+PolicyEnsemble = {
+  seed:        int,                       # shared CRN seed (→ provenance)
+  M:           int,                       # 50 (synthetic) | ~10 (real)
+  sample_kind: "bootstrap" | "empirical", # selects the §4 percentile regime
+  runs: { policy_id -> [ length-M; each draw = [ ExtendedPolicyEvalResult(year n) : n=1..N ] ] }
+}
+```
+
+Each leaf is the **task-#55 `ExtendedPolicyEvalResult`** verbatim — its 6-stream `{volume,
+value_yuan}` accumulators (real year-1 ¥, D31/F1; sign applied by D1a per the §13.7 inflow/outflow
+convention) + 22 physical-quantity fields + D13 real-money buckets + memo. **The engine reads ONLY
+`streams[*].{volume,value_yuan}` + quantities + real-money; the memo block (`penalty_yuan`, `soc_*`)
+is structurally unreachable (INV-BASIS).** No new eval field, no telemetry bump — §11 baselines
+(`run_benchmark`) already emit this object; workstream-C just stacks N years × M draws into `runs`.
+
 ---
 
 ## 2. Module decomposition (boundaries are binding)
@@ -60,7 +79,7 @@ off-wire). The realizing PR adds `finance` to the CLAUDE.md `<area>` list + `che
 | **D1a cash_flow** | `finance/cash_flow.py` | D13→cash mapping (§13.2: INV-BASIS/DEG/CURT/VOLL); per-draw N-year CF series from streams + CAPEX/OPEX/lifecycle/terminal (§13.6) | pure |
 | **D1b metrics** | `finance/metrics.py` | NPV / IRR / MIRR / LCOE / LCOS / payback / DSCR on a single CF series (§13.8) | pure |
 | **D1c price_path** | `finance/price_path.py` | §13.4 post-hoc multiplier transform + preset library + `requires_retrain` flag (INV-FINLAYER) | pure |
-| **D1d distributions** | `finance/distributions.py` | M-axis aggregation: exceedance percentiles, bootstrap CI, per-percentile confidence, downside-risk panel (§13.10), `distribution_valid` + percentile-regime honesty (§4 below) | pure |
+| **D1d distributions** | `finance/distributions.py` | M-axis aggregation: exceedance percentiles, bootstrap CI, per-percentile confidence, downside-risk panel (§13.10), `distribution_valid` + percentile-regime honesty (§4 below). Estimator **LOCKED by finance-expert** (PR #107): `np.quantile(sorted, 1−q, method='lower')` (higher-better) / `method='higher'` (lower-better); CVaR-5% over `k=ceil(0.05·M)` worst draws; drawdown = §13.10b literal `min(0, min_y cumCF_excl_CAPEX)` (shortfall-below-zero, **not** peak-to-trough). **ONE estimator** serves R2 and R3 (R3 = same estimator, reduced percentile set). | pure |
 | **D1e discount** | `finance/discount.py` | CAPM→WACC from `finance_config` (CGB-curve linear-interp to horizon, Hamada relever, §13.5) | pure |
 | **D1f sensitivity** | `finance/sensitivity.py` | §13.11 NPV-vs-r fan, tornado, sensitivity surface | pure |
 | **D1 facade** | `finance/engine.py` | the `finance(ensemble, price_paths, econ, finance_config) -> FinanceResult` entry point (§13.12) | pure |
@@ -111,11 +130,15 @@ shape is **identical** across all three (absent fields are a represented "no dis
 |---|---|---|---|---|
 | **R1 fast-iteration** | M = 1 | **false** | none (point estimate only) | §13.10c existing; single-trajectory downside only; non-dismissable M=1 banner |
 | **R2 bootstrap (default v1)** | `sample_kind=bootstrap`, M ≥ 50 | true | **P50 / P75 / P90 / P95** + bootstrap CI per percentile (D34) | P95 = decision tail; P99 dropped from headline (optional `indicative_low_confidence` only); full downside-risk panel |
-| **R3 empirical small-sample** | `sample_kind=empirical`, M small (~10) | true | **P50 / P90 only** + per-year trajectories surfaced; each tagged with an **empirical small-sample caveat** | **P75 / P95 / P99 ABSENT (not fabricated)** — the 2.5th-worst of ~10 is the worst sample, not a defensible P95; downside panel reports *empirical* worst-case/CVaR over the actual years with the caveat; a credible P95 gates on M ≥ 50 |
+| **R3 empirical small-sample** | `sample_kind=empirical`, M small (~10) | true | **P50 / P90 only** + per-year trajectories surfaced; each tagged with an **empirical small-sample caveat** | **P75 / P95 / P99 ABSENT (not fabricated)** — the 2.5th-worst of ~10 is the worst sample, not a defensible P95; a credible P95 gates on M ≥ 50. Downside panel: worst-case NPV, P(NPV<0), P(IRR<hurdle), and max-drawdown are well-defined empirically over the actual years (surfaced with the caveat). **CVaR-5% at M~10 collapses to k=`ceil(0.05·10)`=1 = the single worst draw = worst-case NPV** → it is tagged `indicative_low_confidence` (degenerate, equals worst-case), not shown as an independent tail stat. |
 
 R3 is the honest treatment of "10 real calendar years used as-is" — it reuses R1/R2's exact
-"absent-not-fabricated" + per-percentile `confidence` machinery; the schema does not change.
-The **convergence hint** (§13.10a; IRR CI ≥ 2pp, NPV CI ≥ 20%|P50|) fires in R3 by construction.
+"absent-not-fabricated" + per-percentile `confidence` machinery **and the same single LOCKED
+estimator** (finance-expert PR #107), only with the reduced {P50, P90} set; the schema does not
+change (the user's narrowed directive: a different M-set, NO `FinanceResult` rework). The
+**convergence hint** (§13.10a; IRR CI ≥ 2pp, NPV CI ≥ 20%|P50|) fires in R3 by construction.
+**finance-expert confirmed (PR #107) the small-M mode reuses this one estimator — finance-engineer
+implements ONE estimator, not two.**
 
 ---
 
@@ -123,7 +146,7 @@ The **convergence hint** (§13.10a; IRR CI ≥ 2pp, NPV CI ≥ 20%|P50|) fires i
 
 | Concern | Owner | Deliverable | Gate |
 |---|---|---|---|
-| **Finance SEMANTICS + hand-computed vectors** | **finance-expert** (task #4) | the contract's test-case section: ≥3 fully-worked `finance()` vectors (pre-tax unlevered BASE, tax toggle, levered delta) with arithmetic shown; downside-stat formulas; CAPM worked example; the §4 percentile-regime acceptance criteria. finance-expert is the **acceptance gate** for engine correctness. **Writes no production code.** | rl-architect signs the semantics; backend-reviewer co-reviews |
+| **Finance SEMANTICS + hand-computed vectors** | **finance-expert** (task #4) | **DELIVERED — PR #107 `docs/design/finance_engine_acceptance_basis.md`**: fully-worked `finance()` vectors (pre-tax unlevered BASE, tax toggle, levered delta) with arithmetic shown; downside-stat formulas; CAPM worked example; the LOCKED percentile/CVaR/drawdown estimator (§A). finance-expert is the **acceptance gate** for engine correctness. **Writes no production code.** | rl-architect signs the semantics; backend-reviewer co-reviews |
 | **IMPLEMENTATION** | **finance-engineer** | D1a–D2 pure modules + `engine.py` facade conforming to the gated contract; passes finance-expert's vectors + backend-reviewer's adversarial cases | backend-reviewer (shape/purity) + finance-expert (numbers) + QA |
 | **finance() boundary contract** | finance-engineer authors, **finance-expert co-authors test cases** | `contracts/finance/finance_engine.md` (the §13.12 surface, INV-FINLAYER/INV-BASIS structural barriers) | backend-reviewer |
 | **Ensemble builder (D3)** | workstream-C (harness/training) | `PolicyEnsemble` assembly + weather toggle + env-trace-independence test | backend-reviewer |
@@ -139,8 +162,11 @@ implementer is not an independent acceptance gate.
 ## 6. Acceptance criteria (engine v1 = power-composite, heuristic-first)
 
 1. **Purity:** `finance()` provably pure — no I/O reachable; fixed inputs → identical `FinanceResult`.
-2. **Hand-computed parity:** passes all of finance-expert's task-#4 vectors (NPV/IRR/MIRR/LCOE/LCOS/
-   DSCR + downside stats) to the stated tolerance, arithmetic shown in each test comment.
+2. **Hand-computed parity:** passes all of finance-expert's task-#4 vectors (**PR #107**,
+   `finance_engine_acceptance_basis.md`: NPV/IRR/MIRR/LCOE/LCOS/DSCR + downside stats) to the stated
+   tolerance, arithmetic shown in each test comment. The percentile/CVaR/drawdown estimator matches
+   §A of PR #107 exactly (`np.quantile … method`, CVaR `k=ceil(0.05·M)`, drawdown `min(0,min cumCF)`)
+   — **ONE estimator** serves R2 and R3 (a second estimator is a review-fail).
 3. **INV-BASIS:** a fixture where real-money ≠ reward-basis → cash output = real-money exactly; a
    wired reward-basis field **fails** the test (structural unreachability).
 4. **INV-DEG / INV-CURT / INV-VOLL:** the three no-double-count vectors (§13.2) pass.
