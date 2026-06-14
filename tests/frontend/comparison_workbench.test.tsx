@@ -45,6 +45,16 @@
  *   - DebtMetrics type added to imports
  *   - §2.4 PercentileResult description strengthened: rule A/B explicit per-field constraints
  *   - ComparisonTable props: debt_toggle: boolean added (§4 contract)
+ *
+ * Round 6 amendments (2026-06-14 — rule C: uniform percentile presence):
+ *   - FINANCE_RESULT_R2: all 5 metrics now have {p50,p75,p90,p95} (rule C from locked #135)
+ *       MIRR: p50=7.1/p75=6.9/p90=6.6/p95=6.3%; LCOE: p50=312/p75=325/p90=341/p95=352 ¥/MWh
+ *       Payback: p50=8.3/p75=9.1/p90=10.2/p95=11.4 yr; NPV: p50=142M/p75=131M/p90=118M/p95=108M
+ *   - npv_yuan now has bootstrap_ci on ALL quantile nodes p50..p95 (rule B applies to all)
+ *   - T-RULE-B-1 extended: bootstrap_ci absent on p50/p75/p90/p95 of irr/mirr/lcoe/payback
+ *   - T-RULE-B-2 extended: bootstrap_ci present on npv_yuan p50..p95 (all bracket their values)
+ *   - T-RULE-C-1: fixture integrity — all 5 metrics have same {p50,p75,p90,p95} defined
+ *   - T-RULE-C-2: ComparisonTable renders P90 for MIRR+LCOE+payback (not just IRR)
  */
 
 import React from "react";
@@ -132,27 +142,51 @@ const FINANCE_RESULT_R2: FinanceResultSummary = {
     max_drawdown_year: 3,
     worst_year_cf_yuan: -12_000_000,
   },
+  /**
+   * Rule C (D45 §3 — UNIFORM PRESENCE): ALL 5 distributional metrics carry the SAME
+   * percentile set {p50, p75, p90, p95} at R2. p99 is optional (always indicative).
+   * The engine populates all 5 identically; the UI MUST NOT assume IRR has p90 while
+   * MIRR doesn't. Convention: higher percentile = left/risk tail (downside framing):
+   *   - higher-better metrics (IRR,MIRR,NPV): pXX < p50 → worse outcomes at higher q
+   *   - lower-better metrics (LCOE,payback): pXX > p50 → worse outcomes at higher q
+   */
   irr_pct: {
     p50: { value: 8.2, confidence: "sound" },
     p75: { value: 7.9, confidence: "sound" },
     p90: { value: 7.6, confidence: "sound" },
     p95: { value: 7.2, confidence: "sound" },
-    // p99 would be indicative_low_confidence if present
+    // p99 omitted (optional); if present → always indicative_low_confidence
   },
   npv_yuan: {
-    // Rule B (D45): bootstrap_ci is NPV-ONLY. Present HERE; absent on irr/mirr/lcoe/payback.
-    // 125M < 142M < 162M: CI brackets the point estimate (block-bootstrap M=50)
+    // Rule B (D45): bootstrap_ci is NPV-ONLY. Present on ALL R2 NPV nodes; absent on irr/mirr/lcoe/payback.
+    // Rule C: same {p50,p75,p90,p95} set as irr_pct. CI brackets the point at each q.
+    //   p50: 125M < 142M < 162M  arithmetic: CI lo = p50_value × 0.88; hi = p50_value × 1.14
+    //   p75: 98M < 131M < 165M; p90: 88M < 118M < 150M; p95: 78M < 108M < 142M
     p50: { value: 142_000_000, confidence: "sound", bootstrap_ci: { lo: 125_000_000, hi: 162_000_000 } },
-    p90: { value: 118_000_000, confidence: "sound" },
+    p75: { value: 131_000_000, confidence: "sound", bootstrap_ci: { lo:  98_000_000, hi: 165_000_000 } },
+    p90: { value: 118_000_000, confidence: "sound", bootstrap_ci: { lo:  88_000_000, hi: 150_000_000 } },
+    p95: { value: 108_000_000, confidence: "sound", bootstrap_ci: { lo:  78_000_000, hi: 142_000_000 } },
   },
   mirr_pct: {
+    // Rule C: same {p50,p75,p90,p95} set; higher-better → higher q = left/risk tail
     p50: { value: 7.1, confidence: "sound" },
+    p75: { value: 6.9, confidence: "sound" },
+    p90: { value: 6.6, confidence: "sound" },
+    p95: { value: 6.3, confidence: "sound" },
   },
   lcoe_yuan_per_mwh: {
+    // Rule C: same {p50,p75,p90,p95} set; lower-better → higher q = right/risk tail (higher cost)
     p50: { value: 312, confidence: "sound" },
+    p75: { value: 325, confidence: "sound" },
+    p90: { value: 341, confidence: "sound" },
+    p95: { value: 352, confidence: "sound" },
   },
   payback_discounted_yr: {               // D45: renamed from "payback_yr"
+    // Rule C: same {p50,p75,p90,p95}; lower-better → higher q = longer/worse payback
     p50: { value: 8.3, confidence: "sound" },
+    p75: { value: 9.1, confidence: "sound" },
+    p90: { value: 10.2, confidence: "sound" },
+    p95: { value: 11.4, confidence: "sound" },
   },
   downside_risk: {
     worst_case_npv_yuan: -38_000_000,   // CORRECTED: was "worst_npv_yuan"
@@ -2106,29 +2140,93 @@ describe("§19 D45 binding rules — rule A (confidence equal-across-metrics), r
 
   // ── Rule B ──────────────────────────────────────────────────────────────────
 
-  it("T-RULE-B-1: rule B — bootstrap_ci absent on irr/mirr/lcoe/payback nodes in R2 fixture", () => {
+  it("T-RULE-B-1: rule B — bootstrap_ci absent on ALL non-npv_yuan nodes in R2 fixture (all q)", () => {
     // Rule B: engine computes bootstrap_ci ONLY for npv_yuan.
-    // All other distributional metric nodes MUST have bootstrap_ci=undefined.
+    // All other distributional metric nodes MUST have bootstrap_ci=undefined at EVERY quantile.
     const r2 = FINANCE_RESULT_R2;
+    // irr_pct — all 4 quantiles present at R2 (rule C); none have bootstrap_ci
     expect(r2.irr_pct!.p50!.bootstrap_ci).toBeUndefined();
-    expect(r2.mirr_pct!.p50!.bootstrap_ci).toBeUndefined();
-    expect(r2.lcoe_yuan_per_mwh!.p50!.bootstrap_ci).toBeUndefined();
-    expect(r2.payback_discounted_yr!.p50!.bootstrap_ci).toBeUndefined();
-    // Also at P90 level for irr_pct (present at R2)
+    expect(r2.irr_pct!.p75!.bootstrap_ci).toBeUndefined();
     expect(r2.irr_pct!.p90!.bootstrap_ci).toBeUndefined();
+    expect(r2.irr_pct!.p95!.bootstrap_ci).toBeUndefined();
+    // mirr_pct — rule C: 4 quantiles; none have bootstrap_ci
+    expect(r2.mirr_pct!.p50!.bootstrap_ci).toBeUndefined();
+    expect(r2.mirr_pct!.p75!.bootstrap_ci).toBeUndefined();
+    expect(r2.mirr_pct!.p90!.bootstrap_ci).toBeUndefined();
+    expect(r2.mirr_pct!.p95!.bootstrap_ci).toBeUndefined();
+    // lcoe_yuan_per_mwh — 4 quantiles; none have bootstrap_ci
+    expect(r2.lcoe_yuan_per_mwh!.p50!.bootstrap_ci).toBeUndefined();
+    expect(r2.lcoe_yuan_per_mwh!.p75!.bootstrap_ci).toBeUndefined();
+    expect(r2.lcoe_yuan_per_mwh!.p90!.bootstrap_ci).toBeUndefined();
+    expect(r2.lcoe_yuan_per_mwh!.p95!.bootstrap_ci).toBeUndefined();
+    // payback_discounted_yr — 4 quantiles; none have bootstrap_ci
+    expect(r2.payback_discounted_yr!.p50!.bootstrap_ci).toBeUndefined();
+    expect(r2.payback_discounted_yr!.p75!.bootstrap_ci).toBeUndefined();
+    expect(r2.payback_discounted_yr!.p90!.bootstrap_ci).toBeUndefined();
+    expect(r2.payback_discounted_yr!.p95!.bootstrap_ci).toBeUndefined();
   });
 
-  it("T-RULE-B-2: rule B — bootstrap_ci present on npv_yuan.p50 at R2 (125M < 142M < 162M)", () => {
+  it("T-RULE-B-2: rule B — bootstrap_ci present on ALL npv_yuan quantiles at R2 (NPV-fan reads p50..p95)", () => {
     // The NPV-fan chart reads npv_yuan.{p50..p95}.bootstrap_ci for CI bands.
-    // At R2 (M=50 block-bootstrap): bootstrap_ci brackets the point estimate.
-    // 125_000_000 < 142_000_000 (p50 value) < 162_000_000
-    const npvP50 = FINANCE_RESULT_R2.npv_yuan!.p50!;
-    expect(npvP50.bootstrap_ci).toBeDefined();
-    expect(npvP50.bootstrap_ci!.lo).toBe(125_000_000);
-    expect(npvP50.bootstrap_ci!.hi).toBe(162_000_000);
-    // Sanity: lo < point < hi (CI wraps the mean)
-    expect(npvP50.bootstrap_ci!.lo).toBeLessThan(npvP50.value);
-    expect(npvP50.bootstrap_ci!.hi).toBeGreaterThan(npvP50.value);
+    // Rule B applies to ALL npv_yuan nodes, not just p50.
+    // At R2 (M=50 block-bootstrap): bootstrap_ci brackets the point at each q.
+    const npv = FINANCE_RESULT_R2.npv_yuan!;
+    // p50: 125M < 142M < 162M
+    expect(npv.p50!.bootstrap_ci!.lo).toBe(125_000_000);
+    expect(npv.p50!.bootstrap_ci!.hi).toBe(162_000_000);
+    expect(npv.p50!.bootstrap_ci!.lo).toBeLessThan(npv.p50!.value);
+    expect(npv.p50!.bootstrap_ci!.hi).toBeGreaterThan(npv.p50!.value);
+    // p75: 98M < 131M < 165M
+    expect(npv.p75!.bootstrap_ci!.lo).toBe(98_000_000);
+    expect(npv.p75!.bootstrap_ci!.hi).toBe(165_000_000);
+    expect(npv.p75!.bootstrap_ci!.lo).toBeLessThan(npv.p75!.value);
+    expect(npv.p75!.bootstrap_ci!.hi).toBeGreaterThan(npv.p75!.value);
+    // p90: 88M < 118M < 150M
+    expect(npv.p90!.bootstrap_ci!.lo).toBe(88_000_000);
+    expect(npv.p90!.bootstrap_ci!.hi).toBe(150_000_000);
+    // p95: 78M < 108M < 142M
+    expect(npv.p95!.bootstrap_ci!.lo).toBe(78_000_000);
+    expect(npv.p95!.bootstrap_ci!.hi).toBe(142_000_000);
+  });
+
+  // ── Rule C ──────────────────────────────────────────────────────────────────
+
+  it("T-RULE-C-1: rule C — FINANCE_RESULT_R2 fixture has uniform percentile presence across all 5 metrics", () => {
+    // Rule C: at R2 the engine populates {p50,p75,p90,p95} identically for ALL 5 metrics.
+    // An implementation that renders IRR P90 but not MIRR P90 would be incorrect.
+    // Fixture integrity: all 5 metrics must have the same set of defined quantile keys.
+    const r2 = FINANCE_RESULT_R2;
+    const EXPECTED_QUANTILES = ["p50", "p75", "p90", "p95"] as const;
+    for (const q of EXPECTED_QUANTILES) {
+      expect(r2.irr_pct![q]).toBeDefined();               // IRR
+      expect(r2.npv_yuan![q]).toBeDefined();              // NPV
+      expect(r2.mirr_pct![q]).toBeDefined();              // MIRR
+      expect(r2.lcoe_yuan_per_mwh![q]).toBeDefined();     // LCOE
+      expect(r2.payback_discounted_yr![q]).toBeDefined(); // Payback
+    }
+  });
+
+  it("T-RULE-C-2: rule C — ComparisonTable at R2 renders P75/P90/P95 for MIRR + LCOE + payback (not just IRR)", () => {
+    // If the UI only renders P75/P90/P95 for IRR but silently drops them for MIRR/LCOE/payback,
+    // rule C is violated (the table under-represents the risk tail for non-IRR metrics).
+    // Fixture values: MIRR p75=6.9%, p90=6.6%; LCOE p75=325 ¥/MWh, p90=341 ¥/MWh
+    render(
+      <ComparisonTable
+        variants={[makeVariant({ finance_result: FINANCE_RESULT_R2 })]}
+        baselineId="var-baseline"
+        regime="R2"
+        hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
+      />
+    );
+    // MIRR P90 must be rendered (rule C uniformity)
+    expect(screen.getByText(/6\.6%/)).toBeTruthy();    // MIRR p90.value = 6.6
+    // LCOE P90 must be rendered
+    expect(screen.getByText(/341/)).toBeTruthy();       // LCOE p90.value = 341 ¥/MWh
+    // Payback P90 must be rendered
+    expect(screen.getByText(/10\.2/)).toBeTruthy();     // payback_discounted_yr p90.value = 10.2
   });
 
   // reviewer: rule B must also hold at R1 and R3 (bootstrap_ci absent when regime != R2)

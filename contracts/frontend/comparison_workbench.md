@@ -1,7 +1,7 @@
 # Frontend Contract — Comparison Workbench
 
 > **Area:** frontend
-> **Contract version:** v1.4.0-draft (Round 5 — finance-expert SC4 deltas 2/3/4: rule A/B explicit, bootstrap_ci NPV-only fixture, debt_metrics levered render spec + tests)
+> **Contract version:** v1.5.0-draft (Round 6 — rule C: uniform percentile presence at R2; R2 fixture now {p50,p75,p90,p95} for all 5 metrics; bootstrap_ci on ALL npv_yuan nodes; T-RULE-C-1/2)
 > **Status:** DRAFT — awaiting frontend-reviewer + finance-expert (SC4) gate
 > **Branch:** `feat/frontend-comparison-workbench`
 > **Owner:** frontend-engineer
@@ -167,7 +167,7 @@ Types referenced from `contracts/shared/finance_result_summary.md` v1.1.0:
 | Type | Summary |
 |------|---------|
 | `PercentileResult` | `{ value, confidence, bootstrap_ci? }`. `confidence` is PERCENTILE-LEVEL: at any given q, the value is IDENTICAL across all 5 distributional metrics — enforced by the engine (rule A). `bootstrap_ci` is NPV-ONLY: present ONLY on `npv_yuan` nodes; MUST be absent (undefined/null) on `irr_pct`, `mirr_pct`, `lcoe_yuan_per_mwh`, `payback_discounted_yr` nodes (rule B). |
-| `MetricPercentiles` | `{ p50?, p75?, p90?, p95?, p99? }`. Presence is UNIFORM across metrics at same regime (rule C). |
+| `MetricPercentiles` | `{ p50?, p75?, p90?, p95?, p99? }`. Presence is UNIFORM across ALL 5 distributional metrics at same regime (rule C): the engine populates the exact same quantile set for every metric. At R2: {p50,p75,p90,p95} for all 5; p99 optional (always `indicative_low_confidence`). At R3: {p50} only, for all 5. REJECT any cross-metric presence mismatch. |
 | `SingleTrajectoryResult` | `{ point_npv_yuan, max_drawdown_yuan, max_drawdown_year, worst_year_cf_yuan }`. Present at ALL M; HEADLINE at R1. |
 | `DownsideRiskResult` | `{ worst_case_npv_yuan, best_of_n_npv_yuan?, p_npv_neg, p_irr_below_hurdle, cvar5_yuan, max_drawdown_yuan, max_drawdown_year, worst_year_cf_yuan }` |
 | `DebtMetrics` | `{ equity_irr_pct: number \| null, min_dscr: number \| null }` — null when `debt_toggle=false` |
