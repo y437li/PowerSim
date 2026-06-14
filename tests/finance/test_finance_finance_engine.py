@@ -671,15 +671,20 @@ def test_fin22b_max_drawdown():
     """FIN-22b: Max cumulative drawdown = −¥300,000 at year 3.
 
     CF(y): +100k, −150k, −250k, +180k, +320k  (year-0 CAPEX excluded)
-    cumCF: +100k,  −50k, −300k, −120k, +200k
+    cumCF: +100k,  −50k, −300k, −120k, +200k  (computed INTERNALLY by max_drawdown)
     shortfall-below-zero: min(0, min(+100k, −50k, −300k, −120k, +200k))
                         = min(0, −300,000) = −¥300,000  at year 3
     (NOT peak-to-trough — LOCKED §13.10b shortfall-below-zero literal, finance-expert PR #107 §A)
+
+    IMPORTANT: pass the annual CF series — max_drawdown() cumsums internally.
+    Pre-cumsumming here would double-cumsum → wrong trough (−370k at yr4 instead of −300k at yr3).
+    Consistent with worst_year_cf(cf_excl_capex) convention.  (finance-expert REQUEST_CHANGES PR #110)
     """
-    cum_cf = np.cumsum(_DRAWDOWN_CF)  # [100k, −50k, −300k, −120k, +200k]
-    result_val  = max_drawdown(cum_cf)["drawdown_yuan"]
-    result_year = max_drawdown(cum_cf)["drawdown_year"]
-    # min(0, −300,000) = −300,000; argmin = index 2 → year 3 (1-indexed)
+    # Pass annual series; function does cumsum internally per LOCKED §13.10b formula:
+    # max_drawdown = min(0, min(np.cumsum(cf_excl_capex)))
+    result_val  = max_drawdown(_DRAWDOWN_CF)["drawdown_yuan"]
+    result_year = max_drawdown(_DRAWDOWN_CF)["drawdown_year"]
+    # cumCF = [100k, −50k, −300k, −120k, +200k]; min(0, −300k) = −300,000; argmin=idx2 → year 3
     assert result_val  == pytest.approx(-300_000.0, abs=TOL_NPV_YUAN)
     assert result_year == 3
 
@@ -1239,6 +1244,135 @@ def test_fin46_bootstrap_ci_contains_point_estimate():
 
 
 # ---------------------------------------------------------------------------
+# FIN-56 — Tax assembly end-to-end: finance(tax_toggle=True) → Vector-2 values
+# Source: PR #107 Vector 2 / finance-expert REQUEST_CHANGES on PR #110
+# FIN-07–FIN-09 test tax primitives on hand-baked CFs; this verifies the ENGINE
+# wires them correctly end-to-end by calling finance() on the Vector-1 ensemble.
+# (Numbered FIN-56/57 to avoid collision with reviewer-added FIN-53–55 edge cases.)
+# ---------------------------------------------------------------------------
+
+def test_fin56_tax_toggle_end_to_end():
+    """FIN-56: finance(tax_toggle=True, depreciation_years=2) on Vector-1 ensemble →
+    after-tax NPV = −¥2,066.12 AND delta from base = −¥43,388.43.
+
+    Vector-1 ensemble: M=1, N=2, revenue=¥700,000/yr, demand_charge=¥100,000/yr,
+    EBITDA=¥600,000/yr, CAPEX=¥1,000,000.
+
+    Tax path (straight-line dep over 2yr):
+      dep(y)     = 1,000,000/2 = 500,000
+      taxable(y) = EBITDA − dep = 600,000 − 500,000 = 100,000
+      tax(y)     = 0.25·100,000 = 25,000
+      CF_tax(y)  = 600,000 − 25,000 = 575,000
+    NPV_tax(0.10) = −1,000,000 + 575,000/1.10 + 575,000/1.21
+                  = −1,000,000 + 522,727.27 + 475,206.61 = −¥2,066.12
+    NPV_base = ¥41,322.31  (Vector 1, tax=OFF)
+    ΔNPV_tax = −2,066.12 − 41,322.31 = −¥43,388.43
+             = −(25,000/1.10 + 25,000/1.21) = −(22,727.27 + 20,661.16)  ✓
+    """
+    yr = _make_eval_result(grid_export_yuan=700_000.0, demand_charge_yuan=100_000.0,
+                           generation_mwh=10_000.0)
+    ensemble = PolicyEnsemble(
+        seed=0, M=1, sample_kind="bootstrap",
+        runs={"policy_a": [[yr, yr]]},
+    )
+    from energy_go.finance.econ_params import DeviceEconParams
+    econ       = DeviceEconParams(total_capex_yuan=1_000_000.0)
+    price_path = [PricePath(id="flat", label="Flat", multipliers=[1.0, 1.0])]
+
+    # ── Base case: tax=OFF ──
+    config_base = _make_base_config(tax_toggle=False, horizon_years=2)
+    result_base = finance(ensemble, price_path, econ, config_base)
+    npv_base    = (result_base.per_policy["policy_a"]
+                              .per_price_path["flat"]
+                              .view_i.single_trajectory.point_npv_yuan)
+    # −1,000,000 + 600,000/1.10 + 600,000/1.21 = ¥41,322.31
+    assert npv_base == pytest.approx(41_322.31, abs=TOL_NPV_YUAN), (
+        "pre-tax base NPV must match Vector-1 ¥41,322.31"
+    )
+
+    # ── Tax-ON case: straight-line dep=500k/yr, tax_rate=0.25 (default) ──
+    config_tax = _make_base_config(tax_toggle=True, depreciation_years=2, horizon_years=2)
+    result_tax = finance(ensemble, price_path, econ, config_tax)
+    npv_afttax = (result_tax.per_policy["policy_a"]
+                            .per_price_path["flat"]
+                            .view_i.single_trajectory.point_npv_yuan)
+    # −1,000,000 + 522,727.27 + 475,206.61 = −¥2,066.12
+    assert npv_afttax == pytest.approx(-2_066.12, abs=TOL_NPV_YUAN), (
+        "after-tax NPV must match Vector-2 −¥2,066.12"
+    )
+
+    # ── Tax delta (finance engine assembles the delta, not just the primitives) ──
+    delta = npv_afttax - npv_base
+    # −(25,000/1.10 + 25,000/1.21) = −(22,727.27 + 20,661.16) = −¥43,388.43
+    assert delta == pytest.approx(-43_388.43, abs=TOL_NPV_YUAN), (
+        "tax delta must equal −¥43,388.43 = PV of tax shield lost (Vector-2 §A)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# FIN-57 — Debt assembly end-to-end: finance(debt_toggle=True) → Vector-3 values
+# Source: PR #107 Vector 3 / finance-expert REQUEST_CHANGES on PR #110
+# FIN-11–FIN-12 test levered primitives on hand-baked CFs; this verifies the ENGINE
+# wires them correctly end-to-end by calling finance() on the Vector-1 ensemble.
+# r_d_override=0.05 pins the debt rate (bypasses LPR + credit_spread lookup).
+# ---------------------------------------------------------------------------
+
+def test_fin57_debt_toggle_end_to_end():
+    """FIN-57: finance(debt_toggle=True, target_de_ratio=1.5, loan_term_years=2,
+    r_d_override=0.05) on Vector-1 ensemble →
+    equity_irr = 24.8565% AND min_dscr = 1.8594.
+
+    Vector-1 ensemble: M=1, N=2, EBITDA=¥600,000/yr, CAPEX=¥1,000,000.
+
+    Levered capital structure (D/E=1.5):
+      Debt   = CAPEX·D/(D+E) = 1,000,000·1.5/2.5 = ¥600,000
+      Equity = 1,000,000 − 600,000 = ¥400,000
+
+    Level annuity (r_d=0.05, n=2yr):
+      A = 600,000·[0.05·1.05²]/[1.05²−1]
+        = 600,000·0.055125/0.1025 = ¥322,682.93/yr
+
+    min-DSCR:
+      CFADS(y) = EBITDA = ¥600,000
+      DSCR(y)  = 600,000 / 322,682.93 = 1.8594  (level → same both years)
+
+    Equity CF:
+      CF_eq(0) = −¥400,000
+      CF_eq(y) = 600,000 − 322,682.93 = ¥277,317.07
+    equity-IRR: u = (√(1 + 4·400k/277.317k) − 1)/2 = 0.80092; IRR = 1/u − 1 = 24.856%
+    """
+    yr = _make_eval_result(grid_export_yuan=700_000.0, demand_charge_yuan=100_000.0,
+                           generation_mwh=10_000.0)
+    ensemble = PolicyEnsemble(
+        seed=0, M=1, sample_kind="bootstrap",
+        runs={"policy_a": [[yr, yr]]},
+    )
+    from energy_go.finance.econ_params import DeviceEconParams
+    econ       = DeviceEconParams(total_capex_yuan=1_000_000.0)
+    price_path = [PricePath(id="flat", label="Flat", multipliers=[1.0, 1.0])]
+
+    config_debt = _make_base_config(
+        debt_toggle=True,
+        target_de_ratio=1.5,
+        loan_term_years=2,
+        r_d_override=0.05,    # pins r_d=5% directly; bypasses lpr_5yr + credit_spread lookup
+        horizon_years=2,
+    )
+    result = finance(ensemble, price_path, econ, config_debt)
+    view   = result.per_policy["policy_a"].per_price_path["flat"].view_i
+
+    # equity-IRR: CF_eq=[−400k,+277,317.07,+277,317.07];
+    # u=(√(1+4·400k/277.317k)−1)/2=0.80092; IRR=1/u−1=0.2485645
+    assert view.equity_irr == pytest.approx(0.2485645, abs=TOL_RATE_PP), (
+        "equity-IRR must match Vector-3 24.8565%"
+    )
+    # min-DSCR: 600,000 / 322,682.93 = 1.8594 (level annuity → same both years)
+    assert view.min_dscr == pytest.approx(1.8594, abs=TOL_DSCR), (
+        "min-DSCR must match Vector-3 1.8594"
+    )
+
+
+# ---------------------------------------------------------------------------
 # FIN-47–FIN-52 — R3 regime: empirical small-sample (M≈10)
 # PENDING: D39 R3 finalization (PR #108). Skipped until D39 merges.
 # R3 = per-year trajectory strip + empirical P50 + worst/best-of-N range + P(NPV<0)
@@ -1258,14 +1392,16 @@ def test_fin47_r3_distribution_valid_true():
 
 
 @_SKIP_R3
-def test_fin48_r3_no_labeled_p90_p95():
-    """FIN-48: R3 → P90, P95, P99, CVaR-5% must be ABSENT (None).
+def test_fin48_r3_no_labeled_p75_p90_p95():
+    """FIN-48: R3 → P75, P90, P95, P99, CVaR-5% must ALL be ABSENT (None).
 
     Under the LOCKED nearest-rank estimator at M≈10:
     P90 = np.quantile(sorted, 0.10, method='lower') → index floor(0.10·9)=0 = minimum
+    P75 = np.quantile(sorted, 0.25, method='lower') → index floor(0.25·9)=2 → collapse risk
     CVaR-5% = k=ceil(0.05·10)=1 = single worst draw
-    → P90/CVaR-5%/worst-case would all be the same number (relabel trap, §13.10c).
-    D39 ruling: drop labeled tail percentiles in R3; surface as "worst/best of N observed years".
+    → P75/P90/CVaR-5%/worst-case would all collapse to the same few draws (relabel trap, §13.10c).
+    D39 ruling: drop ALL labeled tail percentiles in R3 (including P75); surface as
+    "worst/best of N observed years".  (P75-absent noted finance-expert REQUEST_CHANGES PR #110)
     PENDING: D39 merge.
     """
 

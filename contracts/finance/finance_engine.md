@@ -149,6 +149,7 @@ class FinanceConfig:
     target_de_ratio:         float = 1.5
     credit_spread:           float = 0.0125          # 125 bps over 5yr LPR
     loan_term_years:         int   = 20
+    r_d_override:            "float | None" = None   # for unit tests bypassing LPR + credit_spread lookup
     # Horizon / project
     horizon_years:           int   = 20
     valuation_date:          str   = "2026-01-01"    # ISO 8601
@@ -443,12 +444,15 @@ shown in comments** (engineering rule). The tolerance table (from PR #107 §C cr
 | FIN-43 | **Debt-toggle gating:** equity_irr/min_dscr absent when debt OFF | §13.9 |
 | FIN-44 | **Provenance completeness:** all required fields present | §13.12 |
 | FIN-45–FIN-46 | **Bootstrap CI properties:** determinism, degenerate width=0, CI contains point estimate | §13.10a |
+| FIN-53–FIN-55 | **Reviewer edge cases** (backend-reviewer): drawdown no-shortfall clamp (FIN-53), CVaR k=ceil at integer boundaries M=20/40 (FIN-54), MIRR single-valued on multi-sign CF (FIN-55) | backend-reviewer (commit 69650b3) |
+| FIN-56 | **Tax assembly end-to-end:** `finance(tax_toggle=True, depreciation_years=2)` on Vector-1 ensemble → after-tax NPV = −¥2,066.12 AND delta = −¥43,388.43 | finance-expert REQUEST_CHANGES PR #110 |
+| FIN-57 | **Debt assembly end-to-end:** `finance(debt_toggle=True, target_de_ratio=1.5, loan_term_years=2, r_d_override=0.05)` on Vector-1 ensemble → equity_irr = 24.8565% AND min_dscr = 1.8594 | finance-expert REQUEST_CHANGES PR #110 |
 
 ### 5.2 Pending test group (R3 — PENDING D39 merge)
 
 | ID range | Group | Status |
 |---|---|---|
-| FIN-47–FIN-52 | **R3 regime (empirical M≈10):** per-year strip, empirical P50, worst/best-of-N range, P(NPV<0); NO labeled P75/P90/P95 or CVaR | `pytest.mark.skip` — PENDING D39 |
+| FIN-47–FIN-52 | **R3 regime (empirical M≈10):** per-year strip, empirical P50, worst/best-of-N range, P(NPV<0); NO labeled P75/P90/P95/P99 or CVaR (FIN-48 asserts P75+P90+P95+P99+CVaR all absent) | `pytest.mark.skip` — PENDING D39 |
 
 ---
 
@@ -480,10 +484,10 @@ shown in comments** (engineering rule). The tolerance table (from PR #107 §C cr
 - [ ] `econ_params.py`: loads from `config/device_models.yaml` (#103) with per-value provenance
 - [ ] `engine.py` facade: orchestrates sub-modules; View I/II aggregation; View II omitted when baseline absent
 - [ ] `FinanceResult` carries `distribution_valid=False` at M=1; all distributional fields absent (not None-fabricated)
-- [ ] Debt-toggle: `equity_irr` / `min_dscr` absent (not zero) when `debt_toggle=False`
+- [ ] Debt-toggle: `equity_irr` / `min_dscr` absent (not zero) when `debt_toggle=False`; `r_d_override` bypasses LPR+credit_spread when set (pins r_d directly)
 - [ ] Bootstrap CI: seeded; B=2000 default; deterministic; degenerate width=0
 - [ ] Provenance block: all 12 required fields
 - [ ] `finance` area added to CLAUDE.md `<area>` list + `check_conventions.sh` (D39)
 - [ ] `finance` added to STACK.md as a new area with stack = "pure Python + NumPy"
-- [ ] All FIN-00–FIN-46 tests pass; FIN-47–FIN-52 remain skipped until D39 lands
+- [ ] All FIN-00–FIN-46, FIN-53–FIN-57 tests pass; FIN-47–FIN-52 remain skipped until D39 lands
 - [ ] No hardcoded Gansu constants — works for any `PolicyEnsemble` + `DeviceEconParams`
