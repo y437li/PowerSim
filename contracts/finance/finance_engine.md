@@ -469,6 +469,8 @@ shown in comments** (engineering rule). The tolerance table (from PR #107 §C cr
 | FIN-53–FIN-55 | **Reviewer edge cases** (backend-reviewer): drawdown no-shortfall clamp (FIN-53), CVaR k=ceil at integer boundaries M=20/40 (FIN-54), MIRR single-valued on multi-sign CF (FIN-55) | backend-reviewer (commit 69650b3) |
 | FIN-56 | **Tax assembly end-to-end:** `finance(tax_toggle=True, depreciation_years=2)` on Vector-1 ensemble → after-tax NPV = −¥2,066.12 AND delta = −¥43,388.43 | finance-expert REQUEST_CHANGES PR #110 |
 | FIN-57 | **Debt assembly end-to-end:** `finance(debt_toggle=True, target_de_ratio=1.5, loan_term_years=2, r_d_override=0.05)` on Vector-1 ensemble → equity_irr = 24.8565% AND min_dscr = 1.8594 | finance-expert REQUEST_CHANGES PR #110 |
+| FIN-58 | **INV-DEG §3.6 cash half:** `build_cash_flow_series([yr,yr], econ=econ_lifecycle)` with `degradation_yuan=¥100k` (decoy) and `lifetime_years=1, replacement_cost_fraction=0.70` → CF[1]=−¥100k (EBITDA ¥600k − replacement ¥700k); degradation NOT subtracted (if wrong: −¥200k) | PR #114 §B; team-lead GO |
+| FIN-59 | **Vector 4 lifecycle:** `finance()` on N=4 ensemble, `lifetime_years=2, replacement_cost_fraction=0.70, residual_value_fraction=0.05, decommissioning_yuan=¥20k` → NPV=¥343,897.27; LCOE=¥48.72/MWh (§13.8 `PV(CAPEX+Replacement−Residual)/PV(E_net)`, decommissioning excluded from LCOE numerator) | finance-expert PR #114 §A Vector 4 |
 
 ### 5.2 Pending test group (R3 — PENDING D39 merge)
 
@@ -503,7 +505,9 @@ shown in comments** (engineering rule). The tolerance table (from PR #107 §C cr
 - [ ] `distributions.py`: LOCKED estimator (`np.quantile(...,'lower'/'higher')`); CVaR k=ceil(0.05·M); shortfall-below-zero drawdown; M=50 §A worked ensemble passes
 - [ ] `price_path.py`: preset library + `requires_retrain=True` for non-uniform paths; INV-FINLAYER guard
 - [ ] `sensitivity.py`: NPV-vs-r curve; tornado; §13.11 surface shape agreed with backend-reviewer
-- [ ] `econ_params.py`: loads from `config/device_models.yaml` (#103) with per-value provenance
+- [ ] `econ_params.py`: loads from `config/device_models.yaml` (#103) with per-value provenance; includes lifecycle fields `replacement_cost_fraction`, `cycle_life_full_equiv`, `lifetime_years`, `residual_value_fraction`, `decommissioning_yuan`
+- [ ] `cash_flow.py`: `_eol_events()` implements first-to-fire(calendar, throughput) per §13.6; replacement fires at years 1..N-1 only; terminal = residual − decommissioning at year N; `build_cash_flow_series(econ=...)` wires lifecycle into CF
+- [ ] `metrics.py` `lcoe()`: sign convention `pv_costs += -c / factor` (negative=cost, positive=credit); residual credit at year N correctly reduces LCOE; decommissioning NOT in LCOE numerator (§13.8 literal — it is a cash-flow item, not a levelised energy cost)
 - [ ] `engine.py` facade: orchestrates sub-modules; View I/II aggregation; View II omitted when baseline absent
 - [ ] `FinanceResult` carries `distribution_valid=False` at M=1; all distributional fields absent (not None-fabricated)
 - [ ] Debt-toggle: `equity_irr` / `min_dscr` absent (not zero) when `debt_toggle=False`; `r_d_override` bypasses LPR+credit_spread when set (pins r_d directly)
@@ -511,5 +515,5 @@ shown in comments** (engineering rule). The tolerance table (from PR #107 §C cr
 - [ ] Provenance block: all 12 required fields
 - [ ] `finance` area added to CLAUDE.md `<area>` list + `check_conventions.sh` (D39)
 - [ ] `finance` added to STACK.md as a new area with stack = "pure Python + NumPy"
-- [ ] All FIN-00–FIN-46, FIN-53–FIN-57 tests pass; FIN-47–FIN-52 remain skipped until D39 lands
+- [ ] All FIN-00–FIN-46, FIN-53–FIN-59 tests pass; FIN-47–FIN-52 remain skipped until D39 lands
 - [ ] No hardcoded Gansu constants — works for any `PolicyEnsemble` + `DeviceEconParams`

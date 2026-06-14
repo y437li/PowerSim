@@ -158,22 +158,36 @@ def lcoe(
 ) -> float:
     """Levelised Cost of Energy (¥/MWh).
 
-    LCOE = PV(|costs|) / PV(energy)
+    LCOE = PV(CAPEX + FixedOM + VarOM + Replacement − Residual) / PV(energy)
 
-    cf_costs: [cf[0], ..., cf[N]] where values are ≤ 0 (CAPEX + annual costs, sign-negative).
+    cf_costs sign convention:
+      negative = cost (CAPEX, O&M, replacement CAPEX)
+      positive = credit (residual/scrap value at horizon N)
+    This allows residual to correctly REDUCE LCOE rather than inflate it.
+
+    cf_costs: [cf[0], ..., cf[N]] — negative for costs, positive for credits.
     e_net:    [0, e[1], ..., e[N]]  annual net generation in MWh; e[0] is typically 0.
 
+    Note: decommissioning_yuan is a cash-flow item (in NPV) but NOT an LCOE cost
+    per §13.8 literal — it is excluded from cf_costs for LCOE purposes.
+
     Vector 1 check: cf_costs=[-1M,-100k,-100k], e_net=[0,10k,10k], rate=0.10
-      PV_costs = 1M + 100k/1.10 + 100k/1.21 = 1,173,553.72
+      PV_costs = −(−1M) + −(−100k)/1.10 + −(−100k)/1.21 = 1M + 90,909.09 + 82,644.63
+               = 1,173,553.72
       PV_energy = 10k/1.10 + 10k/1.21 = 17,355.37
       LCOE = 67.62 ¥/MWh  ✓
+
+    Vector 4 lifecycle check: cf_costs=[-1M,0,-700k,0,+50k], e_net=[0,10k,10k,10k,10k], rate=0.10
+      PV_costs = 1M + 0 + 700k/1.21 + 0 − 50k/1.4641 = 1,544,361.73
+      PV_energy = 31,698.65
+      LCOE = 48.72 ¥/MWh  ✓  (vs ¥31.55 without replacement — ~54% understatement if omitted)
     """
     r = 1.0 + rate
     pv_costs = 0.0
     pv_energy = 0.0
     factor = 1.0
     for c, e in zip(cf_costs, e_net):
-        pv_costs += abs(c) / factor
+        pv_costs += (-c) / factor   # negative cost → positive contribution; positive credit → negative
         pv_energy += e / factor
         factor *= r
     if pv_energy == 0.0:

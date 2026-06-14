@@ -27,7 +27,7 @@ import numpy as np
 
 from energy_go.training.eval import PolicyEvalResult  # §13.7 / task #55
 from energy_go.finance.discount import compute_wacc
-from energy_go.finance.cash_flow import build_cash_flow_series
+from energy_go.finance.cash_flow import build_cash_flow_series, _eol_events
 from energy_go.finance.metrics import (
     npv, irr, mirr, lcoe, lcos,
     payback_simple, payback_discounted, dscr,
@@ -246,13 +246,22 @@ def _build_annual_cf(
 ) -> list[float]:
     """Build full CF [CAPEX_yr0, yr1, …, yrN] for one draw, with price path and tax.
 
+    CF(y) = EBITDA(y) − Tax(y) − Replacement(y);  CF(N) adds Terminal
     Revenue streams are scaled by price_path.multipliers (INV-FINLAYER).
     Tax (straight-line depreciation) applied when config.tax_toggle=True.
+    Replacement CAPEX fires at first-to-fire(calendar, throughput) years (§13.6).
+    Terminal = residual_value − decommissioning at year N.
     """
+    N = len(traj)
     annual: list[float] = []
     dep = econ.total_capex_yuan / max(1, config.depreciation_years) if config.tax_toggle else 0.0
 
+    # Lifecycle events: compute once per trajectory
+    repl_years, repl_capex, terminal_val = _eol_events(traj, econ)
+
     for y_idx, yr in enumerate(traj):
+        year = y_idx + 1  # 1-indexed
+
         # ── Revenue streams (inflows) ────────────────────────────────────────
         gross_revenue = (
             yr.streams["grid_export"].value_yuan
@@ -279,10 +288,20 @@ def _build_annual_cf(
             - econ.asset_mgmt_yuan_per_yr
         )
 
-        # Tax (straight-line depreciation, no negative tax)
+        # Tax on EBITDA (straight-line depreciation, no negative tax)
+        # Tax is computed BEFORE replacement (replacement CAPEX is not expensed against revenue)
         if config.tax_toggle:
             taxable = max(0.0, ebitda - dep)
             ebitda -= config.tax_rate * taxable
+
+        # Lifecycle: replacement CAPEX at EOL year (INV-DEG §3.6 cash half)
+        # degradation_yuan is NOT subtracted — it is a memo-only wear signal.
+        if year in repl_years:
+            ebitda -= repl_capex
+
+        # Lifecycle: terminal value at horizon N (residual − decommissioning)
+        if year == N:
+            ebitda += terminal_val
 
         annual.append(ebitda)
 
@@ -293,14 +312,41 @@ def _cf_costs_and_energy(
     traj: list[PolicyEvalResult],
     econ: DeviceEconParams,
 ) -> tuple[list[float], list[float], list[float]]:
-    """Extract cost-only CF and energy/storage vectors for LCOE/LCOS."""
+    """Extract cost-only CF and energy/storage vectors for LCOE/LCOS.
+
+    Sign convention (per lcoe() docstring §13.8 literal):
+      cf_costs[t] < 0  →  cost (CAPEX, O&M, replacement CAPEX)
+      cf_costs[t] > 0  →  credit (residual/scrap value at horizon N)
+
+    Decommissioning is NOT included in cf_costs: it enters the NPV cash flow
+    (via _build_annual_cf terminal_val) but is excluded from LCOE numerator
+    per §13.8 literal ("LCOE = PV(CAPEX + OM + Replacement − Residual) / PV(E_net)").
+    """
+    N = len(traj)
+    repl_years, repl_capex, _ = _eol_events(traj, econ)   # terminal_val NOT in LCOE
+
     cf_costs = [-econ.total_capex_yuan]
     e_gen: list[float] = [0.0]
     e_discharge: list[float] = [0.0]
-    for yr in traj:
-        cf_costs.append(-econ.fixed_om_yuan_per_yr - econ.var_om_yuan_per_mwh * yr.generation_mwh)
+
+    for y_idx, yr in enumerate(traj):
+        year = y_idx + 1
+        cost = -econ.fixed_om_yuan_per_yr - econ.var_om_yuan_per_mwh * yr.generation_mwh
+
+        # Replacement CAPEX at EOL year (cost, negative)
+        if year in repl_years:
+            cost -= repl_capex
+
+        # Residual value credit at year N (positive → reduces PV(costs) in lcoe())
+        # Decommissioning is deliberately excluded (NPV-only, not LCOE)
+        if year == N:
+            residual_value = econ.total_capex_yuan * econ.residual_value_fraction
+            cost += residual_value
+
+        cf_costs.append(cost)
         e_gen.append(yr.generation_mwh)
         e_discharge.append(yr.bat_discharge_mwh)
+
     return cf_costs, e_gen, e_discharge
 
 

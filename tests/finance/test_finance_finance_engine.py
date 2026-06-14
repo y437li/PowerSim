@@ -1546,3 +1546,148 @@ def test_fin55_mirr_single_valued_on_multi_sign_cf():
     assert result == pytest.approx(0.096022, abs=TOL_RATE_PP), (
         "MIRR must be single-valued (9.6022%) on a multi-sign CF where IRR has 2 roots"
     )
+
+
+# ---------------------------------------------------------------------------
+# FIN-58 — INV-DEG §3.6 cash half: EOL replacement CAPEX fires; degradation_yuan
+#           does NOT double-count.
+# Source: rl-architect / team-lead GO (Vector 4 scope, PR #114 §B INV-DEG cash half)
+# ---------------------------------------------------------------------------
+
+def test_fin58_inv_deg_eol_cash_half():
+    """FIN-58: INV-DEG §3.6 cash half — replacement CAPEX fires at calendar EOL;
+    degradation_yuan (memo-only wear signal) does NOT appear in the cash flow.
+
+    Fixture:
+      yr: grid_export=¥600k, degradation_yuan=¥100k (decoy — memo only)
+      econ: total_capex=¥1M, replacement_cost_fraction=0.70, lifetime_years=1
+
+    First-to-fire(calendar=1yr, throughput=N/A → bat_throughput=0 → no cycle trigger):
+      t_replace = min(lifetime_years=1, ...) = 1  →  fires at year 1 (< N=1? N=1 → NO)
+
+    Wait — N=1 (single-year trajectory), year 1 == N, so replacement does NOT fire
+    (last year convention: replacements fire at years 1..N-1 only).
+    Terminal fires instead: residual=0, decommissioning=0 → terminal=0.
+
+    To actually observe replacement firing in CF, use lifetime_years=1 with N=2:
+      yr × 2 years (N=2): replacement fires at year 1 (< N=2) ✓
+
+    CF[0] = 0  (capex_yuan defaults to 0 — test focuses on operating years)
+    CF[1] = EBITDA(600k) − replacement(700k) = −100k
+            NOT: 600k − 100k(degradation) − 700k = −200k  (would be wrong)
+    CF[2] = EBITDA(600k) + terminal(0) = 600k  (terminal: residual=0, decom=0)
+    """
+    yr = _make_eval_result(
+        grid_export_yuan=600_000.0,
+        degradation_yuan=100_000.0,   # ¥100k decoy — must NOT appear in cash
+    )
+    from energy_go.finance.econ_params import DeviceEconParams
+    econ_lifecycle = DeviceEconParams(
+        total_capex_yuan=1_000_000.0,
+        replacement_cost_fraction=0.70,   # → replacement = ¥700k
+        lifetime_years=1,                  # calendar EOL fires at year 1 (first-to-fire)
+    )
+    # Two-year trajectory so replacement fires at year 1 (< N=2)
+    cf = build_cash_flow_series([yr, yr], econ=econ_lifecycle)
+
+    # CF[0] = 0 (no capex_yuan passed)
+    assert cf[0] == pytest.approx(0.0, abs=TOL_NPV_YUAN), (
+        "year-0 CF must be 0 (capex_yuan not passed, lifecycle provides only operating events)"
+    )
+
+    # CF[1]: EBITDA=600k − replacement=700k = −100k
+    # If degradation_yuan were (wrongly) included: 600k − 100k − 700k = −200k
+    assert cf[1] == pytest.approx(-100_000.0, abs=TOL_NPV_YUAN), (
+        "CF[1] must be −¥100k = EBITDA(600k) − replacement(700k); "
+        "degradation_yuan(100k) is memo-only and must NOT be subtracted (INV-DEG §3.6)"
+    )
+
+    # CF[2] = EBITDA(600k) + terminal(0) = 600k (no residual, no decommissioning set)
+    assert cf[2] == pytest.approx(600_000.0, abs=TOL_NPV_YUAN), (
+        "CF[2] (terminal year N=2) must be EBITDA only with zero terminal value"
+    )
+
+
+# ---------------------------------------------------------------------------
+# FIN-59 — Vector 4: lifecycle replacement + terminal value → NPV + LCOE.
+# Source: finance-expert PR #114 §A (Vector 4 worked numbers).
+# ---------------------------------------------------------------------------
+
+def test_fin59_lifecycle_vector4():
+    """FIN-59: Vector 4 — first-to-fire lifecycle, replacement + terminal → NPV + LCOE.
+
+    Spec: §13.6, §13.8, PR #114 §A (finance-expert Vector 4).
+
+    Fixture: CAPEX=¥1M, N=4yr, EBITDA=¥600k/yr (grid_export, no OM), r=0.10
+    replacement_cost_fraction=0.70 → ¥700k at yr2 (lifetime_years=2 fires first;
+    cycle_life_full_equiv=0 → no cycle limit, calendar-only)
+    residual_value_fraction=0.05  → ¥50k credit at yr4 (= 0.05 × ¥1M)
+    decommissioning_yuan=¥20k     → enters NPV CF; excluded from LCOE (§13.8 literal)
+    terminal net for NPV = +50k − 20k = +30k
+
+    Cash-flow series:
+      CF[0] = −1,000,000 (CAPEX)
+      CF[1] = 600,000 (EBITDA yr1; no replacement: years_since_start=1 < lifetime=2)
+      CF[2] = 600,000 − 700,000 = −100,000 (EBITDA − replacement; years_since_start=2 ≥ 2)
+      CF[3] = 600,000 (EBITDA yr3; new asset started at yr2, years_since_start=1 < 2)
+      CF[4] = 600,000 + 30,000 = 630,000 (EBITDA + terminal; yr4 = N, no new replacement)
+
+    NPV(r=0.10):
+      = −1,000,000 + 600,000/1.10 + (−100,000)/1.21 + 600,000/1.331 + 630,000/1.4641
+      = −1,000,000 + 545,454.55 − 82,644.63 + 450,788.88 + 430,298.47
+      = ¥343,897.27
+
+    LCOE (e_net=10,000 MWh/yr; no FixedOM; §13.8 "PV(CAPEX+Replacement−Residual)/PV(E_net)"):
+      PV(costs) = 1,000,000 + 700,000/1.10² − 50,000/1.10⁴
+                = 1,000,000 + 700,000/1.21 − 50,000/1.4641
+                = 1,000,000 + 578,512.40 − 34,150.67 = 1,544,361.73
+      PV(energy) = 10,000/1.10 + 10,000/1.21 + 10,000/1.331 + 10,000/1.4641
+                 = 31,698.65
+      LCOE = 1,544,361.73 / 31,698.65 = ¥48.72/MWh
+      (vs ¥31.55 without replacement: 1,000,000/31,698.65 — ~54% understatement if omitted)
+    """
+    yr = _make_eval_result(
+        grid_export_yuan=600_000.0,
+        generation_mwh=10_000.0,     # 10,000 MWh/yr → PV(energy) = 31,698.65
+    )
+    ensemble = PolicyEnsemble(
+        seed=0, M=1, sample_kind="bootstrap",
+        runs={"v4": [[yr, yr, yr, yr]]},   # N=4 years
+    )
+    from energy_go.finance.econ_params import DeviceEconParams
+    econ = DeviceEconParams(
+        total_capex_yuan=1_000_000.0,
+        replacement_cost_fraction=0.70,   # ¥700k per replacement
+        lifetime_years=2,                  # calendar EOL every 2 yr; fires at yr2 (< N=4) ✓
+        residual_value_fraction=0.05,      # ¥50k residual at yr4 = 0.05 × 1M
+        decommissioning_yuan=20_000.0,     # ¥20k site cleanup (NPV CF only; excluded from LCOE)
+    )
+    price_path = [PricePath(id="flat", label="Flat", multipliers=[1.0, 1.0, 1.0, 1.0])]
+    config = _make_base_config(horizon_years=4)
+
+    # ── NPV via finance() facade (tests _build_annual_cf + lifecycle) ──────
+    result = finance(ensemble, price_path, econ, config)
+    npv_val = (
+        result.per_policy["v4"]
+              .per_price_path["flat"]
+              .view_i.single_trajectory.point_npv_yuan
+    )
+    # NPV = −1M + 545,454.55 − 82,644.63 + 450,788.88 + 430,298.47 = ¥343,897.27
+    assert npv_val == pytest.approx(343_897.27, abs=TOL_NPV_YUAN), (
+        "Vector 4 lifecycle NPV must be ¥343,897.27 "
+        "(replacement ¥700k at yr2; terminal +¥30k = residual 50k − decom 20k at yr4)"
+    )
+
+    # ── LCOE via lcoe() primitive with lifecycle-aware cost series ─────────
+    # Sign convention: negative = cost, positive = credit (residual value).
+    # Decommissioning NOT in cf_costs (§13.8 literal excludes it from LCOE numerator).
+    cf_costs = [-1_000_000.0, 0.0, -700_000.0, 0.0, +50_000.0]
+    e_net    = [0.0, 10_000.0, 10_000.0, 10_000.0, 10_000.0]
+    lcoe_val = lcoe(cf_costs, e_net, rate=0.10)
+    # PV(costs) = 1M + 700k/1.21 − 50k/1.4641 = 1,000,000 + 578,512.40 − 34,150.67 = 1,544,361.73
+    # PV(energy) = 31,698.65
+    # LCOE = 1,544,361.73 / 31,698.65 = ¥48.72/MWh
+    assert lcoe_val == pytest.approx(48.72, abs=TOL_LCOE_YUAN_MWH), (
+        "LCOE with replacement+residual must be ¥48.72/MWh "
+        "(vs ¥31.55 without, ~54% understatement when lifecycle omitted)"
+    )

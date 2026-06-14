@@ -29,3 +29,11 @@ class DeviceEconParams:
 
     # Nameplate generation capacity (used as LCOE denominator fallback)
     nameplate_mwh_per_yr:    float = 0.0    # MWh/yr at rated capacity
+
+    # Lifecycle / end-of-life fields (from config/device_models.yaml via #103)
+    # Used by first-to-fire(calendar, throughput) EOL mechanism (§13.6).
+    replacement_cost_fraction: float = 0.0   # fraction of total_capex_yuan per replacement event
+    cycle_life_full_equiv:     float = 0.0   # full-equivalent cycles to end-of-life (0 = no limit)
+    lifetime_years:            int   = 0     # calendar years to end-of-life (0 = no limit)
+    residual_value_fraction:   float = 0.0   # fraction of total_capex_yuan as scrap/resale at horizon N
+    decommissioning_yuan:      float = 0.0   # absolute site-cleanup cost at horizon N (¥)
