@@ -1867,3 +1867,63 @@ describe("reviewer: §T3 MapPicker lon range guard (§4.2 T-MAP-10)", () => {
     expect(onLatLonChange).not.toHaveBeenCalled();
   });
 });
+
+// reviewer: §T-API-FAIL — assemble-failure path, store→panel integration.
+// # reviewer: BLOCKING (PR #102 impl review). Contract §5.1 "Error handling" + §7 T-UNHAPPY-2
+// # reviewer: + §4.5 apiError require that a non-200/network error from POST /api/site/assemble
+// # reviewer: surface in ValidationPanel as data-testid="validation-api-error" with a working
+// # reviewer: [Retry] that re-attempts the assemble call, and that stageState NOT advance to
+// # reviewer: COMPLETE on failure. The existing T-UNHAPPY-2 / T-VAL-7 only render ValidationPanel
+// # reviewer: in ISOLATION with apiError passed directly, so the store→panel wiring is untested.
+// # reviewer: At HEAD 4d7e42b this path is DEAD: stageOneStore assemble catch never sets an error
+// # reviewer: field, and StageOneConfig wires apiError={store.saveError} (the unrelated footer-save
+// # reviewer: error, never set by the assemble path). This test is RED until that is fixed.
+// # reviewer: — frontend-reviewer, PR #102 impl review, 2026-06-13
+describe("reviewer: §T-API-FAIL assemble failure surfaces in ValidationPanel (§5.1, T-UNHAPPY-2)", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+  it("reviewer: [T-API-FAIL-1] assemble 500 → validation-api-error shown, stage not COMPLETE; Retry recovers", async () => {
+    let failNext = true;
+    let assembleCalls = 0;
+    globalThis.fetch = vi.fn((url: string) => {
+      const u = String(url);
+      if (u.includes("/api/site/assemble")) {
+        assembleCalls++;
+        return failNext
+          ? Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({}) })
+          : Promise.resolve({ ok: true, json: () => Promise.resolve(MOCK_VALIDATION_CLEAN) });
+      }
+      if (u.includes("/api/tariff/regions"))
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(MOCK_TARIFF_REGIONS) });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    const StageOneConfig = await loadStageOneConfig();
+    const { useStageOneStore } = await import("../../src/stores/stageOneStore");
+    await act(async () => { useStageOneStore.getState().reset(); });
+    render(<StageOneConfig />);
+
+    // Satisfy the §5.1 guard (tariff + ≥1 valid device), then fire the 300 ms debounce → 500.
+    await act(async () => {
+      useStageOneStore.getState().setTariffRegion("cn-gansu", false);
+      useStageOneStore.getState().addDevice({ id: "vestas-v150-4.2", count: 1, valid: true });
+    });
+    await act(async () => { vi.advanceTimersByTime(350); });
+
+    // §5.1: error surfaces as validation-api-error; §5.1 deviation #2: stageState NOT COMPLETE.
+    await waitFor(() => { expect(screen.getByTestId("validation-api-error")).toBeTruthy(); });
+    expect(assembleCalls).toBe(1);
+    expect(useStageOneStore.getState().stageState).not.toBe("COMPLETE");
+
+    // §5.1: [Retry] must re-attempt the assemble call; this time it succeeds → clean state.
+    failNext = false;
+    await act(async () => { fireEvent.click(screen.getByTestId("validation-retry")); });
+    await act(async () => { vi.advanceTimersByTime(350); });
+    await waitFor(() => {
+      expect(screen.queryByTestId("validation-api-error")).toBeNull();
+      expect(screen.getByTestId("validation-clean")).toBeTruthy();
+    });
+    expect(assembleCalls).toBeGreaterThanOrEqual(2);
+  });
+});
