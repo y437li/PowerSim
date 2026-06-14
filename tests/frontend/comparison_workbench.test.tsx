@@ -997,10 +997,12 @@ describe("§7 ComparisonTable — delta display vs baseline", () => {
         onSort={vi.fn()}
       />
     );
-    // Delta "-12 ¥/MWh" should be shown; the cell must carry data-direction="lower-better"
+    // Delta "-12 ¥/MWh" should be shown; the cell must carry data-delta-direction="good"
+    // (lower-better metric AND negative delta → improvement → "good")
+    // Mirrors §15 data-confidence convention: attribute encodes verdict, not raw value
     expect(screen.getByText(/−12.*¥\/MWh|-12.*¥\/MWh/)).toBeTruthy();
-    const lcoeDeltaCell = screen.getByText(/−12.*¥\/MWh|-12.*¥\/MWh/).closest("[data-direction]");
-    expect(lcoeDeltaCell?.getAttribute("data-direction")).toBe("lower-better");
+    const lcoeDeltaCell = screen.getByText(/−12.*¥\/MWh|-12.*¥\/MWh/).closest("[data-delta-direction]");
+    expect(lcoeDeltaCell?.getAttribute("data-delta-direction")).toBe("good");
   });
 
   /**
