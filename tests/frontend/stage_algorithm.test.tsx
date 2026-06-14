@@ -748,3 +748,48 @@ describe('§T11 lockStage / unlockStage propagation', () => {
     expect(screen.queryByTestId('stage-two-locked')).toBeNull();
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════════════
+// §T12 — reviewer adversarial additions (frontend-reviewer, PR #115 Round 4 re-gate)
+// reviewer: the v1 scope removed the POST + editable hyperparams, so the SAC §5
+// constants PREVIEW is now the stage's main data-display surface. T-ALGO-3 pins only
+// gamma=0.999; these pin the rest and guard against the superseded UX placeholders
+// (lr=3e-4, batch=256, 2M steps, 16 envs) leaking into the read-only display — a
+// wrong displayed constant is a prime-directive data-correctness bug. Also pins that
+// a server /api/baselines response is actually consumed (not silently ignored for static).
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('reviewer: §T12 adversarial additions (v1 scope)', () => {
+  it('reviewer: [T-ALGO-9] SAC constants-preview shows the correct §5 values (lr, batch, steps), not UX placeholders', () => {
+    // reviewer: §5 / training_pipeline.md §3 RunConfig — lr=1e-4, batch_size=512,
+    // total_env_steps=500_000. The superseded stage_2_algorithm.md placeholders were
+    // lr=3e-4 and batch=256; they must NOT appear. (gamma=0.999 is covered by T-ALGO-3.)
+    renderStage();
+    switchToSac();
+    const text = screen.getByTestId('algo-sac-constants-preview').textContent ?? '';
+
+    // lr = 1e-4 present; old placeholder 3e-4 absent
+    expect(text).toMatch(/1e-?4|0\.0001/);
+    expect(text).not.toMatch(/3e-?4|0\.0003/);
+    // batch_size = 512 present (512 is unique to batch among the §5 constants)
+    expect(text).toMatch(/\b512\b/);
+    // total_env_steps = 500_000 present (accept 500000 / 500,000 / 500_000 / 500k)
+    expect(text).toMatch(/500[,_\s]?000|500\s*k/i);
+  });
+
+  it('reviewer: [T-BASE-FETCH-8] a server /api/baselines response is actually consumed (not ignored for static)', async () => {
+    // reviewer: T-BASE-FETCH-2/3 use the default mock whose list == the static fallback, so an
+    // impl that ignores the fetch and always renders the static list would pass both. Return a
+    // server payload with a distinguishing label and assert it reaches the DOM — proving the
+    // fetched data is what's rendered on the success path.
+    makeBaselinesOk([
+      { id: 'do_nothing',       label: 'Do-nothing [SERVER]',       description: 'server desc 1' },
+      { id: 'peak_shave',       label: 'Peak-shave [SERVER]',       description: 'server desc 2' },
+      { id: 'import_minimiser', label: 'Import minimiser [SERVER]', description: 'server desc 3' },
+    ]);
+    renderStage();
+    await waitFor(() => {
+      expect(screen.getByText(/Do-nothing \[SERVER\]/)).toBeTruthy();
+    });
+  });
+});

@@ -233,3 +233,65 @@ T-API-ERR/T-BACK/T-STALE/T-PERSIST/T-A11Y/T-BODY-1..2/T-LOCK-PROP) + the 13 revi
 additions present (developer + reviewer); two standing conditions carried to the implementation gate.
 Implementation may proceed once SC1's serving contract is locked (and SC2 confirmed). I re-review the
 implementation against the locked serving contract + this suite.
+
+## Round 4 — `9745918` (+ reviewer tests) — APPROVE (2026-06-14) — re-gate after rl-architect v1 scope ruling
+
+**My Round-3 APPROVE (8d27b77) was superseded:** the engineer pushed `9745918` — a major
+**v1 scope simplification** per a fresh rl-architect ruling (cited on the PR; relayed via team-lead
+2026-06-14). SAC RL training is **deferred to a later release**. This re-gate reviews the new (smaller)
+scope from scratch; my prior APPROVE no longer covers the head.
+
+**New v1 scope (verified against the diff `8d27b77..9745918`):**
+- SAC is a **non-submitting stub** card (Option B secondary/de-emphasized): coming-soon notice +
+  **read-only §5 constants PREVIEW** (no editable form, no validation). Selecting it only records
+  `algorithmType='sac'` for carry-forward.
+- **No `POST /api/training/config` in v1** — `confirm()` sets `stageState=COMPLETE` locally (no network);
+  the endpoint is PROVISIONAL/deferred with SAC (§4.2; serving contract tracked as PR #117).
+- **`GET /api/baselines`** on mount + silent static fallback on failure (`baselines-load-error`,
+  role=status, non-blocking).
+- Store slimmed: `stageState`, `algorithmType`, `selectedBaselines`, `baselinesLoading`,
+  `baselinesError`; actions `loadBaselines`/`confirm`/`lockStage`/`unlockStage`/`onRehydrate`/`reset`.
+  `isConfirmEnabled = selectedBaselines.length >= 1`.
+
+**This legitimately dissolves C1/C2/C3:** no POST body → no field-name conformance issue (C1);
+gamma is a display-only LOCKED constant shown read-only (C2); nEnvs has no editable input — the cap
+becomes a standing condition for the SAC-deferred sprint (C3). Authorization: rl-architect ruling on
+own authority (a scope deferral, not a spec/irreversible change) — acceptable; **recommend a LINEAGE
+entry** recording the SAC-deferral decision (process note, non-blocking).
+
+**Reviewer-test handling under the scope change:** my Round-3 §T15 cases that referenced the now-removed
+`getHyperparamErrors`/POST were correctly dropped (they would not compile), and the engineer **preserved
+the still-applicable ones** under the new scope, marked `reviewer:`: T-CONFIRM-4 + T-A11Y-7
+(aria-disabled click interception, TQ9), T-CONFIRM-5 (double-submit idempotent, TQ10), T-PERSIST-3 (real
+`onRehydrate`, TQ13), T-LOCK-PROP-4 (false→true→false flip, TQ15). Process note: test-file edits should
+be coordinated with the reviewer (test-file owner), but here the outcome is correct — moot cases removed,
+applicable concerns retained — so accepted.
+
+**New suite coverage verified (code-read):** LOCKED incl. no-fetch-when-locked (T-LOCK-5) + unlock→load
+(T-LOCK-6); baseline_only default + Option-B SAC future-badge (T-INIT-1/5); SAC stub coming-soon +
+**read-only constants preview with no inputs** (T-ALGO-1/2) + **gamma=0.999 displayed** (T-ALGO-3); no
+POST on any action (T-INIT-8/T-ALGO-8/T-CONFIRM-1/2); `GET /api/baselines` mount/success/fallback/
+load-error/non-blocking/selection-preserved (T-BASE-FETCH-1..7); baseline ≥1 + none-error role=alert
+(T-BASE-3/4); confirm local-only → COMPLETE + onContinue (T-CONFIRM-1..3); STALE on algo/baseline change
+(T-ALGO-6/T-BASE-7/T-STALE-1..3); persistence + real rehydrate (T-PERSIST-1..5); a11y (T-A11Y-1..8).
+
+**Reviewer additions (pushed this round, §T12, marked `reviewer:`):**
+- **T-ALGO-9** — pins the read-only §5 constants preview values: `lr` shows 1e-4 (and NOT the superseded
+  UX placeholder 3e-4), `batch_size` 512, `total_env_steps` 500_000. The preview is now the stage's main
+  data-display surface; T-ALGO-3 only pinned gamma. A wrong displayed constant is a prime-directive bug.
+- **T-BASE-FETCH-8** — a server `/api/baselines` payload is actually consumed (distinguishing label
+  reaches the DOM), guarding against an impl that ignores the fetch and always renders the static list
+  (T-BASE-FETCH-2/3 can't catch that since their mock == the static fallback).
+
+esbuild parse-check clean; suite remains red-first (no `src/`), as expected at this gate.
+
+**Approved suite = developer cases (§T1–§T11) + the 2 reviewer cases in §T12 (T-ALGO-9, T-BASE-FETCH-8),
+plus the retained `reviewer:`-marked cases (T-CONFIRM-4/5, T-A11Y-7, T-PERSIST-3, T-LOCK-PROP-4).**
+
+**Standing conditions for implementation:** SC1/SC2 from Round 3 are **superseded/dissolved for v1**
+(no POST, no nEnvs input). Carried forward only: when SAC un-defers, the POST + `training_config.md`
+serving contract (PR #117) + the nEnvs cap re-enter through a future contract round. No standing
+condition blocks the v1 implementation.
+
+**Verdict: APPROVE** (contract + tests gate, v1 scope). Clean re-gate of the simplified scope;
+data-display correctness pinned; no blockers. Implementation of the v1 stub may proceed.
