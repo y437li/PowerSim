@@ -17,7 +17,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from energy_go.serving import rest_api, inference_stream, training_proxy, geo_site_api
+from energy_go.serving import rest_api, inference_stream, training_proxy, geo_site_api, compare
 
 log = logging.getLogger(__name__)
 
@@ -75,6 +75,7 @@ app.include_router(rest_api.router)
 app.include_router(inference_stream.router)
 app.include_router(training_proxy.router)
 app.include_router(geo_site_api.router)
+app.include_router(compare.router)
 
 
 # ---------------------------------------------------------------------------
@@ -132,14 +133,17 @@ async def request_validation_error_handler(
             },
         )
 
-    _GEO_PREFIXES = ("/api/site/", "/api/tariff/", "/api/devices/")
-    if any(request.url.path.startswith(p) for p in _GEO_PREFIXES):
+    _VALIDATION_400_PREFIXES = ("/api/site/", "/api/tariff/", "/api/devices/", "/api/compare/")
+    if any(request.url.path.startswith(p) for p in _VALIDATION_400_PREFIXES):
         first_msg = errors[0]["msg"] if errors else "invalid request"
+        # Compare routes use "VALIDATION_ERROR"; geo routes keep "REQUEST_VALIDATION_ERROR"
+        _COMPARE_PREFIX = "/api/compare/"
+        code = "VALIDATION_ERROR" if request.url.path.startswith(_COMPARE_PREFIX) else "REQUEST_VALIDATION_ERROR"
         return JSONResponse(
             status_code=400,
             content={
                 "detail": first_msg,
-                "code": "REQUEST_VALIDATION_ERROR",
+                "code": code,
             },
         )
     # Non-geo routes: preserve original FastAPI 422 behaviour
