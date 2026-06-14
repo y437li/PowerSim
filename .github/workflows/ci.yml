@@ -71,6 +71,15 @@ jobs:
       # Setup — always run (fast; cache restore happens here)
       # -----------------------------------------------------------------------
 
+      - name: Pre-create pip cache dir
+        # setup-python@v5 cache:'pip' post-step saves ~/.cache/pip back to the
+        # Actions cache.  On docs-only PRs the Python-tests step is skipped →
+        # pip never runs → the directory is never created → the post-step fails
+        # with "Cache folder path is retrieved for pip but doesn't exist on disk"
+        # → checks: failure (PR #116 QA fix — qa scratch-PR #124 empirical catch).
+        # mkdir -p is idempotent: no-op when the dir already exists (code PRs).
+        run: mkdir -p ~/.cache/pip
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
