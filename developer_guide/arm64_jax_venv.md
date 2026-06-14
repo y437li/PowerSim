@@ -86,38 +86,39 @@ pytest tests/ -q -m "not slow"
 
 ---
 
-## Canonical venv (`.venv`) vs arm64 venv
+## Dual-venv approach (current standard)
+
+**Decision (team-lead, 2026-06-14):** Keep the dual-venv setup — do not swap `.venv`.
+Rationale: the dual-venv already achieves the goal (local JAX testing via the explicit
+`arch -arm64` path), the existing `.venv` is untouched and working for IDEs and non-JAX
+work, and swapping risks disrupting agents mid-run. A canonical swap can be done later as
+optional cleanup if the dual-path proves annoying.
 
 | | `.venv` | `~/powersim-venv-arm64` |
 |---|---|---|
 | Architecture | x86_64 (Rosetta) | arm64 (native) |
 | Location | `<repo>/.venv` | `~/powersim-venv-arm64` (outside OneDrive) |
 | `import jax` | ❌ AVX guard fails | ✅ works (arm64 jaxlib) |
-| Used by | IDEs that auto-detect `.venv` | Local test runs by agents/devs on Apple Silicon |
-| Cutover | Discussed with team-lead before swap | — |
+| Used by | IDEs that auto-detect `.venv`; non-JAX tests | JAX-touching tests; local serving/env suites |
+| Status | Untouched — do not delete | **Current standard for local JAX testing** |
 
-**Do not delete `.venv`** — other agents and IDEs may be using it. The arm64 venv is
-additive until team-lead confirms the swap is safe.
+**Do not delete `.venv`** — IDEs and other agents depend on it.
 
 ---
 
-## Cutover to arm64 as default (when approved)
+## Optional future: canonical swap to arm64 as default
 
-When team-lead signals the swap window (no live test runs):
+Not currently planned — the dual-venv is the standard. If the explicit `arch -arm64`
+prefix becomes too ergonomically painful, the swap can be done at a quiet moment (no
+agents mid-run) by:
 
 ```bash
-# 1. Rename the existing x86_64 venv as backup
-mv /path/to/repo/.venv /path/to/repo/.venv-x86-backup
-
-# 2. Create the new arm64 venv in-place
-arch -arm64 ~/.uv-arm64/bin/uv venv /path/to/repo/.venv \
+# Requires team-lead approval + a quiet moment (no active test runs)
+mv <repo>/.venv <repo>/.venv-x86-backup
+arch -arm64 ~/.uv-arm64/bin/uv venv <repo>/.venv \
   --python ~/.local/share/uv/python/cpython-3.11-macos-aarch64-none/bin/python3.11
-
-# 3. Re-install (same pip install commands as step 5-6 above)
-# ...
-
-# 4. Verify, then remove backup after a safe interval
-rm -rf /path/to/repo/.venv-x86-backup
+# Re-install deps (same pip install commands as setup steps 5-6)
+# Verify, then: rm -rf <repo>/.venv-x86-backup
 ```
 
 ---
