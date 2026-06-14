@@ -34,7 +34,7 @@ Gansu = **615 MW wind + 330 MW solar + 294.5 MWh / 98.16 MW battery serving 50�
 | View | CAPEX basis | Benefit stream | Answers |
 |---|---|---|---|
 | **(I) Absolute project** | full plant | annual operating net revenue under π (hourly-integrated, P1) | *Is the whole plant a good investment?* |
-| **(II) Incremental storage** | battery CAPEX only | Δ(operating result) of π-with-battery **vs the no-battery baseline** | *Does the battery pay; which policy maximizes its value?* |
+| **(II) Incremental storage** | incremental battery CAPEX (the sizing-tier delta) | Δ(operating result) of π **vs a reference config (typically an adjacent sizing tier)** | *Does the incremental storage tier pay (sizing); which policy maximizes its value?* |
 
 View (II) is the **per-policy headline discriminator** — all §11 policies share CAPEX and scenario, differing only in battery dispatch + wear→replacement (P2). For an own-load scenario (aluminum, future), View (II)'s "benefit" is literally the **avoided cost** vs the grid-only counterfactual.
 
@@ -282,7 +282,7 @@ finance( ensemble:       PolicyEnsemble,                      # the POLICY axis 
          price_paths:     list[PricePath],                    # deterministic finance scenarios, the sensitivity axis (§13.4)
          econ:            DeviceEconParams,                    # SHARED across policies — NOT per-policy (P2: same CAPEX/scenario, §13.1)
          finance_config:  FinanceConfig                        # discount (CAPM/curve), tax/debt toggles, horizon, escalation, flags,
-                                                              #   + baseline_policy_id (the no-battery ref for View II)
+                                                              #   + baseline_policy_id (the reference policy for the same-config View-II dispatch comparison; D41)
        ) -> FinanceResult {
          M, distribution_valid,                                 # false at M=1 ⇒ point estimates only, distributional fields absent (§13.10c)
          requires_retrain,                                      # true if any non-uniform/stream-specific price_path applied (INV-FINLAYER, §13.4)
@@ -308,7 +308,7 @@ PolicyEnsemble = {
 **Binding invariants on the `finance()` boundary (the load-bearing part — settle dict-vs-typed-struct with backend-reviewer; the typed `PolicyEnsemble` is preferred so the CRN seed is structural, not implicit):**
 1. **CRN (D34):** every policy's list in `runs` has length `M`, and **index `m` = the SAME weather draw** (generated from `ensemble.seed`) across **all** policies. That index-alignment is what makes per-policy deltas pure dispatch (P2); the shared `seed` lives on the ensemble (not `finance_config`) so CRN is structurally visible and travels into `provenance`.
 2. **Shared econ/scenario (P2, §13.1):** `econ`, `price_paths`, and the M weather draws are **identical across policies**; only the dispatched results (the `ExtendedPolicyEvalResult` contents) differ. `econ` is a single shared arg — **not** per-policy (all §11 policies share CAPEX + scenario, differ only in dispatch).
-3. **View II:** requires `finance_config.baseline_policy_id ∈ ensemble.runs.keys()` (the no-battery reference). If absent → only **View I** (absolute) is produced and View II is **omitted, never fabricated**.
+3. **View II:** requires `finance_config.baseline_policy_id ∈ ensemble.runs.keys()` (the reference policy for the **same-config dispatch** comparison; D41 — battery-vs-no-battery is not an engine baseline). If absent → only **View I** (absolute) is produced and View II is **omitted, never fabricated**.
 4. **Three distinct dimensions; axis separation preserved (INV-FINLAYER):** **policy** (side-by-side comparison) × **M weather** (the ONE stochastic/distributional axis) × **price_paths** (deterministic sensitivity family). The distribution is still over **M only** (`{K price-paths} × {one distribution over M draws}`, never cross-producted); F-A adds the policy axis but does **not** touch the M-only-is-stochastic rule.
 
 `per_policy` falls out of `runs`' keys; View II from `baseline_policy_id`; CRN from the shared `seed` + index-alignment; the exceedance distribution still over M. The REST resource below is a thin wrapper over this pure function. **`distribution_valid` is load-bearing** (§13.10c): at M = 1 only the `single_trajectory` downside metrics + point estimates are present; the `distributional` block and percentiles are **absent, not fabricated**. **DSCR/equity-IRR are debt-toggle-gated** (§13.9): absent (not zero/null) unless the debt toggle is ON.
@@ -326,7 +326,7 @@ GET /api/finance/compare?policies=…&scenario=…
 joined to operating runs by (policy_id, checkpoint_id, scenario_id)
 ```
 
-Composes **on top of** the LOCKED D13 identity; does **not** touch the LOCKED `eval_compare` (Kind 3) wire (different shape/cadence → REST avoids a telemetry bump; any finance term on the wire would be an additive-minor bump + both-reviewer re-review, deliberately avoided). **Provenance travels with every result** so the UI **refuses to compare results computed under mismatched assumptions** (different discount rate / weather mode / price path) — a correctness guard. Headline = NPV at `r_base` + incremental-battery NPV vs no-battery (View II); **economic optimality gap** `(NPV_oracle − NPV_π)/|NPV_oracle|` with the DP-oracle as the economic ceiling (the ¥ analog of §11.4's gap). The serving resource needs **both reviewers** (backend shape + frontend consumption).
+Composes **on top of** the LOCKED D13 identity; does **not** touch the LOCKED `eval_compare` (Kind 3) wire (different shape/cadence → REST avoids a telemetry bump; any finance term on the wire would be an additive-minor bump + both-reviewer re-review, deliberately avoided). **Provenance travels with every result** so the UI **refuses to compare results computed under mismatched assumptions** (different discount rate / weather mode / price path) — a correctness guard. Headline = NPV at `r_base` + the same-config dispatch View-II delta (D41); the "how much storage" question is a **config-level sizing comparison** (per-draw CRN-diffed View-I runs across configs, D41), not an engine baseline; **economic optimality gap** `(NPV_oracle − NPV_π)/|NPV_oracle|` with the DP-oracle as the economic ceiling (the ¥ analog of §11.4's gap). The serving resource needs **both reviewers** (backend shape + frontend consumption).
 
 ---
 
