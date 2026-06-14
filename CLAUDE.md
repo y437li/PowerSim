@@ -28,7 +28,7 @@ These rules apply to every agent working in this repo. They are non-negotiable.
 - `feat/env-battery-dynamics` — new feature (the contract-first-dev flow)
 - `fix/training-checkpoint-roundtrip` — bug fix on merged work (still goes through the full review+QA gates)
 - `chore/<topic>` — tooling/config/docs with no behavior change (still via PR)
-- `<area>` is one of: `env`, `training`, `harness`, `serving`, `frontend`, `frontend3d`, `assets`, `config`, `meta`
+- `<area>` is one of: `env`, `training`, `harness`, `serving`, `finance`, `frontend`, `frontend3d`, `assets`, `config`, `meta`
 - `<feature>` matches the contract filename: branch `feat/env-battery-dynamics` ↔ `contracts/env/battery_dynamics.md` (hyphens in branch, underscores in filename)
 
 **Files:**

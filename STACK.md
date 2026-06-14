@@ -21,6 +21,7 @@ Version pins live in `pyproject.toml` (Python) and `package.json` (frontend); th
 | **Dashboard charts** | **Recharts** (React wrapper around D3-based SVG charts) | `recharts` npm package; tree-shakeable; Vite-compatible; used for training metric curves in `TrainingPanel` | PR #21 (training dashboard) |
 | **Frontend E2E / browser tests** | **Playwright** (`@playwright/test`) + Chromium | `^1.46.0`; browser binary via `npx playwright install chromium`; config at `playwright.config.ts`; tests under `tests/frontend_e2e/*.spec.ts` | task #29 |
 | **Frontend tests** | **Vitest + React Testing Library** | `tests/frontend*/<feature>.test.tsx` | CLAUDE.md conventions |
+| **Finance engine** (`energy_go.finance`) | Pure **Python + NumPy** (no JAX, no scipy); self-contained Brent's-method IRR solver; bootstrap CI via `np.random.default_rng` | 8 sub-modules + `engine.py` facade; pure function (no I/O); `np.quantile(..., method='lower'/'higher')` LOCKED as sole percentile estimator; `tests/finance/` area | §13 / D39; PR #111 (task #6) |
 | **Backend tests** | **pytest** | `tests/<area>/test_<area>_<feature>.py` | CLAUDE.md conventions |
 | **Config** | **YAML** | `config/<site\|asset>_<name>.yaml`; site YAML composes assets and derives obs/action (§8.4) | REBUILD_SPEC §8; D2 |
 | **Telemetry wire format** | JSON per `contracts/shared/telemetry_schema.md` v1.0.0 (semver) | LOCKED; env_step / train_metrics / eval_compare | LOCKED PR #6; D3–D13 |
