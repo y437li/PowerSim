@@ -281,3 +281,31 @@ not just p50). R1/R3 already conform.
 
 **Verdict: REQUEST_CHANGES** — narrow: R2 fixture rule-C uniformity (the one item Round 5 didn't address).
 Everything else (rule A/B tests, debt_toggle, §2.4 reference, §7.8, R1/R3) is correct. Should be the last round.
+
+## Round 6 — `5a1d6e4` — APPROVE (2026-06-14) — D45 conformance complete
+
+BD45-1 rule C resolved. The R2 fixture is now fully #135-conformant (verified):
+- **Rule C ✓** — all 5 distributional metrics carry the IDENTICAL `{p50,p75,p90,p95}` set
+  (irr 8.2/7.9/7.6/7.2; npv 142/131/118/108M; mirr 7.1/6.9/6.6/6.3; lcoe 312/325/341/352; payback
+  8.3/9.1/10.2/11.4). Monotonic by direction (higher-better decrease p50→p95 = risk tail; lower-better
+  increase) — sensible. `T-RULE-C-1` (fixture integrity: all 5 metrics × 4 quantiles defined) +
+  `T-RULE-C-2` (table renders P75/P90/P95 for MIRR+LCOE+payback, not just IRR).
+- **Rule B ✓** — `npv_yuan` carries `bootstrap_ci` on ALL 4 R2 nodes (each brackets its value:
+  125<142<162, 98<131<165, 88<118<150, 78<108<142); no other metric has it. `T-RULE-B-1` extended to
+  16 absence assertions (4 q × 4 non-NPV metrics); `T-RULE-B-2` checks CI present + lo<value<hi on all
+  4 NPV nodes.
+
+**Full D45 conformance now complete** (rule A Round 5; rule B+C Round 6; debt_toggle Round 5; §2.4 shared
+reference + §7.8 + R1/R3 Round 4). esbuild parse-clean; test file edits are the engineer's only (review
+records are mine).
+
+**Minor non-blocking (fold into implementation or a quick doc follow-up):** the tests pin a `data-q="{quantile}"`
+attribute on `ComparisonTable` cells (T-RULE-A-2, T-RULE-C-2) that the contract doesn't yet document.
+Recommend a one-line note in §7.x — "each metric percentile cell carries `data-q="p50"|"p75"|"p90"|"p95"`" —
+parallel to the documented `data-confidence` (§15) and `data-delta-direction` (§7.8) attributes, so the
+attribute set the suite depends on is fully specified. Doesn't block — the tests pin it.
+
+**Verdict: APPROVE** (contract + tests gate, D45 conformance complete). All Round-1..5 blockers (B1/B2/B3,
+BD45-1 rule A/B/C) resolved; debt_toggle + §7.8 + shared-contract reference in. Standing conditions to
+implementation: SC1 (serving config-library), SC2 (#134 — now consumer-APPROVED, matches the locked #135),
+SC3 (dashboard charts). Strong, fully-converged contract — implementation may proceed once SC1/SC3 land.
