@@ -166,6 +166,40 @@ Levered delta (the reported quantity):
 
 ---
 
+## Vector 4 — LIFECYCLE: replacement CAPEX at EOL + terminal/residual (§13.6, mandatory)
+
+**Exercises:** the **§13.6 lifecycle layer** — battery **replacement CAPEX** scheduled at `first-of(lifetime_years, cycle_life via throughput)`, **terminal value** (residual − decommissioning) at year N, and their effect on NPV and LCOE. This is the cash half of **INV-DEG** (§13.2/§3.6) and the mechanism behind **View II** (the per-policy discriminator IS wear→replacement timing, §13.1). **USER-concluded mandatory** (§13.6 / §13.13-7) — not optional, not deferrable without an rl-architect + human §13.6 scope change. *(Vectors 1–3 are deliberately zero-replacement for transparent base arithmetic; Vector 4 is the lifecycle gate they omit.)*
+
+**Inputs** (econ fields are present in the merged #103 device library — `DeviceEconParams` must surface them)
+```
+CAPEX (battery, t=0) = ¥1,000,000 ;  N = 4 yr ;  EBITDA = ¥600,000/yr ;  r = 0.10
+lifetime_years            = 2     # toy calendar bound → replacement fires END of yr 2 (first-of)
+replacement_cost_fraction = 0.70  → replacement CAPEX = 0.70·1,000,000 = ¥700,000  (booked yr 2)
+residual_value_fraction   = 0.05  → residual = ¥50,000 ;  decommissioning = ¥20,000
+terminal (yr N=4)         = residual − decommissioning = 50,000 − 20,000 = ¥30,000
+CF = [ −1,000,000 ,  600,000 ,  600,000−700,000 = −100,000 ,  600,000 ,  600,000+30,000 = 630,000 ]
+```
+
+**Expected (hand-computed)**
+```
+NPV(0.10) = −1,000,000 + 600,000/1.10 + (−100,000)/1.10² + 600,000/1.10³ + 630,000/1.10⁴
+          = −1,000,000 + 545,454.55 − 82,644.63 + 450,788.88 + 430,298.48
+          = ¥ 343,897.27                                              # assert ±¥1
+
+LCOE (r=0.10, E_net = 10,000 MWh/yr, FixedOM=0 for clarity):
+  PV(costs) = CAPEX + repl/1.10² − residual/1.10⁴
+            = 1,000,000 + 700,000/1.21 − 50,000/1.4641
+            = 1,000,000 + 578,512.40 − 34,150.67 = 1,544,361.72
+  PV(E_net) = Σ_{y=1..4} 10,000/1.10^y = 31,698.65 MWh
+  LCOE_with_replacement = 1,544,361.72 / 31,698.65 = ¥ 48.72 /MWh     # assert ±¥0.01/MWh
+  (LCOE_without_replacement = ¥31.55/MWh — ignoring replacement understates LCOE ~54%)
+```
+**Asserts:** replacement CAPEX appears as a **negative CF in the replacement year** (yr 2 here), once; terminal `residual − decommissioning` adds to `CF(N)`; LCOE includes `+Replacement − Residual` (§13.8). A horizon ≥ 2·lifetime runs unit-1 then unit-2, each with its own residual (§13.6).
+
+**INV-DEG EOL-replacement assert (the cash half FIN-24 does not cover):** with `lifetime_years = 3` but `cycle_life_full_equiv` reached at **yr 2** via throughput, the replacement fires at **yr 2** (`first-of` — the throughput trigger beats the calendar bound) ⇒ replacement CAPEX booked **once** at yr 2; `degradation_yuan` remains memo-only (never a period deduction). A **hard-cycling policy replaces earlier** than a gentle one under identical prices — exactly View II's per-policy discrimination (§13.1). *Test must assert both: (i) the throughput-triggered year, and (ii) cash impact = replacement CAPEX once, degradation memo-only.*
+
+---
+
 ## §A — Downside-stat definitions as testable formulas (§13.10b), with a worked M=50 ensemble
 
 All downside metrics are computed on the **M weather draws at a fixed price path** (M is the *only* stochastic axis — INV-FINLAYER; price paths are a separate deterministic family, never cross-producted). Worked numbers use a clean linear ensemble so every stat is hand-checkable.
@@ -228,7 +262,8 @@ worst single-year CF    = min CF(y)       = −¥250,000  (year 3)
 | Invariant | Test fixture | Expected |
 |---|---|---|
 | **INV-BASIS** (§13.0 P3) | a draw where reward-basis totals differ materially (SOC penalties + demand-shaping added) | cash-flow output = **real-money** number exactly; **fails** if any `penalty_yuan/soc_*/c_demand_shape/reward` field is wired |
-| **INV-DEG** | one year of battery throughput | cash impact appears **once** — as replacement CAPEX at the EOL year (first-of(10yr, cycle-life)); `degradation_yuan` is memo-only |
+| **INV-DEG** (memo half) | one year of battery throughput, EOL not reached | `degradation_yuan` is **memo-only** — no period cash deduction (FIN-24) |
+| **INV-DEG** (cash half — Vector 4) | throughput reaches `cycle_life_full_equiv` at yr 2 while `lifetime_years=3` | replacement CAPEX appears **once**, at the **throughput-triggered** year (yr 2, `first-of`), = `replacement_cost_fraction·CAPEX`; `degradation_yuan` still memo-only. *The cash half FIN-24 omits; gates the §13.6 lifecycle layer + View II discrimination.* |
 | **INV-CURT** (flag OFF) | one curtailment hour, `curtailment_penalty_contract=off` | cash loss = foregone `grid_export` revenue **only** (not revenue + ¥800/MWh penalty) |
 | **INV-VOLL** (own-load) | one unserved-load hour | cash hit = lost **product** revenue once — VOLL **XOR** lost-product, never both |
 | **INV-FINLAYER** (§13.4) | a non-uniform per-stream price path | `requires_retrain=true`, result badged; env trace **independent** of `price_path` (no price-path/escalation field reachable from dispatch) |
@@ -241,11 +276,11 @@ worst single-year CF    = min CF(y)       = −¥250,000  (year 3)
 The implementation is accepted (finance-expert verdict toward QA) only if **all** hold:
 
 1. **Surface conformance.** Signature, `FinanceResult` shape, and field names match §13.12 exactly (typed `PolicyEnsemble` with structural `seed`/`M`; `per_policy → {View I, View II} → per price_path`; `single_trajectory` vs `distributional` split). Pure function: no I/O, no network, no hidden global (treasury curve passed via `finance_config`).
-2. **Vectors 0–3 pass to tolerance.** Discount module (Vector 0): `r_f`/`r_e(base)`/`β_L`/`r_e(lev)`/`WACC` ±1e-6 (decimal). Cash-flow/metrics (Vectors 1–3): NPV ±¥1; IRR/MIRR/equity-IRR ±0.01 pp; DSCR ±0.001; LCOE ±¥0.01/MWh; payback ±0.001 yr — against the hand-computed numbers above, with the arithmetic in test comments. Vector 0 gates `discount.py` independently of metric math (CAPM→WACC must not ship ungated).
+2. **Vectors 0–4 pass to tolerance.** Discount module (Vector 0): `r_f`/`r_e(base)`/`β_L`/`r_e(lev)`/`WACC` ±1e-6 (decimal). Cash-flow/metrics (Vectors 1–3): NPV ±¥1; IRR/MIRR/equity-IRR ±0.01 pp; DSCR ±0.001; LCOE ±¥0.01/MWh; payback ±0.001 yr. **Lifecycle (Vector 4): replacement CAPEX booked once at `first-of(lifetime_years, cycle_life)`, terminal `residual−decommissioning` at year N → NPV ¥343,897.27; LCOE-with-replacement ¥48.72/MWh** — against the hand-computed numbers above, arithmetic in test comments. Vector 0 gates `discount.py` independently of metric math (CAPM→WACC must not ship ungated); **Vector 4 gates the §13.6 lifecycle layer — `DeviceEconParams` must surface `replacement_cost_fraction`/`cycle_life_full_equiv`/`lifetime_years`/`residual_value_fraction`/`decommissioning` (present in #103), and the lifecycle layer is mandatory (not silently omittable, §13.6/§13.13-7).**
 3. **Tax & debt are deltas.** Base = pre-tax unlevered (`discount = r_e`); tax toggle reproduces Vector 2's ΔNPV; debt toggle reproduces Vector 3's equity-IRR/min-DSCR; **debt-gated fields absent when debt off**; **distributional fields absent when `distribution_valid=false` (M=1)** — absence is represented, never fabricated.
 4. **Downside formulas** (§A) match exactly, including the **LOCKED** percentile estimator (`np.quantile(...,'lower'/'higher')`), `CVaR k=ceil(0.05·M)`, and the shortfall-below-zero drawdown.
 4b. **Percentile regimes R1/R2/R3** (§A.0 canonical table, D39 §6.7): M=1 → point estimates + banner only; bootstrap M≥50 → P50/P75/P90/P95 + CI + full downside incl. CVaR-5%; empirical M≈10 → per-year + P50 + worst/best-of-N + P(NPV<0), **P75/P90/P95/P99 + CVaR-5% suppressed (absent, not fabricated)**. One estimator across R2+R3; identical `FinanceResult` shape; `sample_kind` selects the populated set, no schema branch.
-5. **Invariants** (§B) — all six no-double-count / axis-separation tests pass: INV-BASIS structurally (reward-basis fields unreachable from the cash-flow path); INV-STREAM-AUTHORITY (operating cash from the 6 stream accumulators only; `real_money.{energy_cost, demand_charge, total_cost}` are non-additive reconciliation views — fails on double-count).
+5. **Invariants** (§B) — all six no-double-count / axis-separation tests pass: INV-BASIS structurally (reward-basis fields unreachable from the cash-flow path); INV-STREAM-AUTHORITY (operating cash from the 6 stream accumulators only; `real_money.{energy_cost, demand_charge, total_cost}` are non-additive reconciliation views — fails on double-count); **INV-DEG BOTH halves — memo-only (no throughput→EOL) AND cash (throughput→`first-of` replacement CAPEX once, Vector 4)** — not just the memo half.
 6. **CRN structural** (§13.12 inv 1): every policy's `runs` list has length M with index-aligned draws from `ensemble.seed`; the seed travels into `provenance`. Per-policy deltas are pure dispatch under a synthetic two-policy fixture with identical draws.
 7. **Determinism & provenance.** Fixed inputs → identical `FinanceResult` (incl. seeded bootstrap CI). `provenance` carries seed, M, `valuation_date`, `r_f(curve_date, tenor, yield)`, `r_e`/WACC, discount params, escalation/price_path, scenario_id, code_version; mismatched-assumption results are refused for comparison.
 8. **Econ defaults sourced from #103** (`config/device_models.yaml` 2.1.0) with per-value provenance; CAPM values from §13.5b (`USER-confirmed/2026-06-13`); none hardcoded in engine code — all UI-editable.
