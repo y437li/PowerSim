@@ -431,8 +431,10 @@ the coordinates are outside the valid range. `year_range` defaults to `[2014, 20
 **Purpose:** list all **active** device models — physics summary + economics summary for the
 brand picker (stage_1_config §5.1). No resolver call; reads `device_models.yaml` directly.
 
-**D38 filter:** feed lists `ACTIVE_DEVICE_TYPES` categories only; INERT/gated catalog entries
-(e.g. electrolyzers per D35) are excluded until their env-logic activates.
+**D38 filter:** an entry appears in the feed only if `is_surfaceable(entry)` is True:
+`type ∈ ACTIVE_DEVICE_TYPES` **AND** `provenance ≠ "USER-provided, pending"`.
+INERT type families (e.g. electrolyzers per D35) and provenance-pending stubs
+(e.g. `pcc-sst-stub`) are excluded until their env-logic activates or real data lands.
 
 **Query parameters:** none.
 
@@ -514,9 +516,14 @@ omitted (full catalogue is returned).
 
 **Path parameter:** `model_id` — must match a key in `device_models.yaml`.
 
+**D38 filter:** same `is_surfaceable(entry)` predicate as §3.8 and §3.10. Entries
+that fail the predicate (INERT type or provenance-pending stub) are treated as absent
+from the feed — the endpoint returns HTTP 400 `DEVICE_MODEL_NOT_FOUND` for them even
+if the `model_id` key exists in `device_models.yaml`.
+
 **Response (HTTP 200):** same as the per-entry shape in §3.8.
 
-**HTTP 400:** `model_id` not found. Code: `DEVICE_MODEL_NOT_FOUND`.
+**HTTP 400:** `model_id` not found **or** entry fails `is_surfaceable()`. Code: `DEVICE_MODEL_NOT_FOUND`.
 
 ---
 
@@ -525,8 +532,8 @@ omitted (full catalogue is returned).
 **Purpose:** autocomplete search for the Device ID field in the fleet table
 (stage_1_config §5.1 autocomplete dropdown).
 
-**D38 filter:** feed lists `ACTIVE_DEVICE_TYPES` categories only; INERT/gated catalog entries
-(e.g. electrolyzers per D35) are excluded until their env-logic activates.
+**D38 filter:** same `is_surfaceable(entry)` predicate as §3.8 and §3.9. INERT type
+families and provenance-pending stubs are excluded from search results.
 
 **Query parameters:**
 

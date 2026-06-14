@@ -1162,17 +1162,20 @@ class TestActiveDeviceFilter:
     """D38 regression: INERT/gated catalog entries must be ABSENT from the
     device-feed endpoints even when present in device_models.yaml.
 
-    Two inert-exclusion cases covered by the monkeypatched injection tests:
-      1. electrolyzer_pem (h-tec-pem-1mw) — a wholly NEW INERT device type added by
-         PR #104 (D35); excluded because "electrolyzer_pem" ∉ ACTIVE_DEVICE_TYPES.
-      2. pcc-sst-stub equivalent injected with type "grid_connection_stub" — demonstrates
-         that ANY non-active type is excluded regardless of whether it looks like an active
-         device category.  In the REAL config/device_models.yaml, pcc-sst-stub currently
-         has type: grid_connection (an active type); whether its type should be changed to
-         a non-active stub type to hide it from the feed is a DESIGN QUESTION for
-         backend-reviewer to settle.  This test pins the MECHANISM; the live-feed test
-         below (test_live_feed_has_no_non_active_types) catches the gap if pcc-sst-stub's
-         type ever moves to a non-active value in production.
+    Two exclusion mechanisms are tested:
+
+    1. **Type-based exclusion** — electrolyzer_pem (h-tec-pem-1mw, D35/D38):
+       excluded because "electrolyzer_pem" ∉ ACTIVE_DEVICE_TYPES (type-allowlist arm
+       of is_surfaceable).  Covers all future INERT type families automatically.
+
+    2. **Provenance-based exclusion** — pcc-sst-stub (D38 instance-inert clause):
+       injected with its REAL type "grid_connection" (∈ ACTIVE_DEVICE_TYPES) but
+       with provenance "USER-provided, pending".  is_surfaceable() returns False
+       because provenance == "USER-provided, pending", so the entry is hidden from
+       the feed without touching its LOCKED benchmark_device_library type.
+
+    Live-feed tests (no monkeypatch) run against the REAL config/device_models.yaml
+    and assert pcc-sst-stub is absent from all three endpoints.
 
     Technique: monkeypatch the module-level _device_models_cache to inject a synthetic
     device_models dict.  _get_device_models() returns the cache directly when not None,
@@ -1182,11 +1185,11 @@ class TestActiveDeviceFilter:
     """
 
     # Synthetic device_models dict injected by monkeypatch tests.
-    # Contains ONE active entry + TWO inert entries (one electrolyzer, one sst-stub).
+    # ONE active + ONE INERT-type entry (electrolyzer) + ONE INERT-provenance entry (pcc-sst-stub).
     _FAKE_MODELS = {
-        "schema_version": "2.2.0",   # D35 schema version (electrolyzer schema)
+        "schema_version": "2.2.0",   # D35 schema version
         "models": {
-            "vestas-v150-4.2": {     # ACTIVE — wind_turbine ∈ ACTIVE_DEVICE_TYPES
+            "vestas-v150-4.2": {     # ACTIVE — wind_turbine ∈ ACTIVE_DEVICE_TYPES, no pending provenance
                 "type": "wind_turbine",
                 "physics": {
                     "v_cutin_mps": 3.0, "v_rated_mps": 12.0, "v_cutout_mps": 25.0,
@@ -1194,7 +1197,7 @@ class TestActiveDeviceFilter:
                 },
                 "economics": {"capex_per_kw_yuan": 5800.0},
             },
-            "h-tec-pem-1mw": {       # INERT — electrolyzer_pem ∉ ACTIVE_DEVICE_TYPES (D35/D38)
+            "h-tec-pem-1mw": {       # INERT via TYPE — electrolyzer_pem ∉ ACTIVE_DEVICE_TYPES (D35/D38)
                 "type": "electrolyzer_pem",
                 "physics": {
                     "stack_efficiency_kwh_per_kg": 55.0,
@@ -1202,13 +1205,12 @@ class TestActiveDeviceFilter:
                 },
                 "economics": {"capex_per_kw_yuan": 1200.0},
             },
-            "pcc-sst-stub": {        # INERT stub — grid_connection_stub ∉ ACTIVE_DEVICE_TYPES
-                # NOTE: injected here with a non-active stub type to verify the
-                # MECHANISM excludes any non-active type.  The real on-disk
-                # pcc-sst-stub has type: grid_connection (an active type and a LOCKED
-                # benchmark_device_library contract entry) — backend-reviewer to decide
-                # whether its type should change to exclude it from the live feed.
-                "type": "grid_connection_stub",
+            "pcc-sst-stub": {        # INERT via PROVENANCE — type grid_connection ∈ ACTIVE_DEVICE_TYPES
+                # Injected with its REAL type "grid_connection" (matches actual device_models.yaml
+                # and LOCKED benchmark_device_library contract).  Excluded from the feed because
+                # provenance == "USER-provided, pending" — the provenance arm of is_surfaceable().
+                # This exactly mirrors the on-disk entry; no LOCKED contract needs to change.
+                "type": "grid_connection",
                 "provenance": "USER-provided, pending",
                 "physics": {"max_export_mw": 200.0, "max_import_mw": 200.0},
                 "economics": {},
@@ -1217,14 +1219,16 @@ class TestActiveDeviceFilter:
     }
 
     def test_inert_electrolyzer_absent_from_models_list(self, client, monkeypatch):
-        """INERT electrolyzer must NOT appear in GET /api/devices/models.
+        """INERT entries must NOT appear in GET /api/devices/models.
 
-        Injects a fake device_models dict with one ACTIVE (vestas wind_turbine), one
-        INERT electrolyzer (h-tec-pem-1mw, type electrolyzer_pem), and one INERT stub
-        (pcc-sst-stub, type grid_connection_stub).  The list endpoint must return the
-        active model and exclude BOTH inert entries.  (D38 allowlist regression guard.)
-        Arithmetic: electrolyzer_pem ∉ {wind_turbine, pv_panel, battery, grid_connection}
-                    → excluded; grid_connection_stub ∉ set → excluded.
+        Injects _FAKE_MODELS (one ACTIVE, one INERT-type, one INERT-provenance).
+        The list endpoint must surface only the active entry.
+
+        Arithmetic:
+          vestas-v150-4.2: type wind_turbine ∈ ACTIVE, no pending provenance → is_surfaceable=True
+          h-tec-pem-1mw:   type electrolyzer_pem ∉ ACTIVE                   → is_surfaceable=False
+          pcc-sst-stub:    type grid_connection ∈ ACTIVE, BUT provenance=="USER-provided, pending"
+                           → is_surfaceable=False (provenance arm)
         """
         import energy_go.serving.geo_site_api as geo_api
         monkeypatch.setattr(geo_api, "_device_models_cache", self._FAKE_MODELS)
@@ -1247,10 +1251,10 @@ class TestActiveDeviceFilter:
         )
 
     def test_inert_electrolyzer_and_stub_absent_from_search(self, client, monkeypatch):
-        """INERT electrolyzer AND stub must NOT appear in GET /api/devices/search.
+        """INERT entries must NOT appear in GET /api/devices/search.
 
-        Same injection technique as test_inert_electrolyzer_absent_from_models_list.
-        Searches for both INERT models by prefix must return empty results. (D38.)
+        Same injection as test_inert_electrolyzer_absent_from_models_list.
+        h-tec-pem-1mw excluded via type-arm; pcc-sst-stub excluded via provenance-arm.
         """
         import energy_go.serving.geo_site_api as geo_api
         monkeypatch.setattr(geo_api, "_device_models_cache", self._FAKE_MODELS)
@@ -1297,27 +1301,89 @@ class TestActiveDeviceFilter:
                 f"DEVICE_MODEL_NOT_FOUND code expected for INERT model '{inert_id}' (D38)"
             )
 
-    def test_live_feed_has_no_non_active_types(self, client):
-        """Every model returned by the live device feed has a type in ACTIVE_DEVICE_TYPES.
+    def test_live_feed_excludes_pcc_sst_stub(self, client):
+        """pcc-sst-stub must be ABSENT from the live device feed (REAL device_models.yaml).
 
-        Runs against the REAL config/device_models.yaml (no monkeypatch).
-        This is the live-feed gate: if any entry's type is not in ACTIVE_DEVICE_TYPES,
-        the filter is broken and this test catches it.
+        Runs against the REAL config/device_models.yaml — no monkeypatch.
+        pcc-sst-stub has type: grid_connection (ACTIVE, LOCKED in benchmark_device_library)
+        but provenance: "USER-provided, pending".  is_surfaceable() must return False
+        for it (provenance arm), so it is absent from all three device endpoints.
 
-        Note on pcc-sst-stub: the real on-disk pcc-sst-stub has type: grid_connection
-        (LOCKED in benchmark_device_library contract).  Under the current D38 type-based
-        allowlist, it will APPEAR in the live feed.  Backend-reviewer to decide whether
-        its type should be changed to a non-active stub type to exclude it.
+        Three assertions:
+          (a) GET /api/devices/models — pcc-sst-stub absent from the models map.
+          (b) GET /api/devices/search?q=pcc-sst — pcc-sst-stub absent from search results.
+          (c) GET /api/devices/models/pcc-sst-stub — returns 400 DEVICE_MODEL_NOT_FOUND.
         """
-        from energy_go.env.resolver import ACTIVE_DEVICE_TYPES
+        # (a) list
         resp = client.get("/api/devices/models")
         assert resp.status_code == 200
-        for model_id, entry in resp.json()["models"].items():
-            assert entry["type"] in ACTIVE_DEVICE_TYPES, (
-                f"Model '{model_id}' has non-active type '{entry['type']}' in live feed — "
-                f"D38 filter broken or this entry's type is not in ACTIVE_DEVICE_TYPES. "
-                f"ACTIVE_DEVICE_TYPES = {ACTIVE_DEVICE_TYPES}"
-            )
+        models = resp.json()["models"]
+        assert "pcc-sst-stub" not in models, (
+            "pcc-sst-stub must be excluded from live device feed (D38 provenance arm)"
+        )
+
+        # (b) search
+        resp_s = client.get("/api/devices/search?q=pcc-sst")
+        assert resp_s.status_code == 200
+        ids = [r["model_id"] for r in resp_s.json()["results"]]
+        assert "pcc-sst-stub" not in ids, (
+            "pcc-sst-stub must be excluded from device search (D38 provenance arm)"
+        )
+
+        # (c) detail endpoint
+        resp_d = client.get("/api/devices/models/pcc-sst-stub")
+        assert resp_d.status_code == 400, (
+            f"pcc-sst-stub detail must return 400 (excluded by D38), got {resp_d.status_code}"
+        )
+        assert resp_d.json()["code"] == "DEVICE_MODEL_NOT_FOUND", (
+            "DEVICE_MODEL_NOT_FOUND code expected for pcc-sst-stub detail (D38 provenance arm)"
+        )
+
+    def test_is_surfaceable_imported_from_resolver(self, client):
+        """is_surfaceable must be imported from energy_go.env.resolver (D18/D38).
+
+        Verifies the single-source invariant for the compound predicate: the function
+        used by the feed endpoints is the canonical resolver export, not a local copy.
+        """
+        from energy_go.env.resolver import is_surfaceable as resolver_fn
+        import energy_go.serving.geo_site_api as geo_api
+
+        assert geo_api.is_surfaceable is resolver_fn, (
+            "geo_site_api.is_surfaceable must be the exact same object as "
+            "energy_go.env.resolver.is_surfaceable — no local serving copy (D18)"
+        )
+
+    def test_is_surfaceable_logic(self, client):
+        """is_surfaceable() predicate: active-type + no-pending-provenance = True.
+
+        Unit-tests the four cases of the compound predicate to pin both arms:
+          (1) active type, no provenance     → True  (normal active device)
+          (2) active type, pending provenance → False (provenance-pending stub)
+          (3) inert type, no provenance      → False (INERT device family)
+          (4) inert type, pending provenance → False (both arms fail)
+        """
+        from energy_go.env.resolver import is_surfaceable
+
+        # (1) active, no provenance — surfaceable
+        assert is_surfaceable({"type": "wind_turbine"}) is True, (
+            "active type with no provenance key must be surfaceable"
+        )
+        # (2) active type, pending provenance — NOT surfaceable
+        assert is_surfaceable(
+            {"type": "grid_connection", "provenance": "USER-provided, pending"}
+        ) is False, (
+            "active type with provenance=='USER-provided, pending' must NOT be surfaceable"
+        )
+        # (3) inert type, no provenance — NOT surfaceable
+        assert is_surfaceable({"type": "electrolyzer_pem"}) is False, (
+            "INERT type with no provenance must NOT be surfaceable"
+        )
+        # (4) both arms fail — NOT surfaceable
+        assert is_surfaceable(
+            {"type": "electrolyzer_pem", "provenance": "USER-provided, pending"}
+        ) is False, (
+            "INERT type with pending provenance must NOT be surfaceable"
+        )
 
     def test_active_device_types_imported_from_resolver(self, client):
         """ACTIVE_DEVICE_TYPES must be imported from energy_go.env.resolver (D18/D38).

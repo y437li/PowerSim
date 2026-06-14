@@ -63,6 +63,48 @@ _NON_OVERRIDABLE: dict[str, frozenset[str]] = {
 # CONSUMERS: import this name; do NOT define a local equivalent.
 ACTIVE_DEVICE_TYPES: frozenset[str] = frozenset(_NON_OVERRIDABLE.keys())
 
+
+# ---------------------------------------------------------------------------
+# Feed surfacing predicate — D38 (type-allowlist + provenance-pending guard)
+# ---------------------------------------------------------------------------
+# A device model entry is surfaceable iff:
+#   (1) its type is in ACTIVE_DEVICE_TYPES (resolver-live category), AND
+#   (2) its provenance is NOT "USER-provided, pending" (provenance-pending stubs
+#       are hidden from the live feed until real data replaces them; reversible
+#       when the stub is promoted — provenance update alone, no code change).
+#
+# The provenance predicate handles catalog stubs that share an ACTIVE type
+# (e.g. pcc-sst-stub: type grid_connection, provenance "USER-provided, pending").
+# The LOCKED benchmark_device_library type is untouched; we filter the FEED only.
+#
+# A future scenario-activation PR that replaces a stub with real device data changes
+# the provenance value; is_surfaceable(entry) then returns True automatically.
+#
+# CONSUMERS: call is_surfaceable(entry) wherever device entries are filtered for the
+# live feed.  Do NOT replicate either condition locally (D18 anti-drift).
+
+
+def is_surfaceable(entry: dict) -> bool:
+    """Return True if a device model entry should appear in the live device feed.
+
+    D38: an entry is surfaceable iff
+        (type ∈ ACTIVE_DEVICE_TYPES)  AND
+        (provenance ≠ "USER-provided, pending").
+
+    The type check excludes INERT device families (electrolyzer_pem etc.).
+    The provenance check excludes instance-level stubs that share an ACTIVE type
+    but have no deployed data yet (e.g. pcc-sst-stub).  Both conditions are
+    required; the predicate is a single gate for the whole D38 surfacing rule.
+
+    CONSUMERS: import and call this function; do NOT replicate either condition
+    locally (D18 single-source rule).
+    """
+    return (
+        entry.get("type") in ACTIVE_DEVICE_TYPES
+        and entry.get("provenance") != "USER-provided, pending"
+    )
+
+
 # Keys in the site YAML assets section that are internal resolver state
 _SITE_RESERVED_KEYS = frozenset({"model", "fleet_rated_mw", "fleet_capacity_mw",
                                    "fleet_capacity_mwh", "fleet_power_mw",
