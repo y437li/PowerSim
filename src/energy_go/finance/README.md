@@ -5,7 +5,7 @@
 
 The `finance` package is the **stage-⑤ project-finance engine** (REBUILD_SPEC §13, D39). It converts a dispatched operating result — a `PolicyEvalResult`-grade object from `training.eval` — into a full economic picture: NPV, IRR, MIRR, LCOE, LCOS, payback (simple and discounted), and DSCR, reported as **distributions over a weather ensemble** of M draws and N project years, with downside-risk metrics at the centre (§13.10).
 
-**Entry point:** `engine.finance(ensemble, config, price_paths)` (§13.12). Takes a `PolicyEnsemble` (M weather draws × N-year trajectories per policy), a `FinanceConfig` (discount / tax / debt / horizon), and one or more `PricePath` multiplier vectors (§13.4, D31/F1). Returns a `FinanceResult` covering two economic views per policy and price path:
+**Entry point:** `engine.finance(ensemble, price_paths, econ, finance_config)` (§13.12). Takes a `PolicyEnsemble` (M weather draws × N-year trajectories per policy), a list of `PricePath` multiplier vectors (§13.4, D31/F1), a `DeviceEconParams` block, and a `FinanceConfig` (discount / tax / debt / horizon). Returns a `FinanceResult` covering two economic views per policy and price path:
 - **View (I) — Absolute project:** full-plant CAPEX basis; answers "Is the whole plant a good investment?"
 - **View (II) — Incremental storage:** battery-CAPEX-only basis; answers "Does the battery pay, and which policy maximises its value?" (§13.1)
 
