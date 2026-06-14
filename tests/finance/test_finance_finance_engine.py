@@ -1609,6 +1609,78 @@ def test_fin58_inv_deg_eol_cash_half():
 
 
 # ---------------------------------------------------------------------------
+# FIN-58b -- Throughput arm of _eol_events fires BEFORE calendar arm.
+# Source: finance-expert re-audit comment on PR #111 (same-day gate).
+# Fixture verbatim from finance-expert: lifetime_years=3 (calendar),
+#   cycle threshold = 2.0 × 100 MWh = 200 MWh (fires yr2, cum=200).
+# Without this test the throughput-beats-calendar discriminator (View-II
+# critical path) is ungated — the same oracle-hole pattern this review caught.
+# ---------------------------------------------------------------------------
+
+def test_fin58b_eol_events_throughput_beats_calendar():
+    """FIN-58b: _eol_events throughput arm fires at yr2, NOT calendar yr3.
+
+    Fixture (finance-expert PR #111 re-audit comment verbatim):
+      econ: lifetime_years=3, cycle_life_full_equiv=2.0, bat_capacity_mwh=100.0,
+            total_capex_yuan=1M, replacement_cost_fraction=0.70
+      5-yr trajectory: each year bat_throughput_mwh=100.0 (uniform)
+      cycle threshold: 2.0 * 100.0 = 200 MWh
+
+    Cumulative throughput trace (resets after each replacement):
+      yr1: cum=100 MWh < 200  (no trigger; years_since=1 < 3)
+      yr2: cum=200 MWh >= 200 -> CYCLE TRIGGER -> replacement fires (yr2 < N=5)
+           reset: current_start=2, cum=0
+      yr3: cum=100 MWh < 200  (1 yr since last replace < 3)
+      yr4: cum=200 MWh >= 200 -> CYCLE TRIGGER -> replacement fires (yr4 < N=5)
+           reset: current_start=4, cum=0
+      yr5: N=5 (terminal) -> no replacement regardless of trigger
+
+    Key gate: replacement_years must contain yr2 and NOT contain yr3.
+    (If calendar arm were (wrongly) used first: yr3 in reps, yr2 not in reps.)
+    """
+    from energy_go.finance.cash_flow import _eol_events
+    from energy_go.finance.econ_params import DeviceEconParams
+
+    econ = DeviceEconParams(
+        total_capex_yuan=1_000_000.0,
+        replacement_cost_fraction=0.70,
+        lifetime_years=3,           # calendar arm fires every 3 yr since last event
+        cycle_life_full_equiv=2.0,  # 2 full-equiv cycles = 200 MWh threshold
+        bat_capacity_mwh=100.0,     # 100 MWh nameplate; threshold = 2.0 * 100 = 200
+    )
+    yrs = [
+        _make_eval_result(grid_export_yuan=600_000.0, bat_throughput_mwh=100.0)
+        for _ in range(5)
+    ]
+    reps, _repl_capex, _terminal = _eol_events(yrs, econ)
+
+    # Core gate (finance-expert fixture verbatim):
+    assert 2 in reps, (
+        "Throughput arm must fire at yr2 (cum=200 MWh >= threshold=200) — "
+        "if this fails the cycle trigger is broken"
+    )
+    assert 3 not in reps, (
+        "Calendar arm (yr3) must NOT fire when throughput arm already fired at yr2 — "
+        "first-to-fire means the earlier trigger wins and resets the counter"
+    )
+
+    # Extended assertions to fully pin _eol_events behavior:
+    assert 4 in reps, (
+        "After reset at yr2, a second cycle trigger fires at yr4 "
+        "(cum resets to 0 at yr2; yr3=100, yr4=200 >= 200) — second replacement must fire"
+    )
+    assert 5 not in reps, (
+        "No replacement at yr5 (N=5; terminal year — replacements fire at years 1..N-1 only)"
+    )
+    assert reps == {2, 4}, f"replacement_years must be exactly {{2,4}}, got {reps}"
+
+    # replacement_capex must be total_capex * fraction
+    assert _repl_capex == pytest.approx(700_000.0, abs=TOL_NPV_YUAN), (
+        "replacement_capex_yuan must be total_capex(1M) * fraction(0.70) = 700k"
+    )
+
+
+# ---------------------------------------------------------------------------
 # FIN-59 — Vector 4: lifecycle replacement + terminal value → NPV + LCOE.
 # Source: finance-expert PR #114 §A (Vector 4 worked numbers).
 # ---------------------------------------------------------------------------
