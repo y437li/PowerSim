@@ -108,7 +108,14 @@ This is the **serialized wire view** of the in-process `FinanceResult` (which li
 7. **View-II / any `*_delta` field = percentile OF the per-draw CRN differences, NEVER a difference of percentiles** (Vector 5 / D41): `npv_p50_delta_yuan = P50({NPV(π)_m − NPV(baseline)_m})`, CRN-paired — NOT `P50(π) − P50(baseline)`. Valid only when both legs share draws; `irr` deltas in percentage POINTS. When v1.1.0 ships only a P50 delta, the per-draw basis is documented explicitly.
 8. **M≈10 honesty (R3):** `p_npv_neg`/`p_irr_below_hurdle` have resolution 1/M (0.1 at M=10). Wire value stays the decimal frequency; the consumer SHOULD surface the count ("2 of 10 years") rather than a false-precision "20.0%". (Display guidance, not a wire field.)
 
-**Backend-correctness invariants preserved in the nested envelope (backend-reviewer, from #134; binding):** the reshape MUST retain — IRR ×100 (rule 5), `min_dscr` bare ratio (rule 5), `p_irr_below_hurdle` populated at R2+R3 (rule 6), debt-gating (`debt_metrics=null` when `debt_toggle=false`), and the closed allow-set (no field outside this schema on the wire). These are not lost in the producer reshape.
+**Backend-correctness invariants preserved in the nested envelope (backend-reviewer, from #134; binding field-semantics, NOT a one-time reshape note):** the reshape MUST retain —
+- **IRR / MIRR / equity_irr = pct (×100)** of the engine decimal (rule 5).
+- **`min_dscr` = bare ratio (NOT ×100)**, with the **`min_dscr < 10` realism guard** (a value ≥ 10 indicates a ×100 unit error → reject).
+- **`p_irr_below_hurdle` = empirical frequency populated at R2 AND R3** (rule 6) — NOT a tail statistic, NOT ×100.
+- **debt-gating:** `equity_irr_pct` + `min_dscr` (the `debt_metrics` block) are `null` when `debt_toggle=false`.
+- **closed allow-set (response wire):** no field outside this schema appears on the wire (test #10).
+
+(Scope note: the **request-side** `FinanceConfigRequest` closed allow-set backend-reviewer also flagged is a *separate* concern — that's the `/api/finance/compare` REQUEST shape, governed by the LOCKED `config_artifact_schema` `finance_overrides` allow-set (#133) + `FinanceConfig` (`finance_engine.md`), not by this RESULT-summary contract. Same single-source spirit, different shape; flagged for the request-side contract, out of scope here.)
 
 ---
 
