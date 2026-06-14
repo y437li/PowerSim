@@ -5,7 +5,7 @@
 
 **Authoritative surface:** §13.12 `finance(ensemble, price_paths, econ, finance_config) -> FinanceResult` (merged #100, LOCKED). This document does **not** alter the surface; it supplies the semantics finance-engineer's contract is gated against. Econ defaults = the merged #103 China benchmark library (`config/device_models.yaml`, schema 2.1.0). USER-concluded §13 decisions are fixed inputs (M=50/D34, P95 tail, CAPM values §13.5b) — not re-opened here.
 
-> **Two coordination points flagged to rl-architect (task #3 boundary), not blocking these vectors:** (1) the engine's **area name** (`finance` vs folding into `serving`) — vectors are area-agnostic; (2) the **small-sample real-weather percentile discipline** (per-year + P50/P90, no P95/P99) is rl-architect's to lock — §A below covers the **synthetic M=50** mode (D34); the real-weather mode reuses the same formulas with a reduced/annotated percentile set per task #3.
+> **Workstream-D boundaries are locked by rl-architect's D39** (`docs/design/workstream_d_finance_architecture.md`). This doc supplies the semantics for D39's acceptance §6.2 (parity vectors) + §6.4 (downside formulas) + the discount module (Vector 0). Two boundary calls resolved there: (1) **area = new `finance`** (`src/energy_go/finance/`, `tests/finance/`, `contracts/finance/finance_engine.md`); these vectors are area-agnostic and become the contract's test-case section. (2) **Percentile regimes R1/R2/R3** — §A below is the **R2 synthetic M=50** mode (D34). R1 = M=1 (point estimates only; §13.10c). **R3 = empirical small-sample (`weather.mode: real`, M≈10): `{per-year trajectories + P50 + empirical worst/best-of-N range + P(NPV<0)}`, all empirical-caveat-tagged — NO labeled tail percentile (P75/P90/P95/P99) and NO CVaR-5%, because under the locked nearest-rank estimator P90 and CVaR-5% both collapse to the empirical worst at M≈10 (a misleading relabel).** Same `FinanceResult` schema, absent-not-fabricated, zero rework — only the "what's populated" rule differs by `sample_kind`.
 
 ---
 
@@ -16,6 +16,41 @@
 - `EBITDA(y) = Σ revenue − Σ cost(FixedOM, VarOM, asset-mgmt)` after the §13.4 price path. Base vectors use a **uniform constant-real path** `m(y)=1` ⇒ INV-FINLAYER `requires_retrain=false`.
 - Discount rate `r` shown explicitly per vector (CAPM base `r_e`; §13.5). Vectors use small round inputs so NPV/IRR/MIRR/DSCR are hand-verifiable; the realistic Gansu numbers live in #103 and are exercised by an integration smoke, not these unit vectors.
 - IRR roots are given as the **exact quadratic solution** (N=2 vectors) so the arithmetic is shown end-to-end, not a black-box solver output.
+
+---
+
+## Vector 0 — CAPM → r_e → WACC worked example (gates the discount module)
+
+**Exercises:** the discount module (§13.5): term-matched CGB `r_f` (linear-interp to horizon), Hamada relever, CAPM cost of equity, WACC. Produces the base discount rate `r_e` (unlevered) and the levered `WACC` consumed by Vectors 1/3. CAPM values are the USER-confirmed §13.5b defaults; the CGB/LPR points below are **illustrative static-curve placeholders** (the real curve is the user-editable config, §13.6) — the test fixtures pin these exact placeholder points so the arithmetic is reproducible.
+
+**Inputs (USER-confirmed §13.5b + illustrative static curve)**
+```
+beta_unlevered β_U = 0.60 ;  ERP = 0.060 (total-China) ;  CRP = 0.0
+horizon = 20 yr ;  CGB curve points: 10yr = 0.0200, 30yr = 0.0260   (illustrative config)
+tax_rate = 0.25
+base case:    D/E = 0.0   (all-equity)
+levered case: D/E = 1.5   ⇒ E/V = 0.4, D/V = 0.6
+cost of debt: 5yr-LPR + 125 bps ;  5yr-LPR = 0.0350  ⇒  r_d = 0.0350 + 0.0125 = 0.0475
+```
+
+**Expected (hand-computed)**
+```
+r_f (linear-interp 10yr↔30yr to 20yr) = 0.0200 + (0.0260 − 0.0200)·(20−10)/(30−10)
+    = 0.0200 + 0.0060·0.5 = 0.0230   (2.30%)                              # assert ±1e-6
+
+BASE (unlevered, all-equity): β_L = β_U·(1+(1−tax)·D/E) = 0.60·(1+0.75·0) = 0.60
+    r_e (base) = r_f + β_L·ERP + CRP = 0.0230 + 0.60·0.060 + 0 = 0.0230 + 0.0360
+               = 0.0590   (5.90%)   ⇒ base discount rate                  # assert ±1e-6
+    WACC(base) = r_e = 0.0590        (all-equity ⇒ WACC collapses to r_e, §13.5)
+
+LEVERED toggle (D/E=1.5): β_L = 0.60·(1+0.75·1.5) = 0.60·(1+1.125) = 0.60·2.125 = 1.275
+    r_e (lev) = 0.0230 + 1.275·0.060 = 0.0230 + 0.0765 = 0.0995   (9.95%)  # assert ±1e-6
+    WACC(lev) = (E/V)·r_e + (D/V)·r_d·(1−tax)
+              = 0.4·0.0995 + 0.6·0.0475·0.75
+              = 0.03980 + 0.6·0.0356250 = 0.03980 + 0.0213750
+              = 0.061175   (6.1175%)  ⇒ levered discount rate             # assert ±1e-6
+```
+**Asserts:** base discount = `r_e` (= WACC when D/E=0); levered discount = WACC; Hamada relever applied only in the levered case; `nearest`-tenor is a config alternative to linear-interp (§13.5a). The P(IRR<hurdle) default hurdle (§13.10b) = this `r_e` unless an explicit hurdle field overrides. *(The 0.10 discount in Vectors 1–3 is a deliberately round placeholder for transparent NPV/IRR arithmetic; in production the base discount is this CAPM `r_e`.)*
 
 ---
 
