@@ -1,0 +1,1 @@
+CANARY B6 — unclassified root path; per ci_lanes §3.1 default-to-run, backend-tests MUST run.
