@@ -1,7 +1,7 @@
 # Frontend Contract — Comparison Workbench
 
 > **Area:** frontend
-> **Contract version:** v1.1.0-draft (Round 2 — finance-expert corrections + D43 + diff highlighting + instant finance tier)
+> **Contract version:** v1.2.0-draft (Round 3 — B1 whole-table-min + resolveComparisonRegime + B2 regime-direct-read + B3 direction-of-good + SC5 endpoint confirmed + finance-expert precision notes)
 > **Status:** DRAFT — awaiting frontend-reviewer gate
 > **Branch:** `feat/frontend-comparison-workbench`
 > **Owner:** frontend-engineer
@@ -98,7 +98,7 @@ export type ConfigSortKey = "created_at" | "label" | "battery_energy_mwh";
 
 ### 2.3 Finance parameter types (instant tier ⚡)
 
-Finance parameters are the **instant tier** — changing them triggers `POST /api/compare/recompute-finance`
+Finance parameters are the **instant tier** — changing them triggers `POST /api/compare/finance`
 on cached dispatch data with NO env re-run. Physical params (battery sizing, fleet counts) are NOT here.
 
 ```typescript
@@ -196,11 +196,19 @@ export interface SingleTrajectoryResult {
  */
 export interface DownsideRiskResult {
   worst_case_npv_yuan: number;      // min NPV across M runs; unit: ¥
-  best_of_n_npv_yuan?: number;      // max NPV across M runs (R3 only); unit: ¥
+  /**
+   * max NPV across M runs. PRESENT AT R3 ONLY (absent/None at R1 and R2).
+   * Gate render by regime == "R3", not by truthiness.
+   */
+  best_of_n_npv_yuan?: number;      // unit: ¥
   p_npv_neg: number;                // #{NPV<0}/M; fraction 0–1 (display as %)
   /** Present at R2 AND R3 (frequency count is honest at M≈10) */
   p_irr_below_hurdle: number;       // #{IRR<hurdle}/M; fraction 0–1
-  cvar5_yuan: number | null;        // null at R3 (M≈10 too small for CVaR)
+  /**
+   * PRESENT AT R2 ONLY; null at R1 AND R3 (M≈10 too small for stable CVaR tail).
+   * Gate render by regime == "R2", not by truthiness.
+   */
+  cvar5_yuan: number | null;
   max_drawdown_yuan: number;
   max_drawdown_year: number;
   worst_year_cf_yuan: number;
@@ -208,6 +216,11 @@ export interface DownsideRiskResult {
 
 /** Finance result as the workbench reads it from the backend */
 export interface FinanceResultSummary {
+  /**
+   * B2 RESOLUTION: Read DIRECTLY from the backend response.
+   * NEVER recompute this field client-side from provenance fields.
+   * Use deriveRegime() ONLY when you have a raw PolicyEnsemble (where 'regime' is absent).
+   */
   regime: FinanceRegime;
   provenance: {
     /**
@@ -221,9 +234,12 @@ export interface FinanceResultSummary {
     distribution_valid: boolean;
   };
   /**
-   * Single-trajectory fields — ONLY present at R1 (distribution_valid=false).
-   * 4 fields: point_npv_yuan, max_drawdown_yuan, max_drawdown_year, worst_year_cf_yuan.
-   * null at R2 and R3.
+   * Single-trajectory fields — HEADLINE output at R1 (distribution_valid=false).
+   * The backend provides this at ALL M (not R1-only; finance-expert precision note B).
+   * At R1 it is the SOLE output (percentiles null). At R2/R3 it supplements the percentile view
+   * (peak drawdown context etc.) but is NOT the primary cell.
+   * Contains 4 fields: point_npv_yuan, max_drawdown_yuan, max_drawdown_year, worst_year_cf_yuan.
+   * Display label for point_npv_yuan: "NPV (single scenario)" — NOT "P50".
    */
   single_trajectory: SingleTrajectoryResult | null;
   /**
@@ -265,9 +281,12 @@ export interface FinanceResultSummary {
 export type FinanceRegime = "R1" | "R2" | "R3";
 
 /**
- * Derive regime from backend fields.
- * Read from FinanceResult.provenance (NOT from top-level or flat fields).
- * Never infer from M count alone.
+ * B2 RESOLUTION — Derive regime from RAW PolicyEnsemble provenance fields.
+ * Use this ONLY when you do NOT yet have a FinanceResultSummary
+ * (e.g. pre-eval display, or server-side when constructing the summary).
+ *
+ * When reading a FinanceResultSummary, read `.regime` directly — NEVER call this.
+ * (D42(5) single-source: the backend sets regime; the frontend reads it.)
  */
 export function deriveRegime(
   distribution_valid: boolean,
@@ -276,6 +295,33 @@ export function deriveRegime(
   if (!distribution_valid) return "R1";
   if (sample_kind === "bootstrap") return "R2";
   return "R3";  // empirical
+}
+
+/**
+ * B1 RESOLUTION — Resolve the comparison table's effective regime from a set of variants.
+ * Result = MINIMUM regime (most conservative suppression) across all variant regimes.
+ *
+ * Severity ordering (most to least restrictive): R1 < R3 < R2
+ *   R1 = most restrictive: single_trajectory only; ALL percentiles suppressed
+ *   R3 = middle: P50 shown muted; tail percentiles + CVaR suppressed
+ *   R2 = least restrictive: full distribution; no suppression
+ *
+ * Rules:
+ * 1. The ENTIRE table uses this resolved regime — including the upside section.
+ *    Per-column regime is rejected (Q5 CLOSED).
+ * 2. Mixed-regime delta cells are SUPPRESSED (not just the banner):
+ *    no delta is computed when one column's metric is populated and another's is suppressed.
+ * 3. Default R2 when variants is empty or no variant has a finance_result.
+ */
+export function resolveComparisonRegime(variants: WorkbenchVariant[]): FinanceRegime {
+  const severity: Record<FinanceRegime, number> = { R1: 0, R3: 1, R2: 2 };
+  let min: FinanceRegime = "R2";
+  for (const v of variants) {
+    const r = v.finance_result?.regime;
+    if (!r) continue;
+    if (severity[r] < severity[min]) min = r;
+  }
+  return min;
 }
 ```
 
@@ -456,7 +502,7 @@ interface WorkbenchStoreState {
   fetchExecutionPlan(): Promise<void>;
   runMissingEvals(): Promise<void>;
   pollRunStatus(runId: string): Promise<void>;
-  /** ⚡ Instant tier — POST /api/compare/recompute-finance; no env re-run */
+  /** ⚡ Instant tier — POST /api/compare/finance (SC5 confirmed); no env re-run */
   recomputeFinance(variantId: string): Promise<void>;
   submitSizingSweep(config: SizingSweepConfig): Promise<void>;
   pollSweepStatus(runId: string): Promise<void>;
@@ -763,13 +809,23 @@ export function useCompareRun(): {
 
 /**
  * Finance recompute — ⚡ INSTANT tier.
- * POST /api/compare/recompute-finance → FinanceResultSummary.
+ * SC5 RESOLVED (serving-engineer confirmed): POST /api/compare/finance → FinanceResultSummary.
  * No env re-run. finance() called on cached PolicyEnsemble with new FinanceConfig.
- * Single POST (synchronous-style); no polling needed (< 1 s typical).
- * [SC5: serving-engineer must confirm endpoint path and request/response shape]
+ * Synchronous (HTTP 200 with result in body; < 100 ms on warm cache).
+ *
+ * Request:  { eval_result_id: string, finance_config: FinanceParamSet }
+ *   eval_result_id = WorkbenchVariant.eval_result_id (server-side cache key — NOT variant.id)
+ *
+ * Errors:
+ *   404 { code: "EVAL_RESULT_NOT_FOUND" } — cache evicted or invalid ID
+ *   → UI must warn user "result expired — re-run eval" and offer [Re-run] CTA.
+ *
+ * [Cache lifecycle — PolicyEnsemble eviction policy TBD: serving-engineer flagged as needing
+ *  rl-architect DECISION before contracts/serving/compare_endpoints.md (SC2) is filed.
+ *  Does NOT block this frontend contract.]
  */
 export function useFinanceRecompute(): {
-  recompute: (variantId: string, financeParams: FinanceParamSet) => Promise<FinanceResultSummary>;
+  recompute: (eval_result_id: string, finance_config: FinanceParamSet) => Promise<FinanceResultSummary>;
   loading: boolean; error: string | null;
 };
 
@@ -842,7 +898,18 @@ distribution_valid=true, sample_kind="empirical" → R3
   - `cvar5_yuan = null` → suppressed as `"— (tail-suppressed)"`
 - Banner: `"Empirical ensemble (M≈10 real years) — tail percentiles + CVaR suppressed; worst/best of N + loss frequencies shown."`
 
-**Mixed-regime rule:** table uses MINIMUM regime when variants differ. Warning banner shown.
+**Mixed-regime rule (Q5 CLOSED — whole-table-min):**
+- `resolveComparisonRegime(variants)` returns R1 < R3 < R2 minimum across all variants
+- The **entire table** uses this resolved regime — including the upside section
+- **Per-column regime is rejected** — a delta between a suppressed and populated metric is undefined
+- **Mixed-regime delta cells are SUPPRESSED** (not just the banner):
+  when one column's metric is populated and another's is suppressed, NO delta is rendered (show `"—"`)
+
+**R3 frequency display (DV-8):**
+`p_npv_neg` and `p_irr_below_hurdle` at R3 MUST be displayed as `"X of N observed years"`
+(e.g. `"2 of 10 years = 20%"`), NOT as a smooth percentage like `"20.0%"`.
+Resolution = 1/M = 10 percentage points at M≈10; a decimal percentage falsely implies sub-1pp precision.
+Compute X = round(p * m_draws), format as `"{X} of {m_draws} years"`.
 
 ### 7.4 Input-diff highlighting
 
@@ -857,7 +924,7 @@ distribution_valid=true, sample_kind="empirical" → R3
 
 ### 7.5 Finance params — instant tier (⚡)
 
-Slider `onChange` debounced at 300 ms → `recomputeFinance(variantId)` → `POST /api/compare/recompute-finance`:
+Slider `onChange` debounced at 300 ms → `recomputeFinance(variantId)` → `POST /api/compare/finance` (SC5 confirmed):
 - **No env re-run** — `finance()` called on cached `PolicyEnsemble`; only FinanceConfig changes
 - `financeRecomputeLoading[variantId] = true` during POST; result cells show subtle shimmer
 - **Scope rules (D42 fairness):**
@@ -873,6 +940,43 @@ Slider `onChange` debounced at 300 ms → `recomputeFinance(variantId)` → `POS
 - Workbench variant row: latest comment truncated to 1 line + `[N comments]` expander
 - Compare view: `ConfigDiffPanel` shows latest comment per config alongside param diffs
 - `parent_param_delta` shown as structured diff summary (NOT in comment thread): `"Forked from [parent_label]: battery_energy_mwh 300→400 MWh, gearing_pct 60→70%"`
+
+### 7.8 Delta direction-of-good and coloring (B3 resolution)
+
+Per-metric rules for delta cell coloring. A positive arithmetic delta is NOT always good.
+
+| Metric | Display unit | Direction | Δ = (variant − baseline) | Positive Δ = good? |
+|--------|-------------|-----------|--------------------------|---------------------|
+| IRR P50/P90 | pp (percentage points) | higher = better | Δ in pp | ✓ green |
+| MIRR P50 | pp | higher = better | Δ in pp | ✓ green |
+| NPV P50/P90 | ¥M | higher = better | Δ in ¥M | ✓ green |
+| LCOE P50 | ¥/MWh | **lower = better** | Δ in ¥/MWh | ✗ red; **negative Δ = green** |
+| Payback P50 | years | **lower = better** | Δ in years | ✗ red; **negative Δ = green** |
+| P(NPV<0) | % (display from fraction) | **lower = better** | Δ in pp | ✗ red; **negative Δ = green** |
+| P(IRR<hurdle) | % (display from fraction) | **lower = better** | Δ in pp | ✗ red; **negative Δ = green** |
+| CVaR-5% | ¥M | higher = better (less negative) | Δ in ¥M | ✓ green |
+| Worst NPV | ¥M | higher = better (less negative) | Δ in ¥M | ✓ green |
+| Max drawdown | ¥M | higher = better (less negative) | Δ in ¥M | ✓ green |
+| Best-of-N NPV | ¥M | higher = better | Δ in ¥M | ✓ green |
+
+Each metric in `ComparisonTable` MUST carry a `data-direction` attribute: `"higher-better"` or `"lower-better"`.
+Green/red coloring MUST be derived from `data-direction` + arithmetic sign — not from arithmetic sign alone.
+
+**Unit guards (hard errors in tests):**
+- IRR/MIRR deltas: **pp** (percentage points), NOT raw percent. 8.7% − 8.2% = +0.5 pp, label "+0.5 pp"
+- P(NPV<0)/P(IRR<hurdle) deltas: **pp**, NOT decimal fraction. (0.18 − 0.24) × 100 = −6 pp
+- LCOE: **¥/MWh**, NOT ¥/kWh. 300 ¥/MWh ≠ 0.300 ¥/kWh (1 MWh = 1000 kWh unit trap)
+- NPV deltas: formatted as ¥M (e.g. `"+¥16.0M"`), NOT raw yuan strings
+
+**CRN delta rule (D41 binding):** when comparing two configs in the workbench,
+NPV/IRR deltas displayed in the table MUST use per-draw CRN differences:
+```
+delta_m = metric(A)_m − metric(B)_m    for m = 1…M
+displayed_delta = percentile(delta_m array)    (e.g. P50 of differences)
+```
+NOT the naive delta-of-percentiles (P50_A − P50_B), which overstates significance.
+Prerequisite: both variants share the same CRN seed and M draws.
+If regimes differ or CRN is not shared: show columns side-by-side with NO delta rendered.
 
 ### 7.7 Sizing sweep
 
@@ -896,6 +1000,8 @@ Slider `onChange` debounced at 300 ms → `recomputeFinance(variantId)` → `POS
 | DV-5 | R3 P50 shown muted (not hidden) | Hiding implies no data; muted + caveat is more informative/honest |
 | DV-6 | Table sort is client-side | Finance results already in store; sort = pure render re-order; no API call |
 | DV-7 | `p_irr_below_hurdle` shown as frequency at R3 | Finance-expert: frequency count is honest at M≈10; CVaR tail not credible but loss-count is |
+| DV-8 | R3 frequencies rendered as `"X of N years"` not `"X.0%"` | Resolution = 1/M = 10 pp at M≈10; decimal % falsely implies sub-1pp precision |
+| DV-9 | `single_trajectory` shown as HEADLINE at R1; secondary context at R2/R3 | Backend provides it at all M; display role differs by regime — sole output at R1 |
 
 ---
 
@@ -920,14 +1026,20 @@ Slider `onChange` debounced at 300 ms → `recomputeFinance(variantId)` → `POS
 
 **SC4** — Finance-expert regime display confirmation. **RESOLVED in v1.1.0** — corrections applied; R1 single_trajectory only; R3 p_irr_below_hurdle present; sample_kind="bootstrap" for R2; per-percentile confidence.
 
-**SC5** — `POST /api/compare/recompute-finance` (instant-tier finance recompute endpoint) — serving-engineer must confirm: (a) endpoint path, (b) request shape (variant_id + FinanceParamSet vs eval_result_id + FinanceConfig), (c) synchronous or async. **Blocks finance-param slider implementation.** Message sent to serving-engineer.
+**SC5 RESOLVED** — `POST /api/compare/finance` (confirmed by serving-engineer): synchronous, request `{ eval_result_id, finance_config }`, 404 `{ code: "EVAL_RESULT_NOT_FOUND" }`. Applied in §6 `useFinanceRecompute` and §7.5.
+**Open sub-question:** PolicyEnsemble cache eviction policy (serving-engineer flagged; needs rl-architect DECISION). Blocks `contracts/serving/compare_endpoints.md` (SC2) but does **NOT** block this frontend contract.
 
-**Q5** — Mixed-regime table: proposed minimum-regime for shared sections (most conservative). Finance-expert to confirm on PR.
+**Q5 CLOSED** — Whole-table-min is correct. `resolveComparisonRegime(variants)` (R1 < R3 < R2) governs the entire table including upside columns. Per-column regime rejected. Mixed-regime delta cells suppressed. See §2.5 `resolveComparisonRegime` and §7.3.
 
-**Q6** — R3 `p_irr_below_hurdle` confidence level: assumed NOT tagged `indicative_low_confidence` here (it's a frequency count, which IS honest at M≈10). Finance-expert to confirm.
+**Q6 CLOSED** — `p_irr_below_hurdle` at R3 has NO per-field `confidence` tag (finance-expert confirmed). Use panel-level R3 caveat banner instead (already specified in R3 banner text in §7.3). No `indicative_low_confidence` on `DownsideRiskResult` fields.
 
 ---
 
-*contracts/frontend/comparison_workbench.md — v1.1.0-draft — frontend-engineer — 2026-06-14*
+*contracts/frontend/comparison_workbench.md — v1.2.0-draft — frontend-engineer — 2026-06-14*
 *D42 (comparison workbench model), D43 (config comment thread), D41 (battery config-level compare), D39 (regime display)*
-*Finance-expert corrections applied: sample_kind="bootstrap" for R2; PercentileResult.confidence; R1=single_trajectory; R3 p_irr_below_hurdle present; field names corrected; deriveRegime updated.*
+*Round 2 corrections: sample_kind="bootstrap" for R2; PercentileResult.confidence; R1=single_trajectory only; R3 p_irr_below_hurdle present; field names corrected; deriveRegime updated.*
+*Round 3 (B1): Q5 CLOSED — resolveComparisonRegime() whole-table-min (R1<R3<R2); delta suppression rule; R3 frequency display "X of N years".*
+*Round 3 (B2): Q6 CLOSED — FinanceResultSummary.regime read directly from backend; deriveRegime = raw PolicyEnsemble mapper only.*
+*Round 3 (B3): §7.8 direction-of-good per metric (LCOE/payback/P-metrics lower-better); unit guards (pp, ¥/MWh); CRN delta rule (D41).*
+*Round 3 (SC5): endpoint confirmed POST /api/compare/finance; eval_result_id; cache-lifetime DECISION pending (rl-architect).*
+*Round 3 (finance-expert precision): single_trajectory present at all M; best_of_n R3-only; cvar5 R2-only.*

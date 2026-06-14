@@ -1,6 +1,6 @@
 /**
  * Test suite: comparison_workbench.test.tsx
- * Contract: contracts/frontend/comparison_workbench.md v1.1.0-draft
+ * Contract: contracts/frontend/comparison_workbench.md v1.2.0-draft
  *
  * Tests must be RED until implementation. Do NOT modify approved tests to make them pass.
  * Reviewer-added cases marked: // reviewer:
@@ -14,6 +14,16 @@
  *   - New §16: input-diff highlighting (ConfigDiffPanel)
  *   - New §17: finance param instant tier (FinanceParamPanel)
  *   - New §18: D43 config comment thread
+ *
+ * Round 3 amendments (2026-06-14 — B1/B2/B3 resolution):
+ *   - Added resolveComparisonRegime import (§2.5)
+ *   - New §1bis: resolveComparisonRegime tests (T-RESOLVE-1..5) — B1 whole-table-min
+ *   - T-R3-8 added: R3 frequency display as "X of N years" not smooth % (DV-8)
+ *   - T-DELTA-5..7 added: direction-of-good (LCOE lower-better); unit guard (¥/MWh not ¥/kWh);
+ *       mixed-regime delta suppression — B3 resolution
+ *   - Fixtures updated: FINANCE_RESULT_R2 and R3 have non-null single_trajectory
+ *       (finance-expert: backend provides it at ALL M, not R1-only)
+ *   - best_of_n_npv_yuan: R3 only; cvar5_yuan: R2 only (gated by regime in fixtures)
  */
 
 import React from "react";
@@ -24,6 +34,7 @@ import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
 // Import under test (will fail until implemented — RED is correct)
 import {
   deriveRegime,
+  resolveComparisonRegime,   // B1: resolveComparisonRegime — whole-table-min
   type FinanceRegime,
   type WorkbenchMode,
   type WorkbenchVariant,
@@ -75,6 +86,8 @@ const SHARED_SCENARIO_R2: SharedScenario = {
  * - sample_kind: "bootstrap" (not "synthetic")
  * - nested PercentileResult shape with .value + .confidence
  * - downside_risk block uses worst_case_npv_yuan / p_irr_below_hurdle (fraction)
+ * - Round 3: single_trajectory is non-null (finance-expert precision note B:
+ *   backend provides it at ALL M, not R1-only; primary display at R1 only)
  */
 const FINANCE_RESULT_R2: FinanceResultSummary = {
   regime: "R2",
@@ -83,7 +96,14 @@ const FINANCE_RESULT_R2: FinanceResultSummary = {
     m_draws: 50,
     distribution_valid: true,
   },
-  single_trajectory: null,       // null at R2
+  // Non-null at R2 (finance-expert: backend provides single_trajectory at ALL M).
+  // At R2 it supplements the percentile view but is NOT the primary cell.
+  single_trajectory: {
+    point_npv_yuan: 142_000_000,
+    max_drawdown_yuan: 842_000_000,
+    max_drawdown_year: 3,
+    worst_year_cf_yuan: -12_000_000,
+  },
   irr_pct: {
     p50: { value: 8.2, confidence: "sound" },
     p75: { value: 7.9, confidence: "sound" },
@@ -148,7 +168,9 @@ const FINANCE_RESULT_R1: FinanceResultSummary = {
  * - P50 values are always indicative_low_confidence at R3
  * - downside_risk: worst_case_npv_yuan / best_of_n_npv_yuan (CORRECTED field names)
  * - p_irr_below_hurdle IS PRESENT at R3 (finance-expert correction; was null in v1.0.0)
- * - cvar5_yuan = null (suppressed at M≈10)
+ * - cvar5_yuan = null (PRESENT R2 ONLY; null at R3 — gate by regime, not truthiness)
+ * - best_of_n_npv_yuan: PRESENT R3 ONLY (gate by regime, not truthiness)
+ * - Round 3: single_trajectory non-null (finance-expert: backend provides at all M)
  */
 const FINANCE_RESULT_R3: FinanceResultSummary = {
   regime: "R3",
@@ -157,7 +179,13 @@ const FINANCE_RESULT_R3: FinanceResultSummary = {
     m_draws: 10,
     distribution_valid: true,
   },
-  single_trajectory: null,
+  // Non-null at R3 (finance-expert precision note B)
+  single_trajectory: {
+    point_npv_yuan: 135_000_000,
+    max_drawdown_yuan: 890_000_000,
+    max_drawdown_year: 4,
+    worst_year_cf_yuan: -15_000_000,
+  },
   irr_pct: {
     p50: { value: 7.9, confidence: "indicative_low_confidence" },  // ALWAYS indicative at R3
     // p75/p90/p95/p99 absent at R3
@@ -281,6 +309,67 @@ describe("§1 deriveRegime — D39 regime derivation", () => {
     expect(regime).not.toBe("bootstrap");  // "bootstrap" is provenance, not regime
     expect(regime).not.toBe("empirical");
     expect(["R1", "R2", "R3"]).toContain(regime);
+  });
+});
+
+// ─── §1bis. resolveComparisonRegime (B1 resolution) ─────────────────────────
+
+describe("§1bis resolveComparisonRegime — B1: whole-table-min regime (R1 < R3 < R2)", () => {
+  /**
+   * resolveComparisonRegime returns the minimum regime across all variants.
+   * Severity: R1 (most restrictive) < R3 < R2 (least restrictive).
+   * Used to determine ComparisonTable suppression for the entire table.
+   */
+
+  it("T-RESOLVE-1: all R2 variants → effective regime = R2 (no suppression)", () => {
+    const variants = [
+      makeVariant({ id: "v1", is_baseline: true,  finance_result: FINANCE_RESULT_R2 }),
+      makeVariant({ id: "v2", is_baseline: false, finance_result: FINANCE_RESULT_R2 }),
+    ];
+    expect(resolveComparisonRegime(variants)).toBe("R2");
+  });
+
+  it("T-RESOLVE-2: one R1 variant + rest R2 → effective regime = R1 (most restrictive wins)", () => {
+    // Severity: R1=0 < R3=1 < R2=2; min(R2=2, R1=0) = R1
+    const variants = [
+      makeVariant({ id: "v1", is_baseline: true,  finance_result: FINANCE_RESULT_R2 }),
+      makeVariant({ id: "v2", is_baseline: false, finance_result: FINANCE_RESULT_R1 }),
+    ];
+    expect(resolveComparisonRegime(variants)).toBe("R1");
+  });
+
+  it("T-RESOLVE-3: one R3 variant + rest R2 → effective regime = R3", () => {
+    // Severity: min(R2=2, R3=1) = R3
+    const variants = [
+      makeVariant({ id: "v1", is_baseline: true,  finance_result: FINANCE_RESULT_R2 }),
+      makeVariant({ id: "v2", is_baseline: false, finance_result: FINANCE_RESULT_R3 }),
+    ];
+    expect(resolveComparisonRegime(variants)).toBe("R3");
+  });
+
+  it("T-RESOLVE-4: R1 + R3 mixed → effective regime = R1 (R1 beats R3)", () => {
+    // Severity: min(R1=0, R3=1) = R1
+    const variants = [
+      makeVariant({ id: "v1", is_baseline: true,  finance_result: FINANCE_RESULT_R1 }),
+      makeVariant({ id: "v2", is_baseline: false, finance_result: FINANCE_RESULT_R3 }),
+    ];
+    expect(resolveComparisonRegime(variants)).toBe("R1");
+  });
+
+  it("T-RESOLVE-5: empty variants / no finance_result → default R2 (no suppression)", () => {
+    // No variants have finance_result → default R2 (no suppression)
+    expect(resolveComparisonRegime([])).toBe("R2");
+    expect(resolveComparisonRegime([makeVariant({ finance_result: null })])).toBe("R2");
+  });
+
+  // reviewer: resolveComparisonRegime must NEVER produce per-column regime (B1 rule)
+  it("T-RESOLVE-6: return type is a single FinanceRegime, not per-variant", () => {
+    const result = resolveComparisonRegime([
+      makeVariant({ finance_result: FINANCE_RESULT_R2 }),
+    ]);
+    // Must be a single string — one of the three regime labels
+    expect(typeof result).toBe("string");
+    expect(["R1", "R2", "R3"]).toContain(result);
   });
 });
 
@@ -697,6 +786,70 @@ describe("§5 ComparisonTable — R3 partial suppression (M≈10 empirical)", ()
     // p_irr_below_hurdle=0.30 → displayed as "30%" or "3/10"
     expect(screen.getByText(/30%|3\/10|3 of 10/i)).toBeTruthy();
   });
+
+  /**
+   * T-R3-8 (Round 3 — DV-8): R3 frequencies displayed as "X of N years" not smooth %.
+   * Finance-expert: resolution = 1/M = 10pp at M≈10; "20.0%" falsely implies sub-1pp precision.
+   * FIXTURE: p_npv_neg=0.20, m_draws=10 → compute X=round(0.20*10)=2 → "2 of 10 years"
+   */
+  it("T-R3-8: R3 p_npv_neg displayed as 'X of N years' count format — NOT smooth decimal %", () => {
+    // p_npv_neg=0.20, m_draws=10 → X = round(0.20 * 10) = 2 → "2 of 10 years" or "2 of 10"
+    // Must NOT render "20.0%" (which implies sub-1pp precision at M=10)
+    render(
+      <ComparisonTable
+        variants={[baselineR3]}
+        baselineId="var-baseline"
+        regime="R3"
+        hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
+      />
+    );
+    // Count format must be present
+    expect(screen.getByText(/2 of 10|2\/10 years/i)).toBeTruthy();
+    // Decimal % format must NOT appear for R3 frequency cells
+    // (bare "20%" is also undesirable — prefer "2 of 10 years = 20%" at most)
+    // This tests the component does NOT render "20.0%" anywhere in the freq cells
+    expect(screen.queryByText(/20\.0%/)).toBeNull();
+  });
+
+  // reviewer: best_of_n_npv_yuan MUST be gated by regime="R3", not by truthiness
+  it("T-R3-9: best_of_n_npv_yuan only rendered at R3 — suppressed (or absent) at R2", () => {
+    // R2 fixture does NOT have best_of_n_npv_yuan (R3-only field per contract)
+    render(
+      <ComparisonTable
+        variants={[makeVariant({ finance_result: FINANCE_RESULT_R2 })]}
+        baselineId="var-baseline"
+        regime="R2"
+        hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
+      />
+    );
+    // ¥195M from R3 fixture should NOT appear at R2
+    expect(screen.queryByText(/195M|195,000/)).toBeNull();
+  });
+
+  // reviewer: cvar5_yuan MUST be gated by regime="R2", not by truthiness
+  it("T-R3-10: cvar5_yuan suppressed at R3 even though table switch could show R2 value", () => {
+    render(
+      <ComparisonTable
+        variants={[baselineR3]}
+        baselineId="var-baseline"
+        regime="R3"
+        hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
+      />
+    );
+    // cvar5_yuan is null at R3; CVaR row should show "— (tail-suppressed)"
+    expect(screen.getByText(/— \(tail-suppressed\)/)).toBeTruthy();
+    // ¥76M from R2 fixture should NOT appear
+    expect(screen.queryByText(/76M|76,000/)).toBeNull();
+  });
 });
 
 // ─── §6. Mixed-regime comparison ─────────────────────────────────────────────
@@ -813,6 +966,91 @@ describe("§7 ComparisonTable — delta display vs baseline", () => {
       />
     );
     expect(screen.getByText(/\+¥?16M|\+16M|\+16,000/)).toBeTruthy();
+  });
+
+  /**
+   * T-DELTA-5 (Round 3 — B3): LCOE delta — lower is better.
+   * Baseline LCOE P50 = 312 ¥/MWh; Variant LCOE P50 = 300 ¥/MWh.
+   * arithmetic: 300 - 312 = -12 ¥/MWh (improvement).
+   * The cell must have data-direction="lower-better" so coloring renders negative = green.
+   */
+  it("T-DELTA-5: LCOE delta lower-better — negative delta cell has data-direction=lower-better", () => {
+    // Baseline LCOE = 312 ¥/MWh; variant LCOE = 300 ¥/MWh → delta = -12 ¥/MWh (improvement)
+    const baseline = makeVariant({ id: "var-baseline", is_baseline: true, finance_result: FINANCE_RESULT_R2 });
+    const variantA = makeVariant({
+      id: "var-a",
+      label: "A (SST)",
+      is_baseline: false,
+      finance_result: {
+        ...FINANCE_RESULT_R2,
+        lcoe_yuan_per_mwh: { p50: { value: 300, confidence: "sound" } },
+      },
+    });
+    render(
+      <ComparisonTable
+        variants={[baseline, variantA]}
+        baselineId="var-baseline"
+        regime="R2"
+        hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
+      />
+    );
+    // Delta "-12 ¥/MWh" should be shown; the cell must carry data-direction="lower-better"
+    expect(screen.getByText(/−12.*¥\/MWh|-12.*¥\/MWh/)).toBeTruthy();
+    const lcoeDeltaCell = screen.getByText(/−12.*¥\/MWh|-12.*¥\/MWh/).closest("[data-direction]");
+    expect(lcoeDeltaCell?.getAttribute("data-direction")).toBe("lower-better");
+  });
+
+  /**
+   * T-DELTA-6 (Round 3 — B3 unit guard): LCOE must be shown in ¥/MWh, NOT ¥/kWh.
+   * 312 ¥/MWh ≠ 0.312 ¥/kWh — the kWh form is a unit trap (factor-of-1000 error).
+   */
+  it("T-DELTA-6: LCOE unit guard — displayed in ¥/MWh not ¥/kWh (factor-of-1000 trap)", () => {
+    // FINANCE_RESULT_R2.lcoe_yuan_per_mwh.p50.value = 312 (¥/MWh)
+    // MUST show "312 ¥/MWh" or "312"; must NOT show "0.312" (kWh form)
+    render(
+      <ComparisonTable
+        variants={[makeVariant({ finance_result: FINANCE_RESULT_R2 })]}
+        baselineId="var-baseline"
+        regime="R2"
+        hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
+      />
+    );
+    // 312 ¥/MWh should appear somewhere in the LCOE row
+    expect(screen.getByText(/312.*¥\/MWh|¥\/MWh.*312|312/)).toBeTruthy();
+    // 0.312 (kWh form) must NOT appear anywhere (unit trap guard)
+    expect(screen.queryByText(/0\.312/)).toBeNull();
+  });
+
+  /**
+   * T-DELTA-7 (Round 3 — B1+B3): mixed-regime delta cells are SUPPRESSED.
+   * When table regime = R1 (baseline R2, one variant R1), IRR delta must NOT be shown.
+   * Rule: no delta rendered when one column's metric is populated and another's is suppressed.
+   */
+  it("T-DELTA-7: mixed-regime — IRR delta suppressed when table regime=R1 (no pp delta rendered)", () => {
+    // Baseline has R2 (irr_pct.p50=8.2%); one variant has R1 (irr_pct=null)
+    // resolveComparisonRegime([R2, R1]) = R1 → entire table uses R1 → IRR cells suppressed
+    // No "+0.X pp" or "-0.X pp" delta should appear in the IRR rows
+    const baseline = makeVariant({ id: "var-baseline", is_baseline: true,  finance_result: FINANCE_RESULT_R2 });
+    const variantR1 = makeVariant({ id: "var-r1", is_baseline: false, finance_result: FINANCE_RESULT_R1 });
+    render(
+      <ComparisonTable
+        variants={[baseline, variantR1]}
+        baselineId="var-baseline"
+        regime="R1"  // resolveComparisonRegime([R2, R1]) = R1
+        hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
+      />
+    );
+    // No IRR delta in pp units should appear (metric suppressed at R1)
+    expect(screen.queryByText(/\+.*pp|-.*pp/)).toBeNull();
   });
 
   it("T-DELTA-4: re-designating baseline flips all deltas", () => {
