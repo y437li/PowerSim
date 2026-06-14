@@ -287,6 +287,8 @@ sorted ascending (0-based): x[0]=−80,000 … x[9]=+260,000
 | **P(NPV<0)** | `#{NPV_m < 0} / M` — empirical frequency over the actual years | 2/10 = **0.20** ("2 of 10 historical years lose money") |
 | **P(IRR<hurdle)** | `#{IRR_m < hurdle} / M` — empirical **frequency** (NOT a percentile/tail estimator, so it does **not** collapse at small M; honest at M≈10, same class as P(NPV<0)) | populated; hurdle default = `r_e` |
 
+**Kept-P50 confidence tag — `indicative_low_confidence`, NEVER `"sound"` (binding).** The empirical P50 is *kept* (it doesn't collapse like the tails) but it is still a ~10-sample median, so its `confidence` is **`indicative_low_confidence`** — consistent with the "every R3 percentile is `indicative_low_confidence`" rule below and with the §13.10a CI-width derivation: for the worked sample, P50's 90% bootstrap CI is **(¥10,000, ¥120,000)**, width **¥110,000**, which is **~9×** the convergence threshold (20%·|P50| = ¥12,000) → `indicative_low_confidence` by a wide margin. "Meaningful median" (§A.0) justifies **keeping** P50 vs suppressing it; it does **not** make it `"sound"`. The tag must be **derived** from the CI width per §13.10a (the regime never hardcodes `"sound"` for R3). *Test must assert `P50.confidence == "indicative_low_confidence"` in R3.*
+
 **R3 SUPPRESSED** (absent = `None`, **never fabricated** — the §13.10c discipline). Each would collapse to the observed worst at M≈10, so labeling it as a fitted percentile/tail is a relabel of the worst-of-N:
 
 | Stat | Why suppressed (M=10) |
