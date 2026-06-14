@@ -5,23 +5,26 @@ All tests are RED (no implementation yet). Contract-first step 2.
 Reviewer-added cases are marked with # reviewer: comments.
 
 Units contract (INV-CE-04/05):
-  - irr_pct.p50.value, mirr_pct.p50.value, equity_irr_pct.p50.value: PERCENT (12.3 → 12.3%)
+  - irr_pct.p50.value, mirr_pct.p50.value: PERCENT (12.3 → 12.3%) [MetricPercentiles]
+  - debt_metrics.equity_irr_pct: PERCENT scalar (engine decimal ×100) [D45 SCALAR]
   - finance_assumptions.wacc, .r_f, .r_e: DECIMAL (0.088, NOT 8.8)
   - *_yuan: ¥ (no conversion)
   - *_mwh: MWh, *_mw: MW, *_yr: years
-  - min_dscr: bare RATIO (1.86, NOT ×100)
+  - debt_metrics.min_dscr: bare RATIO scalar (1.86, NOT ×100) [D45 SCALAR]
   - p_npv_neg, p_irr_below_hurdle: probability ∈ [0,1] (NOT ×100)
 
-FinanceResultSummary v1.1.0 nested shape (matched to #132 commit 0a47d24):
+FinanceResultSummary v1.1.0 nested shape (canonical: contracts/shared/finance_result_summary.md
+via D45 / #135; SC2 §2.4 is a pointer):
   - provenance: {sample_kind: "bootstrap"|"empirical", m_draws, distribution_valid}
-  - single_trajectory: non-null at R1 only; fields: point_npv_yuan, max_drawdown_yuan,
-    max_drawdown_year, worst_year_cf_yuan; NO point_irr_pct
-  - irr_pct, npv_yuan, mirr_pct, lcoe_yuan_per_mwh, payback_yr: MetricPercentiles | null
+  - single_trajectory: NON-NULL at ALL M (D45 rule 3 — R1 headline, supplementary at R2/R3);
+    fields: point_npv_yuan, max_drawdown_yuan, max_drawdown_year, worst_year_cf_yuan; NO point_irr_pct
+  - irr_pct, npv_yuan, mirr_pct, lcoe_yuan_per_mwh, payback_discounted_yr: MetricPercentiles | null
     (null at R1 only); each has p50/p75/p90/p95/p99: {value, confidence, bootstrap_ci?}
+    bootstrap_ci present ONLY in npv_yuan nodes (Rule B, D45)
   - downside_risk: DownsideRiskResult | null (null at R1)
   - finance_assumptions: {seed, valuation_date, r_f, r_e, wacc, price_path_ids, code_version}
-  - equity_irr_pct: MetricPercentiles | null (debt-gated)
-  - min_dscr: number | null (debt-gated, bare ratio)
+  - debt_metrics: {equity_irr_pct: scalar (PERCENT), min_dscr: scalar (bare ratio)} | null
+    (null when debt off or at R1); both fields are SCALAR per D45/engine.py:679-680
 """
 
 import os
@@ -335,28 +338,38 @@ class TestCompareFinance:
             "downside_risk must be null at R1 (distribution_valid=False, INV-CE-06)"
         )
 
-    def test_finance_single_trajectory_nonnull_only_at_r1(self, client, monkeypatch):
-        """INV-CE-18: single_trajectory is non-null at R1, null at R2/R3."""
-        stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=1)
-        monkeypatch.setattr("energy_go.serving.compare.cache",
-                            {self.EVAL_ID: stub_ensemble})
-        resp = client.post(self.ENDPOINT, json=self._finance_request())
-        assert resp.status_code == 200
-        fr = resp.json()["finance_result"]
-        if fr.get("regime") == "R1":
+    def test_finance_single_trajectory_always_nonnull(self, client, monkeypatch):
+        """D45 rule 3 (supersedes old INV-CE-18): single_trajectory is non-null at ALL M.
+
+        The canonical (contracts/shared/finance_result_summary.md, locked D45/#135) states:
+        "Single trajectory — present at ALL M (the R1 headline; supplementary at R2/R3)."
+        Fields: point_npv_yuan, max_drawdown_yuan, max_drawdown_year, worst_year_cf_yuan.
+        point_irr_pct is ABSENT (IRR not computable from a single trajectory).
+        """
+        for m_val, sk in [(1, "bootstrap"), (50, "bootstrap"), (10, "empirical")]:
+            stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=m_val,
+                                                sample_kind=sk)
+            monkeypatch.setattr("energy_go.serving.compare.cache",
+                                {self.EVAL_ID: stub_ensemble})
+            resp = client.post(self.ENDPOINT, json=self._finance_request())
+            assert resp.status_code == 200
+            fr = resp.json()["finance_result"]
             st = fr.get("single_trajectory")
-            assert st is not None, "single_trajectory must be non-null at R1"
+            assert st is not None, (
+                f"single_trajectory must be non-null at ALL M (regime={fr.get('regime')}, "
+                f"M={m_val}) — D45 canonical rule 3"
+            )
             assert "point_npv_yuan" in st
             assert "max_drawdown_yuan" in st
             assert "max_drawdown_year" in st
             assert "worst_year_cf_yuan" in st
-            # IRR absent at M=1 (INV-CE-18)
+            # IRR absent — not computable from a single trajectory
             assert "point_irr_pct" not in st, (
-                "point_irr_pct must not be in single_trajectory — IRR absent at M=1 (INV-CE-18)"
+                "point_irr_pct must not be in single_trajectory — IRR absent"
             )
 
-    def test_finance_single_trajectory_null_at_r2(self, client, monkeypatch):
-        """INV-CE-18: single_trajectory is null at R2."""
+    def test_finance_single_trajectory_nonnull_at_r2(self, client, monkeypatch):
+        """D45 rule 3: single_trajectory is non-null at R2 (supplementary context)."""
         stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=50,
                                             sample_kind="bootstrap")
         monkeypatch.setattr("energy_go.serving.compare.cache",
@@ -365,12 +378,17 @@ class TestCompareFinance:
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
         if fr.get("regime") == "R2":
-            assert fr.get("single_trajectory") is None, (
-                "single_trajectory must be null at R2 (INV-CE-18)"
+            assert fr.get("single_trajectory") is not None, (
+                "single_trajectory must be non-null at R2 (D45 canonical rule 3 — "
+                "supersedes old INV-CE-18 which incorrectly required null at R2)"
             )
 
     def test_finance_metric_percentiles_null_at_r1(self, client, monkeypatch):
-        """INV-CE-19: irr_pct, npv_yuan, mirr_pct, lcoe_yuan_per_mwh, payback_yr all null at R1."""
+        """INV-CE-19: all 5 distributional metrics null at R1 (D45 exact set).
+
+        D45 five metrics: irr_pct, npv_yuan, mirr_pct, lcoe_yuan_per_mwh,
+        payback_discounted_yr (renamed from payback_yr — discounted value, D45).
+        """
         stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=1)
         monkeypatch.setattr("energy_go.serving.compare.cache",
                             {self.EVAL_ID: stub_ensemble})
@@ -378,7 +396,8 @@ class TestCompareFinance:
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
         if fr.get("regime") == "R1":
-            for field in ("irr_pct", "npv_yuan", "mirr_pct", "lcoe_yuan_per_mwh", "payback_yr"):
+            for field in ("irr_pct", "npv_yuan", "mirr_pct", "lcoe_yuan_per_mwh",
+                          "payback_discounted_yr"):
                 assert fr.get(field) is None, (
                     f"INV-CE-19: {field} must be null at R1"
                 )
@@ -449,12 +468,13 @@ class TestCompareFinance:
             # At R1, downside_risk is null entirely (INV-CE-06)
             assert fr.get("downside_risk") is None
 
-    def test_finance_equity_irr_pct_p50_is_percent_when_debt_on(self, client, monkeypatch):
-        """INV-CE-04: equity_irr_pct.p50.value must be percent (×100) when gearing_pct > 0.
+    def test_finance_equity_irr_pct_is_scalar_percent_when_debt_on(self, client, monkeypatch):
+        """INV-CE-04 + D45: debt_metrics.equity_irr_pct must be SCALAR percent when gearing > 0.
 
-        Arithmetic: engine returns equity_irr=0.142 (decimal) → serving must ×100 → 14.2%.
-        If serving omits ×100, equity_irr_pct.p50.value would be 0.142 < 1.0 → assert fails.
-        In FinanceParamSet, gearing_pct > 0 triggers debt_toggle=True in FinanceConfig.
+        D45 canonical (engine.py:679-680): equity_irr_pct is a SCALAR (engine mean, NOT
+        per-percentile MetricPercentiles). Location: fr["debt_metrics"]["equity_irr_pct"].
+        Arithmetic: engine decimal 0.142 → ×100 → 14.2 in debt_metrics.equity_irr_pct.
+        If serving omits ×100, value would be 0.142 < 1.0 → assert fails.
         """
         DEBT_PARAMS = {
             "gearing_pct": {"value": 60.0, "scope": "per_config"}  # 60% gearing → D/E 1.5
@@ -468,18 +488,25 @@ class TestCompareFinance:
         ))
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
-        eq_pct = fr.get("equity_irr_pct")
-        if eq_pct is not None and eq_pct.get("p50") is not None:
-            val = eq_pct["p50"]["value"]
-            # Must be in percent form (14.2, not 0.142)
+        dm = fr.get("debt_metrics")
+        if dm is not None and dm.get("equity_irr_pct") is not None:
+            val = dm["equity_irr_pct"]
+            # D45: equity_irr_pct is a SCALAR (not MetricPercentiles dict)
             # Arithmetic: 0.142 × 100 = 14.2; < 1.0 reveals decimal-unit bug
+            assert isinstance(val, (int, float)), (
+                f"debt_metrics.equity_irr_pct must be a scalar, got {type(val)}"
+            )
             assert val > 1.0, (
-                f"equity_irr_pct.p50.value={val} looks like decimal (< 1.0); must be percent (14.2). "
-                f"Serving layer must multiply engine decimal by 100 (INV-CE-04)."
+                f"debt_metrics.equity_irr_pct={val} looks like decimal (< 1.0); "
+                f"must be percent (14.2). Serving must ×100 engine decimal (INV-CE-04)."
             )
 
-    def test_finance_equity_irr_pct_null_when_no_gearing(self, client, monkeypatch):
-        """equity_irr_pct is null when gearing_pct=0 (debt off — no D/E leverage)."""
+    def test_finance_debt_metrics_null_when_no_gearing(self, client, monkeypatch):
+        """D45: debt_metrics block is null when gearing_pct=0 (debt off).
+
+        Both equity_irr_pct and min_dscr live inside debt_metrics (D45 engine.py:679-680).
+        When debt is off, the entire block must be null.
+        """
         stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=50)
         monkeypatch.setattr("energy_go.serving.compare.cache",
                             {self.EVAL_ID: stub_ensemble})
@@ -488,13 +515,15 @@ class TestCompareFinance:
         ))
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
-        assert fr.get("equity_irr_pct") is None, (
-            "equity_irr_pct must be null when gearing_pct=0 (debt off)"
+        dm = fr.get("debt_metrics")
+        assert dm is None, (
+            f"debt_metrics must be null when gearing_pct=0 (debt off); got {dm}"
         )
 
     def test_finance_min_dscr_is_ratio_not_percent(self, client, monkeypatch):
-        """INV-CE-16: min_dscr must be a bare ratio (e.g. 1.86), NOT ×100.
+        """INV-CE-16: debt_metrics.min_dscr must be a bare ratio (e.g. 1.86), NOT ×100.
 
+        D45: min_dscr lives inside debt_metrics (SCALAR per engine.py:679-680).
         Arithmetic: engine returns min_dscr=1.86 (ratio). Serving must NOT multiply by 100.
         A wrong ×100 conversion would produce 186.0 — caught by asserting value < 10.0.
         Realistic DSCR for a bankable project is 1.20–2.50; > 10 is economically implausible.
@@ -509,18 +538,19 @@ class TestCompareFinance:
         ))
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
-        dscr = fr.get("min_dscr")
+        dm = fr.get("debt_metrics", {})
+        dscr = dm.get("min_dscr") if dm else None
         if dscr is not None:
             # INV-CE-16: bare ratio, not percent
             # Arithmetic: 1.86 is correct; 186.0 reveals erroneous ×100
             assert dscr < 10.0, (
-                f"min_dscr={dscr} > 10.0 — looks like percent (×100 applied). "
+                f"debt_metrics.min_dscr={dscr} > 10.0 — looks like percent (×100 applied). "
                 f"min_dscr is a DSCR coverage ratio (1.86), NOT a percent (INV-CE-16)."
             )
-            assert dscr > 0.0, "min_dscr must be positive (dimensionless ratio)"
+            assert dscr > 0.0, "debt_metrics.min_dscr must be positive (dimensionless ratio)"
 
     def test_finance_min_dscr_null_when_no_gearing(self, client, monkeypatch):
-        """min_dscr is null when gearing_pct=0 (debt off)."""
+        """debt_metrics.min_dscr is null (block null) when gearing_pct=0 (debt off)."""
         stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=50)
         monkeypatch.setattr("energy_go.serving.compare.cache",
                             {self.EVAL_ID: stub_ensemble})
@@ -529,8 +559,10 @@ class TestCompareFinance:
         ))
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
-        assert fr.get("min_dscr") is None, (
-            "min_dscr must be null when gearing_pct=0 (debt off)"
+        dm = fr.get("debt_metrics")
+        # Entire debt_metrics block must be null when debt off (D45)
+        assert dm is None or dm.get("min_dscr") is None, (
+            "debt_metrics.min_dscr must be null when gearing_pct=0 (debt off)"
         )
 
     def test_finance_engine_exception_returns_500(self, client, monkeypatch):
@@ -1173,9 +1205,12 @@ class TestUnitContracts:
     ):
         """INV-CE-04: MetricPercentiles .value fields for realistic returns must be > 1.0.
 
-        Fields checked: irr_pct.p50.value, mirr_pct.p50.value (nested v1.1.0 shape).
+        D45 five distributional metrics: irr_pct, npv_yuan, mirr_pct, lcoe_yuan_per_mwh,
+        payback_discounted_yr.
+        equity_irr_pct is NOT in this loop — it is a SCALAR in debt_metrics (D45), not a
+        MetricPercentiles dict.
         Arithmetic: engine decimal 0.123 → ×100 → 12.3% in API. If < 1.0, ×100 omitted.
-        Note: single_trajectory.point_irr_pct does NOT exist (IRR absent at M=1, INV-CE-18).
+        Note: single_trajectory.point_irr_pct does NOT exist (IRR not computable from one draw).
         """
         EVAL_ID = "unit-test-eval-id"
         POLICY_ID = "unit-test-policy-id"
@@ -1192,7 +1227,8 @@ class TestUnitContracts:
             pytest.skip("Implementation not ready")
         fr = resp.json()["finance_result"]
         # v1.1.0 nested: irr_pct.p50.value (not flat irr_p50_pct)
-        for metric_field in ("irr_pct", "mirr_pct", "equity_irr_pct"):
+        # equity_irr_pct is NOT here — it lives in debt_metrics as a scalar (D45)
+        for metric_field in ("irr_pct", "mirr_pct"):
             metric = fr.get(metric_field)
             if metric is not None and metric.get("p50") is not None:
                 val = metric["p50"]["value"]
@@ -1251,8 +1287,10 @@ def _make_stub_ensemble(eval_id, policy_id, M=50, sample_kind="bootstrap",
     Stub hint fields (prefixed _) are read by the serving-layer mock of finance():
       _irr_decimal:        engine decimal → serving must ×100 → irr_pct.p50.value (v1.1.0)
       _wacc_decimal:       engine decimal → must stay decimal in finance_assumptions.wacc
-      _equity_irr_decimal: engine decimal → serving must ×100 → equity_irr_pct.p50.value
-      _min_dscr_ratio:     engine ratio → must NOT be ×100 in JSON → min_dscr (bare ratio)
+      _equity_irr_decimal: engine decimal → serving must ×100 → debt_metrics.equity_irr_pct
+                           (SCALAR per D45/engine.py:679-680, not MetricPercentiles)
+      _min_dscr_ratio:     engine ratio → must NOT be ×100 in JSON → debt_metrics.min_dscr
+                           (SCALAR bare ratio per D45)
 
     sample_kind ∈ {"bootstrap", "empirical"} — "synthetic" is FORBIDDEN (INV-CE-17, D42/#133).
     """

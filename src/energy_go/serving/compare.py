@@ -282,18 +282,17 @@ def _serialize_percentile_field(
     row,
     attr: str,
     scale: float = 1.0,
-    ci_scale: float | None = None,
+    include_ci: bool = False,
 ) -> dict | None:
     """Serialize one field from a PercentileResult row → PercentileResult JSON.
 
-    attr: attribute name on PercentileResult (e.g. "irr" → scale ×100)
-    scale: multiply raw engine value by this (1.0 = no conversion)
-    ci_scale: multiply bootstrap_ci by this (defaults to scale)
+    attr:       attribute name on PercentileResult (e.g. "irr" → scale ×100)
+    scale:      multiply raw engine value by this (1.0 = no conversion)
+    include_ci: include bootstrap_ci field.  Rule B (D45/canonical): ci is
+                NPV-ONLY — pass True ONLY for the npv_yuan metric.
     """
     if row is None:
         return None
-    if ci_scale is None:
-        ci_scale = scale
     raw = getattr(row, attr, None)
     if raw is None:
         return None
@@ -301,10 +300,11 @@ def _serialize_percentile_field(
         "value": float(raw) * scale,
         "confidence": row.confidence,
     }
-    ci = getattr(row, "bootstrap_ci", None)
-    if ci and len(ci) == 2:
-        lo, hi = ci
-        result["bootstrap_ci"] = {"lo": float(lo) * ci_scale, "hi": float(hi) * ci_scale}
+    if include_ci:
+        ci = getattr(row, "bootstrap_ci", None)
+        if ci and len(ci) == 2:
+            lo, hi = ci
+            result["bootstrap_ci"] = {"lo": float(lo), "hi": float(hi)}
     return result
 
 
@@ -312,13 +312,14 @@ def _build_metric_percentiles(
     view,
     attr: str,
     scale: float = 1.0,
-    ci_scale: float | None = None,
+    include_ci: bool = False,
 ) -> dict | None:
     """Build a MetricPercentiles JSON dict from a ViewResult.
 
     Transposes engine row-major (ViewResult.P50/P75/P90/P95/P99) to
     contract metric-major ({"p50": PercentileResult, "p75": ..., ...}).
 
+    include_ci: pass True ONLY for npv_yuan (bootstrap_ci is NPV-only, rule B).
     Returns None if ALL percentile rows are None (e.g. at R1).
     """
     rows = {
@@ -331,7 +332,7 @@ def _build_metric_percentiles(
     out: dict[str, Any] = {}
     any_present = False
     for pct_key, row in rows.items():
-        serialized = _serialize_percentile_field(row, attr, scale, ci_scale)
+        serialized = _serialize_percentile_field(row, attr, scale, include_ci)
         if serialized is not None:
             out[pct_key] = serialized
             any_present = True
@@ -343,34 +344,41 @@ def _serialize_view(view, provenance_block: dict, regime: str,
                     cash_flow_series, finance_assumptions: dict) -> dict:
     """Serialize ViewResult + metadata → FinanceResultSummary JSON dict (§2.4).
 
+    References contracts/shared/finance_result_summary.md (D45 / #135 canonical).
+
     Regime determines which fields are present:
-      R1 (M=1, distribution_valid=False): single_trajectory only; metrics null
+      R1 (M=1, distribution_valid=False): single_trajectory only; all 5 metrics null
       R2 (bootstrap M≥50): MetricPercentiles + downside_risk + cash_flow_series
       R3 (empirical M>1): P50 only (low-confidence); no cash_flow_series
     """
-    # ── single_trajectory (non-null at R1 only, INV-CE-18) ──────────────────
+    # ── single_trajectory (present at ALL M — D45 canonical §3 rule 3) ──────
+    # "The R1 headline; supplementary context at R2/R3."  Never null.
     st = view.single_trajectory
-    if regime == "R1" and st is not None:
+    if st is not None:
         single_traj = {
-            "point_npv_yuan":    st.point_npv_yuan,
-            "max_drawdown_yuan": st.max_drawdown_yuan,
-            "max_drawdown_year": st.max_drawdown_year,
+            "point_npv_yuan":     st.point_npv_yuan,
+            "max_drawdown_yuan":  st.max_drawdown_yuan,
+            "max_drawdown_year":  st.max_drawdown_year,
             "worst_year_cf_yuan": st.worst_year_cf_yuan,
-            # point_irr_pct is ABSENT (INV-CE-18 — IRR not computable at M=1)
+            # point_irr_pct is ABSENT — IRR not computable from a single trajectory
         }
     else:
         single_traj = None
 
     # ── MetricPercentiles (null at R1, INV-CE-19) ────────────────────────────
+    # Exactly 5 distributional metrics (D45): irr_pct, npv_yuan, mirr_pct,
+    # lcoe_yuan_per_mwh, payback_discounted_yr.
+    # bootstrap_ci is NPV-ONLY (Rule B, D45): include_ci=True only for npv_yuan.
     if regime == "R1":
-        irr_pct = npv_yuan = mirr_pct = lcoe_yuan_per_mwh = payback_yr = None
+        irr_pct = npv_yuan = mirr_pct = lcoe_yuan_per_mwh = payback_discounted_yr = None
     else:
-        # irr / mirr / equity_irr are DECIMAL in engine → ×100 → PERCENT in API (INV-CE-04)
-        irr_pct         = _build_metric_percentiles(view, "irr",              scale=100.0)
-        npv_yuan        = _build_metric_percentiles(view, "npv_yuan",          scale=1.0)
-        mirr_pct        = _build_metric_percentiles(view, "mirr",              scale=100.0)
-        lcoe_yuan_per_mwh = _build_metric_percentiles(view, "lcoe_yuan_per_mwh", scale=1.0)
-        payback_yr      = _build_metric_percentiles(view, "payback_simple_yr", scale=1.0)
+        # irr / mirr are DECIMAL in engine → ×100 → PERCENT in API (INV-CE-04)
+        irr_pct               = _build_metric_percentiles(view, "irr",              scale=100.0)
+        npv_yuan              = _build_metric_percentiles(view, "npv_yuan",          scale=1.0,
+                                                          include_ci=True)  # NPV-only CI (Rule B)
+        mirr_pct              = _build_metric_percentiles(view, "mirr",              scale=100.0)
+        lcoe_yuan_per_mwh     = _build_metric_percentiles(view, "lcoe_yuan_per_mwh", scale=1.0)
+        payback_discounted_yr = _build_metric_percentiles(view, "payback_disc_yr",   scale=1.0)
 
     # ── downside_risk (null at R1, INV-CE-06) ───────────────────────────────
     dr_raw = view.downside_risk
@@ -391,40 +399,33 @@ def _serialize_view(view, provenance_block: dict, regime: str,
     # ── cash_flow_series_yuan (R2 only, INV-CE-20) ──────────────────────────
     cfs_out = cash_flow_series if regime == "R2" else None
 
-    # ── debt-gated fields (equity_irr_pct, min_dscr) ─────────────────────────
-    # equity_irr from engine is DECIMAL → ×100 → PERCENT in API (INV-CE-04)
-    eq_irr_raw = view.equity_irr
-    if eq_irr_raw is not None and regime != "R1":
-        # Build as MetricPercentiles for consistency (but only p50 available at equity level)
-        # The engine gives a single aggregate equity IRR, not per-percentile.
-        # Serve as p50 only with confidence inherited from regime.
-        confidence = "indicative_low_confidence" if regime == "R3" else "sound"
-        equity_irr_pct = {
-            "p50": {
-                "value": float(eq_irr_raw) * 100.0,
-                "confidence": confidence,
-            }
+    # ── debt_metrics block — BOTH fields are SCALAR (D45 / engine.py:679-680) ──
+    # equity_irr: single engine float (mean across draws), decimal → ×100 → percent
+    # min_dscr:   bare RATIO, NOT ×100 (INV-CE-16)
+    # Block is null when debt is off OR at R1 (no distribution).
+    eq_irr_raw  = view.equity_irr   # float | None
+    min_dscr_raw = view.min_dscr    # float | None
+    if (eq_irr_raw is not None or min_dscr_raw is not None) and regime != "R1":
+        debt_metrics: dict | None = {
+            "equity_irr_pct": float(eq_irr_raw) * 100.0 if eq_irr_raw is not None else None,
+            "min_dscr":       float(min_dscr_raw) if min_dscr_raw is not None else None,
         }
     else:
-        equity_irr_pct = None
-
-    # min_dscr is a BARE RATIO (NOT ×100) — INV-CE-16
-    min_dscr = view.min_dscr  # pass through unchanged (e.g. 1.86)
+        debt_metrics = None
 
     return {
-        "regime":              regime,
-        "provenance":          provenance_block,
-        "single_trajectory":   single_traj,
-        "irr_pct":             irr_pct,
-        "npv_yuan":            npv_yuan,
-        "mirr_pct":            mirr_pct,
-        "lcoe_yuan_per_mwh":   lcoe_yuan_per_mwh,
-        "payback_yr":          payback_yr,
-        "downside_risk":       downside_risk,
-        "cash_flow_series_yuan": cfs_out,
-        "equity_irr_pct":      equity_irr_pct,
-        "min_dscr":            min_dscr,       # bare ratio, e.g. 1.86 (NOT ×100)
-        "finance_assumptions": finance_assumptions,
+        "regime":                 regime,
+        "provenance":             provenance_block,
+        "single_trajectory":      single_traj,
+        "irr_pct":                irr_pct,
+        "npv_yuan":               npv_yuan,
+        "mirr_pct":               mirr_pct,
+        "lcoe_yuan_per_mwh":      lcoe_yuan_per_mwh,
+        "payback_discounted_yr":  payback_discounted_yr,
+        "downside_risk":          downside_risk,
+        "cash_flow_series_yuan":  cfs_out,
+        "debt_metrics":           debt_metrics,   # {equity_irr_pct: scalar, min_dscr: scalar}
+        "finance_assumptions":    finance_assumptions,
     }
 
 
@@ -614,25 +615,31 @@ def _synthesize_from_stub(
         "code_version":   "stub",
     }
 
-    # ── single_trajectory (non-null at R1 only, INV-CE-18) ──────────────────
-    single_traj = None
-    if regime == "R1":
-        single_traj = {
-            "point_npv_yuan":     1_000_000.0,
-            "max_drawdown_yuan":  -50_000.0,
-            "max_drawdown_year":  3,
-            "worst_year_cf_yuan": -20_000.0,
-            # point_irr_pct is ABSENT (INV-CE-18)
-        }
+    # ── single_trajectory (present at ALL M — D45 canonical §3 rule 3) ──────
+    # "The R1 headline; supplementary context at R2/R3."  Never null.
+    single_traj = {
+        "point_npv_yuan":     1_000_000.0,
+        "max_drawdown_yuan":  -50_000.0,
+        "max_drawdown_year":  3,
+        "worst_year_cf_yuan": -20_000.0,
+        # point_irr_pct is ABSENT — IRR not computable from a single trajectory
+    }
 
     # ── MetricPercentiles (null at R1, INV-CE-19) ────────────────────────────
+    # Exactly 5 distributional metrics (D45): irr_pct, npv_yuan, mirr_pct,
+    # lcoe_yuan_per_mwh, payback_discounted_yr.
+    # bootstrap_ci is NPV-ONLY (Rule B, D45): included only in npv_yuan entries.
     if regime == "R1":
-        irr_pct = npv_yuan = mirr_pct = lcoe_yuan_per_mwh = payback_yr = None
+        irr_pct = npv_yuan = mirr_pct = lcoe_yuan_per_mwh = payback_discounted_yr = None
     else:
         confidence = "indicative_low_confidence" if regime == "R3" else "sound"
 
-        def _pct_entry(value):
-            return {"value": value, "confidence": confidence}
+        def _pct_entry(value, with_ci: bool = False):
+            e: dict[str, Any] = {"value": value, "confidence": confidence}
+            if with_ci:
+                # Synthetic CI: ±5% of value
+                e["bootstrap_ci"] = {"lo": value * 0.95, "hi": value * 1.05}
+            return e
 
         irr_pct = {"p50": _pct_entry(irr_dec * 100.0)}   # decimal → percent (INV-CE-04)
         if regime == "R2":
@@ -640,13 +647,16 @@ def _synthesize_from_stub(
                 "p75": _pct_entry(irr_dec * 100.0 * 0.95),
                 "p90": _pct_entry(irr_dec * 100.0 * 0.88),
                 "p95": _pct_entry(irr_dec * 100.0 * 0.80),
-                "p99": {"value": irr_dec * 100.0 * 0.70, "confidence": "indicative_low_confidence"},
+                "p99": {"value": irr_dec * 100.0 * 0.70,
+                        "confidence": "indicative_low_confidence"},
             })
 
-        mirr_pct          = {"p50": _pct_entry(irr_dec * 95.0)}
-        npv_yuan          = {"p50": _pct_entry(1_000_000.0)}
-        lcoe_yuan_per_mwh = {"p50": _pct_entry(250.0)}
-        payback_yr        = {"p50": _pct_entry(8.5)}
+        mirr_pct              = {"p50": _pct_entry(irr_dec * 95.0)}
+        # NPV-only CI (Rule B): with_ci=True only here
+        npv_yuan              = {"p50": _pct_entry(1_000_000.0, with_ci=True)}
+        lcoe_yuan_per_mwh     = {"p50": _pct_entry(250.0)}
+        # Discounted payback is longer than simple payback (typical 11-15 yr for utility projects)
+        payback_discounted_yr = {"p50": _pct_entry(11.5)}
 
     # ── downside_risk (null at R1, INV-CE-06) ───────────────────────────────
     downside_risk = None
@@ -665,31 +675,32 @@ def _synthesize_from_stub(
     # ── cash_flow_series_yuan (R2 only, INV-CE-20) ──────────────────────────
     cfs_out = [[1_750_000.0] * 20] * min(M, 3) if regime == "R2" else None
 
-    # ── debt-gated fields ────────────────────────────────────────────────────
+    # ── debt_metrics block — BOTH fields are SCALAR (D45 / engine.py:679-680) ──
+    # equity_irr_pct: decimal → ×100 → percent (INV-CE-04)
+    # min_dscr:       bare RATIO, NOT ×100 (INV-CE-16)
+    # Block is null when debt off OR at R1.
     debt_on = finance_config.debt_toggle if finance_config else False
-    if debt_on and eq_irr is not None and regime != "R1":
-        confidence = "indicative_low_confidence" if regime == "R3" else "sound"
-        equity_irr_pct = {"p50": {"value": float(eq_irr) * 100.0, "confidence": confidence}}
+    if debt_on and regime != "R1":
+        debt_metrics: dict | None = {
+            "equity_irr_pct": float(eq_irr) * 100.0 if eq_irr is not None else None,
+            "min_dscr":       float(dscr_val) if dscr_val is not None else None,
+        }
     else:
-        equity_irr_pct = None
-
-    # min_dscr: bare ratio, NOT ×100 (INV-CE-16)
-    min_dscr = float(dscr_val) if (debt_on and dscr_val is not None) else None
+        debt_metrics = None
 
     return {
-        "regime":              regime,
-        "provenance":          provenance_block,
-        "single_trajectory":   single_traj,
-        "irr_pct":             irr_pct,
-        "npv_yuan":            npv_yuan,
-        "mirr_pct":            mirr_pct,
-        "lcoe_yuan_per_mwh":   lcoe_yuan_per_mwh,
-        "payback_yr":          payback_yr,
-        "downside_risk":       downside_risk,
-        "cash_flow_series_yuan": cfs_out,
-        "equity_irr_pct":      equity_irr_pct,
-        "min_dscr":            min_dscr,
-        "finance_assumptions": finance_assumptions,
+        "regime":                 regime,
+        "provenance":             provenance_block,
+        "single_trajectory":      single_traj,
+        "irr_pct":                irr_pct,
+        "npv_yuan":               npv_yuan,
+        "mirr_pct":               mirr_pct,
+        "lcoe_yuan_per_mwh":      lcoe_yuan_per_mwh,
+        "payback_discounted_yr":  payback_discounted_yr,
+        "downside_risk":          downside_risk,
+        "cash_flow_series_yuan":  cfs_out,
+        "debt_metrics":           debt_metrics,   # {equity_irr_pct: scalar, min_dscr: scalar}
+        "finance_assumptions":    finance_assumptions,
     }
 
 
