@@ -48,6 +48,8 @@ ConfigArtifact:
 
 **`version` is the optimistic-concurrency token (binding — answers the D44 shared-mutation concern, backend-reviewer):** under D44 the human AND the agent mutate the same artifact, so every mutating action declares the `expected_base_version` it read; the action layer / serving persistence **accepts only if `expected_base_version == current.version`** (then writes `current.version + 1`), else **REJECTS as a conflict** — the writer must re-read the current version and rebase its change. This is standard optimistic concurrency control; it makes concurrent human/agent edits safe and is what the shared undo stack (D44) unwinds. The OCC check is enforced by the action layer (D44 / #19) + serving; this schema defines `version` as its token.
 
+**Undo/history boundary (binding — frontend-reviewer):** the artifact carries ONLY its **current** state + the integer `version`; it does **NOT** carry prior-version CONTENT. The version **history** (the content needed to undo/redo + the action log) lives in the **action layer / serving** (D44 command store), NOT in the artifact. #19 MUST NOT expect to reconstruct prior versions from the artifact alone — it reads history from the action/version store. (Keeps the artifact bounded; the history is the D44 layer's concern.)
+
 ---
 
 ## 3. `DesignBlock` — the authored form (concern 1; DESIGN params, D42)
@@ -87,13 +89,17 @@ FinanceOverrides:        # a PARTIAL FinanceConfig — only the fields this conf
 ### 4.1 Comparison/session layer (sibling object — defined here, owned by #19)
 ```
 ComparisonSession:
-  schema_version: str
-  id: str
-  common_finance: FinanceConfig          # the COMMON market-rate assumptions (D42); applied to ALL member configs
-  common_scenario: { weather_mode, M, seed, price_path_id, ... }   # the fixed UNCERTAINTY reference (D42) — CRN seed shared (D41)
-  members: list[str]                     # ConfigArtifact ids in this comparison
+  schema_version:    str
+  id:                str
+  mode:              "compare_designs" | "stress_test"   # D42: compare_designs = vary DESIGN, FIX uncertainty (common_scenario); stress_test = FIX design, vary UNCERTAINTY per-member
+  common_finance:    FinanceConfig        # the COMMON market-rate assumptions (D42); applied to ALL members
+  common_scenario:   { weather_mode, M, seed, price_path_id, ... }  # the fixed UNCERTAINTY reference (D42); CRN seed shared (D41) — applies in compare_designs mode
+  baseline_member_id: str                 # the absolute reference member (D42(4)); the delta-native view shows it absolute, the rest as deltas vs it
+  members:           list[str]            # VERSION-PINNED "<id>@<version>" refs (NOT bare ids) — so editing a member mid-comparison does NOT silently change what's compared
 ```
 `finance()` for a member = `finance(ensemble, price_paths, econ, effective_FinanceConfig)` where `effective = common_finance ⊕ member.finance_overrides`. The CRN `seed` + scenario are common (D41/D42 — clean deltas).
+
+**Three binding `ComparisonSession` rules (frontend-reviewer):** (a) **`baseline_member_id`** designates the one absolute member for the delta-native view (D42(4) — others render as deltas vs it; MUST be ∈ `members`). (b) **`mode`** selects the D42 axis: `compare_designs` (vary DESIGN, fix the common UNCERTAINTY scenario — the §18/#19 sizing/config compare) vs `stress_test` (fix the DESIGN, vary the UNCERTAINTY per-member — the D42 robustness axis); `common_scenario` is the fixed reference in `compare_designs`. (c) **`members` are version-pinned `"<id>@<version>"`** (matching `provenance.forked_from` + the OCC token) — a comparison is reproducible and is NOT silently mutated when a member artifact is edited mid-session (the edit creates a new `version`; the session keeps pointing at the pinned one until explicitly re-pinned).
 
 ---
 
@@ -101,9 +107,10 @@ ComparisonSession:
 
 ```
 CommentEntry:
+  id:         str                   # stable per-comment key (UUIDv4) — workbench needs it; aligns with #132 ConfigComment.id
   author:     "human" | "agent"     # D44 attribution — binding, exactly these two values
-  ts:         str                   # ISO-8601
-  text:       str
+  timestamp:  str                   # ISO-8601 (field name `timestamp` — aligned with #132, NOT `ts`)
+  text:       str                   # content-type = PLAIN TEXT in v1 (no markdown render). Agent-authored text is UNTRUSTED → consumers MUST escape on display (XSS contract); if markdown is later allowed it MUST be sanitized.
   action_ref: str | null            # optional: the D44 action id that produced this entry (audit link)
 ```
 Ordered (append-only within a `version`). Agent-authored actions (D44) land here with `author="agent"` + `action_ref`. A test asserts `author ∈ {human, agent}` and rejects any other value.
@@ -116,10 +123,12 @@ Ordered (append-only within a `version`). Agent-authored actions (D44) land here
 ```
 Provenance:
   forked_from:  str | null         # "<id>@<version>" of the parent artifact; null for a root artifact
-  param_delta:  dict[path -> { old, new }]   # exactly what changed vs the parent (dotted path into DesignBlock/FinanceOverrides)
+  param_delta:  dict[path -> { old, new }]   # exactly what changed vs the parent
   created_by:   "human" | "agent"  # who created this artifact (D44)
 ```
-A forked artifact records `forked_from` + the minimal `param_delta`; a root artifact has `forked_from=null` and empty `param_delta`. Test: fork → delta matches the actual diff; root → null/empty.
+**Path convention (binding — frontend-reviewer):** `param_delta` keys are dotted paths into `DesignBlock`/`FinanceOverrides`; **array members use a KEY-based selector, NOT a positional index** — `fleet[model_id=vestas-v150-4.2].count`, never `fleet[3].count` (robust to fleet reordering; a positional index would mis-attribute a delta after a reorder). Scalars are plain dotted paths (`design.battery.energy_mwh`).
+**`param_delta` is PARENT-ONLY (binding):** it records the diff vs `forked_from` only. The workbench's sibling/cross-member "diff-highlight" (compare any two configs in a session) is **computed at view time by the workbench**, NOT stored here — the artifact carries lineage, not pairwise diffs.
+A forked artifact records `forked_from` + the minimal `param_delta`; a root artifact has `forked_from=null` and empty `param_delta`. Test: fork → delta matches the actual diff (incl. a fleet key-path example); root → null/empty.
 
 ### 6.2 `AgentConfig` (concern 5; D32 secret-safety — BINDING)
 ```
@@ -141,12 +150,14 @@ ResultLink:
   seed:             int            # CRN seed (D41) — for reproducibility/pairing
   weather_mode:     "synthetic" | "real"
   M:                int
-  sample_kind:      "bootstrap" | "empirical"   # D39 regime selector
+  sample_kind:      "bootstrap" | "empirical"   # D39 regime selector — CANONICAL enum (see note below); distinct from weather.mode
   finance_result_ref: str | null   # opaque ref into the result store (the FinanceResult); NOT embedded
   regime:           "R1" | "R2" | "R3"          # D39 percentile regime
   discharge_status: "invariant" | "conservative_floor" | "pending" | "n/a"   # D39/D42 sensitivity-discharge state
 ```
 Results are **referenced, never embedded** (results are large + versioned separately). The join keys match telemetry/checkpoint/§13.12 verbatim (no new identifiers). `regime`/`discharge_status` carry the D39/D42 honesty + gate state with the result link.
+
+**Canonical `sample_kind` enum = `{bootstrap, empirical}` (binding — cross-contract, frontend-reviewer flag).** `sample_kind` is the **regime-selector / method** (how the M-ensemble is built → percentile validity: `bootstrap`=resampled M≥50→R2; `empirical`=raw years→R3), per **D39**. It is **distinct from `design.weather.mode ∈ {synthetic, real}`** (the SOURCE toggle); the mapping is `synthetic→bootstrap`, `real→empirical`. `{bootstrap, empirical}` is the single canonical enum across this schema, D39, #132 (`type`/`deriveRegime`), and D42(6) — any contract currently carrying `{synthetic, empirical}` for `sample_kind` is to be aligned to `{bootstrap, empirical}` (matches the finance-expert correction in #132 Round 2; D42 gets a one-line amend if its text used `synthetic`). **rl-architect cross-contract ruling.**
 
 ---
 
@@ -181,6 +192,12 @@ Results are **referenced, never embedded** (results are large + versioned separa
 15. **# reviewer: dispatch_policy_id validity** — a `dispatch_policy_id` that is neither a known §11 baseline id (`greedy`/`tou`/`mpc`/`dp_oracle`) nor a resolvable `checkpoint_id` → reject (the §3 rule currently has no test).
 16. **# reviewer: dangling join-key reference** — an artifact whose `fleet[*].model_id`, `dispatch_policy_id`-as-checkpoint, or `tariff_region` no longer exists in the CURRENT referenced schema/store → a clear **resolve-time** error, distinct from a schema-version/migration error. Exercises the §7 ID-decoupling boundary: the artifact pins IDs not versions, so a removed referent surfaces at resolve time, not as a config-artifact version mismatch.
 17. **# reviewer: finance merge null-vs-absent** — pin the overlay-merge null semantics: an ABSENT override key inherits common (test 5); an EXPLICIT `null` override key must have a defined behavior (recommend: treated as absent/inherit, matching the D32 overlay precedent — assert it does NOT null-out the common value). Removes the classic partial-merge ambiguity.
+18. **# reviewer (frontend): CommentEntry id + field names** — every `CommentEntry` has a stable unique `id`; the timestamp field is named `timestamp` (NOT `ts`, aligning #132 `ConfigComment`); `author ∈ {human, agent}` (test 7). Two entries with duplicate `id` → reject.
+19. **# reviewer (frontend): param_delta fleet key-path** — a fork that changes a fleet entry's count records `param_delta` under a **key-based** path `fleet[model_id=<id>].count` (NOT a positional `fleet[i]`); a fleet **reorder with no value change** produces an **empty** `param_delta` (proves index-independence). Hand example: parent `[{vestas,146},{trina,X}]` → child `[{vestas,150},…]` ⇒ `{ "fleet[model_id=vestas-v150-4.2].count": {old:146,new:150} }`.
+20. **# reviewer (frontend): ComparisonSession version-pinned members** — `members` are `"<id>@<version>"`; **editing a member artifact (→ new version) does NOT change the comparison** (the session still points at the pinned version) until explicitly re-pinned. A bare-`id` member (no `@version`) → reject. `baseline_member_id` MUST be ∈ `members` (else reject).
+21. **# reviewer (frontend): ComparisonSession mode axis** — `mode="compare_designs"` requires a single fixed `common_scenario` (D42 vary-design); `mode="stress_test"` permits per-member scenario variation (D42 vary-uncertainty). A `compare_designs` session whose members carry differing scenarios → reject (would break apples-to-apples).
+22. **# reviewer (frontend): undo boundary** — the artifact carries only the current `version` + state; a consumer attempting to read prior-version CONTENT from the artifact alone gets nothing (history is the D44 action/serving layer). Assert no `history`/`prior_versions` field exists on the artifact.
+23. **# reviewer (frontend): sample_kind canonical enum** — `ResultLink.sample_kind ∈ {bootstrap, empirical}` ONLY; the value `synthetic` (the `weather.mode` SOURCE token) used as a `sample_kind` → reject (cross-contract canonicalization; bootstrap≠synthetic).
 
 ## 9. Out of scope (fidelity boundary)
 - The artifact does NOT store resolved `EnvParams`, full `FinanceResult` payloads, or weather ensembles (all derived/referenced).
