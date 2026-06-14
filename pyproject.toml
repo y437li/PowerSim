@@ -61,6 +61,12 @@ dev = [
     "jsonschema>=4.21",
     "starlette>=0.36",
 ]
+# Finance engine (§13 / D39) — pure cash-flow analytics.
+# The engine is pure Python + NumPy (ships its own Brent's-method IRR solver).
+# No scipy at runtime. Install with:  pip install -e ".[finance]"
+finance = [
+    "numpy>=1.26",
+]
 # Historical weather data pipeline — fetch/cache (Open-Meteo API), Parquet store,
 # wind-shear transform, and block bootstrap.  Install with:
 #   pip install -e ".[weather]"
