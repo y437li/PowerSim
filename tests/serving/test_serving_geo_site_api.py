@@ -1152,3 +1152,265 @@ class TestDeviceSearch:
         """limit=50 is the maximum — must return 200."""
         resp = client.get("/api/devices/search?q=&limit=50")
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# D38 — ACTIVE_DEVICE_TYPES filter regression (inert-exclusion guard)
+# ---------------------------------------------------------------------------
+
+class TestActiveDeviceFilter:
+    """D38 regression: INERT/gated catalog entries must be ABSENT from the
+    device-feed endpoints even when present in device_models.yaml.
+
+    Two exclusion mechanisms are tested:
+
+    1. **Type-based exclusion** — electrolyzer_pem (h-tec-pem-1mw, D35/D38):
+       excluded because "electrolyzer_pem" ∉ ACTIVE_DEVICE_TYPES (type-allowlist arm
+       of is_surfaceable).  Covers all future INERT type families automatically.
+
+    2. **Provenance-based exclusion** — pcc-sst-stub (D38 instance-inert clause):
+       injected with its REAL type "grid_connection" (∈ ACTIVE_DEVICE_TYPES) but
+       with provenance "USER-provided, pending".  is_surfaceable() returns False
+       because provenance == "USER-provided, pending", so the entry is hidden from
+       the feed without touching its LOCKED benchmark_device_library type.
+
+    Live-feed tests (no monkeypatch) run against the REAL config/device_models.yaml
+    and assert pcc-sst-stub is absent from all three endpoints.
+
+    Technique: monkeypatch the module-level _device_models_cache to inject a synthetic
+    device_models dict.  _get_device_models() returns the cache directly when not None,
+    so the patch is seen by all three device endpoints during the test.  monkeypatch
+    restores the original cache value after the test (function-scoped restore,
+    module-scoped client unaffected).
+    """
+
+    # Synthetic device_models dict injected by monkeypatch tests.
+    # ONE active + ONE INERT-type entry (electrolyzer) + ONE INERT-provenance entry (pcc-sst-stub).
+    _FAKE_MODELS = {
+        "schema_version": "2.2.0",   # D35 schema version
+        "models": {
+            "vestas-v150-4.2": {     # ACTIVE — wind_turbine ∈ ACTIVE_DEVICE_TYPES, no pending provenance
+                "type": "wind_turbine",
+                "physics": {
+                    "v_cutin_mps": 3.0, "v_rated_mps": 12.0, "v_cutout_mps": 25.0,
+                    "hub_height_m": 105.0, "rated_mw_per_unit": 4.2,
+                },
+                "economics": {"capex_per_kw_yuan": 5800.0},
+            },
+            "h-tec-pem-1mw": {       # INERT via TYPE — electrolyzer_pem ∉ ACTIVE_DEVICE_TYPES (D35/D38)
+                "type": "electrolyzer_pem",
+                "physics": {
+                    "stack_efficiency_kwh_per_kg": 55.0,
+                    "max_power_mw_per_unit": 1.0,
+                },
+                "economics": {"capex_per_kw_yuan": 1200.0},
+            },
+            "pcc-sst-stub": {        # INERT via PROVENANCE — type grid_connection ∈ ACTIVE_DEVICE_TYPES
+                # Injected with its REAL type "grid_connection" (matches actual device_models.yaml
+                # and LOCKED benchmark_device_library contract).  Excluded from the feed because
+                # provenance == "USER-provided, pending" — the provenance arm of is_surfaceable().
+                # This exactly mirrors the on-disk entry; no LOCKED contract needs to change.
+                "type": "grid_connection",
+                "provenance": "USER-provided, pending",
+                "physics": {"max_export_mw": 200.0, "max_import_mw": 200.0},
+                "economics": {},
+            },
+        },
+    }
+
+    def test_inert_electrolyzer_absent_from_models_list(self, client, monkeypatch):
+        """INERT entries must NOT appear in GET /api/devices/models.
+
+        Injects _FAKE_MODELS (one ACTIVE, one INERT-type, one INERT-provenance).
+        The list endpoint must surface only the active entry.
+
+        Arithmetic:
+          vestas-v150-4.2: type wind_turbine ∈ ACTIVE, no pending provenance → is_surfaceable=True
+          h-tec-pem-1mw:   type electrolyzer_pem ∉ ACTIVE                   → is_surfaceable=False
+          pcc-sst-stub:    type grid_connection ∈ ACTIVE, BUT provenance=="USER-provided, pending"
+                           → is_surfaceable=False (provenance arm)
+        """
+        import energy_go.serving.geo_site_api as geo_api
+        monkeypatch.setattr(geo_api, "_device_models_cache", self._FAKE_MODELS)
+
+        resp = client.get("/api/devices/models")
+        assert resp.status_code == 200
+        models = resp.json()["models"]
+
+        # Active model must be present
+        assert "vestas-v150-4.2" in models, (
+            "Active wind_turbine model must be in device feed"
+        )
+        # INERT electrolyzer must be absent (D38)
+        assert "h-tec-pem-1mw" not in models, (
+            "INERT electrolyzer_pem model must be excluded from device feed (D38)"
+        )
+        # INERT pcc-sst-stub (with stub type) must be absent (D38)
+        assert "pcc-sst-stub" not in models, (
+            "INERT grid_connection_stub model must be excluded from device feed (D38)"
+        )
+
+    def test_inert_electrolyzer_and_stub_absent_from_search(self, client, monkeypatch):
+        """INERT entries must NOT appear in GET /api/devices/search.
+
+        Same injection as test_inert_electrolyzer_absent_from_models_list.
+        h-tec-pem-1mw excluded via type-arm; pcc-sst-stub excluded via provenance-arm.
+        """
+        import energy_go.serving.geo_site_api as geo_api
+        monkeypatch.setattr(geo_api, "_device_models_cache", self._FAKE_MODELS)
+
+        # Search for the INERT electrolyzer by prefix
+        resp = client.get("/api/devices/search?q=h-tec")
+        assert resp.status_code == 200
+        ids = [r["model_id"] for r in resp.json()["results"]]
+        assert "h-tec-pem-1mw" not in ids, (
+            "INERT electrolyzer_pem must be excluded from device search (D38)"
+        )
+
+        # Search for the INERT pcc-sst-stub by prefix
+        resp_sst = client.get("/api/devices/search?q=pcc-sst")
+        ids_sst = [r["model_id"] for r in resp_sst.json()["results"]]
+        assert "pcc-sst-stub" not in ids_sst, (
+            "INERT grid_connection_stub (pcc-sst-stub) must be excluded from search (D38)"
+        )
+
+        # Active model remains searchable
+        resp2 = client.get("/api/devices/search?q=vestas")
+        ids2 = [r["model_id"] for r in resp2.json()["results"]]
+        assert "vestas-v150-4.2" in ids2, (
+            "Active wind_turbine must still appear in search after D38 filter"
+        )
+
+    def test_inert_model_detail_returns_400(self, client, monkeypatch):
+        """Requesting an INERT model by ID must return 400 DEVICE_MODEL_NOT_FOUND.
+
+        The detail endpoint treats INERT models as absent from the feed — same
+        code path as requesting a model_id that doesn't exist at all. (D38.)
+        Both the electrolyzer and the pcc-sst-stub (with stub type) must return 400.
+        """
+        import energy_go.serving.geo_site_api as geo_api
+        monkeypatch.setattr(geo_api, "_device_models_cache", self._FAKE_MODELS)
+
+        for inert_id in ("h-tec-pem-1mw", "pcc-sst-stub"):
+            resp = client.get(f"/api/devices/models/{inert_id}")
+            assert resp.status_code == 400, (
+                f"INERT model '{inert_id}' must return 400 from detail endpoint, "
+                f"got {resp.status_code}"
+            )
+            assert resp.json()["code"] == "DEVICE_MODEL_NOT_FOUND", (
+                f"DEVICE_MODEL_NOT_FOUND code expected for INERT model '{inert_id}' (D38)"
+            )
+
+    def test_live_feed_excludes_pcc_sst_stub(self, client):
+        """pcc-sst-stub must be ABSENT from the live device feed (REAL device_models.yaml).
+
+        Runs against the REAL config/device_models.yaml — no monkeypatch.
+        pcc-sst-stub has type: grid_connection (ACTIVE, LOCKED in benchmark_device_library)
+        but provenance: "USER-provided, pending".  is_surfaceable() must return False
+        for it (provenance arm), so it is absent from all three device endpoints.
+
+        Three assertions:
+          (a) GET /api/devices/models — pcc-sst-stub absent from the models map.
+          (b) GET /api/devices/search?q=pcc-sst — pcc-sst-stub absent from search results.
+          (c) GET /api/devices/models/pcc-sst-stub — returns 400 DEVICE_MODEL_NOT_FOUND.
+        """
+        # (a) list
+        resp = client.get("/api/devices/models")
+        assert resp.status_code == 200
+        models = resp.json()["models"]
+        assert "pcc-sst-stub" not in models, (
+            "pcc-sst-stub must be excluded from live device feed (D38 provenance arm)"
+        )
+
+        # (b) search
+        resp_s = client.get("/api/devices/search?q=pcc-sst")
+        assert resp_s.status_code == 200
+        ids = [r["model_id"] for r in resp_s.json()["results"]]
+        assert "pcc-sst-stub" not in ids, (
+            "pcc-sst-stub must be excluded from device search (D38 provenance arm)"
+        )
+
+        # (c) detail endpoint
+        resp_d = client.get("/api/devices/models/pcc-sst-stub")
+        assert resp_d.status_code == 400, (
+            f"pcc-sst-stub detail must return 400 (excluded by D38), got {resp_d.status_code}"
+        )
+        assert resp_d.json()["code"] == "DEVICE_MODEL_NOT_FOUND", (
+            "DEVICE_MODEL_NOT_FOUND code expected for pcc-sst-stub detail (D38 provenance arm)"
+        )
+
+    def test_is_surfaceable_imported_from_resolver(self, client):
+        """is_surfaceable must be imported from energy_go.env.resolver (D18/D38).
+
+        Verifies the single-source invariant for the compound predicate: the function
+        used by the feed endpoints is the canonical resolver export, not a local copy.
+        """
+        from energy_go.env.resolver import is_surfaceable as resolver_fn
+        import energy_go.serving.geo_site_api as geo_api
+
+        assert geo_api.is_surfaceable is resolver_fn, (
+            "geo_site_api.is_surfaceable must be the exact same object as "
+            "energy_go.env.resolver.is_surfaceable — no local serving copy (D18)"
+        )
+
+    def test_is_surfaceable_logic(self, client):
+        """is_surfaceable() predicate: active-type + no-pending-provenance = True.
+
+        Unit-tests the four cases of the compound predicate to pin both arms:
+          (1) active type, no provenance     → True  (normal active device)
+          (2) active type, pending provenance → False (provenance-pending stub)
+          (3) inert type, no provenance      → False (INERT device family)
+          (4) inert type, pending provenance → False (both arms fail)
+        """
+        from energy_go.env.resolver import is_surfaceable
+
+        # (1) active, no provenance — surfaceable
+        assert is_surfaceable({"type": "wind_turbine"}) is True, (
+            "active type with no provenance key must be surfaceable"
+        )
+        # (2) active type, pending provenance — NOT surfaceable
+        assert is_surfaceable(
+            {"type": "grid_connection", "provenance": "USER-provided, pending"}
+        ) is False, (
+            "active type with provenance=='USER-provided, pending' must NOT be surfaceable"
+        )
+        # (3) inert type, no provenance — NOT surfaceable
+        assert is_surfaceable({"type": "electrolyzer_pem"}) is False, (
+            "INERT type with no provenance must NOT be surfaceable"
+        )
+        # (4) both arms fail — NOT surfaceable
+        assert is_surfaceable(
+            {"type": "electrolyzer_pem", "provenance": "USER-provided, pending"}
+        ) is False, (
+            "INERT type with pending provenance must NOT be surfaceable"
+        )
+
+    def test_active_device_types_imported_from_resolver(self, client):
+        """ACTIVE_DEVICE_TYPES must be imported from energy_go.env.resolver (D18/D38).
+
+        Verifies the single-source invariant: the set used by the feed is NOT a
+        local serving literal but the canonical resolver export.  Fails if the
+        serving module defines its own copy instead of importing.
+        """
+        from energy_go.env.resolver import ACTIVE_DEVICE_TYPES as resolver_set
+        import energy_go.serving.geo_site_api as geo_api
+
+        # The module-level name in geo_site_api must resolve to the resolver's object
+        assert geo_api.ACTIVE_DEVICE_TYPES is resolver_set, (
+            "geo_site_api.ACTIVE_DEVICE_TYPES must be the exact same object as "
+            "energy_go.env.resolver.ACTIVE_DEVICE_TYPES — no local serving copy (D18)"
+        )
+
+    def test_active_device_types_contains_4_gansu_types(self, client):
+        """ACTIVE_DEVICE_TYPES must contain exactly the 4 Gansu resolver-live categories.
+
+        Arithmetic: the Gansu parity set = {wind_turbine, pv_panel, battery, grid_connection}.
+        These are the 4 types with a composition-rule entry in _NON_OVERRIDABLE (resolver.py).
+        Any deviation is a contract violation (D38).
+        """
+        from energy_go.env.resolver import ACTIVE_DEVICE_TYPES
+        expected = {"wind_turbine", "pv_panel", "battery", "grid_connection"}
+        assert ACTIVE_DEVICE_TYPES == expected, (
+            f"ACTIVE_DEVICE_TYPES must equal the 4 Gansu resolver-live types; "
+            f"got {ACTIVE_DEVICE_TYPES}"
+        )

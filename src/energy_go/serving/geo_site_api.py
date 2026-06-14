@@ -14,9 +14,9 @@ Endpoints:
   POST /api/site/weather/fetch         — start weather fetch job
   GET  /api/site/weather/jobs/{id}     — poll job status
   GET  /api/site/weather-coverage      — lat/lon coverage indicator
-  GET  /api/devices/models             — full device catalogue
-  GET  /api/devices/models/{id}        — single device model
-  GET  /api/devices/search?q=          — autocomplete search
+  GET  /api/devices/models             — active device catalogue (ACTIVE_DEVICE_TYPES only)
+  GET  /api/devices/models/{id}        — single active device model
+  GET  /api/devices/search?q=          — autocomplete search (active types only)
 
 Units: MW (generator power), MWh (battery energy), ¥/MWh (prices),
        ¥/MW·month (demand rate), ¥/kW / ¥/kWh (economics), m/s (wind), m (height),
@@ -24,6 +24,12 @@ Units: MW (generator power), MWh (battery energy), ¥/MWh (prices),
 
 D32(i) / D18 single-source rule: validate() is called directly from
 energy_go.env.config_validation — no rule re-implementation here.
+
+D38: device-feed endpoints surface only entries passing is_surfaceable(entry):
+  (1) type ∈ ACTIVE_DEVICE_TYPES (resolver-live categories), AND
+  (2) provenance ≠ "USER-provided, pending" (hides instance-level stubs).
+Both ACTIVE_DEVICE_TYPES and is_surfaceable are imported from energy_go.env.resolver
+— NOT redefined here (D18 single-source rule).
 """
 from __future__ import annotations
 
@@ -37,6 +43,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from energy_go.env.resolver import ACTIVE_DEVICE_TYPES, is_surfaceable  # D38 — single-source (D18)
 from energy_go.serving.tariff_bands import derive_bands
 
 router = APIRouter()
@@ -757,11 +764,18 @@ def _model_entry(model_id: str, model_data: dict) -> dict:
 
 @router.get("/api/devices/models")
 def list_device_models() -> JSONResponse:
-    """Return all device models from config/device_models.yaml."""
+    """Return active device models from config/device_models.yaml.
+
+    D38: only entries passing is_surfaceable(entry) are returned —
+    type ∈ ACTIVE_DEVICE_TYPES AND provenance ≠ "USER-provided, pending".
+    INERT/gated type families (electrolyzer per D35) and provenance-pending
+    stubs (e.g. pcc-sst-stub) are excluded from the live feed.
+    """
     raw = _get_device_models()
     models = {
         mid: _model_entry(mid, mdata)
         for mid, mdata in raw.get("models", {}).items()
+        if is_surfaceable(mdata)  # D38 filter (type-allowlist + provenance guard)
     }
     return JSONResponse(content={
         "schema_version": raw.get("schema_version", ""),
@@ -775,10 +789,16 @@ def list_device_models() -> JSONResponse:
 
 @router.get("/api/devices/models/{model_id}")
 def get_device_model(model_id: str) -> JSONResponse:
-    """Single device model detail."""
+    """Single active device model detail.
+
+    D38: returns 400 DEVICE_MODEL_NOT_FOUND for any entry that fails
+    is_surfaceable() — INERT type families AND provenance-pending stubs —
+    even when the model_id exists in device_models.yaml (consistent with
+    the list and search endpoints).
+    """
     raw = _get_device_models()
     mdata = raw.get("models", {}).get(model_id)
-    if mdata is None:
+    if mdata is None or not is_surfaceable(mdata):  # D38 filter
         return JSONResponse(
             status_code=400,
             content={"detail": f"device model '{model_id}' not found",
@@ -845,6 +865,8 @@ def search_device_models(
     substring: list[tuple[str, dict]] = []
 
     for mid, mdata in all_models.items():
+        if not is_surfaceable(mdata):  # D38 filter (type-allowlist + provenance guard)
+            continue
         if q_lower == "" or q_lower in mid.lower():
             if mid.lower().startswith(q_lower):
                 prefix.append((mid, mdata))
