@@ -58,7 +58,7 @@ jobs:
           # Anything else (src/, tests/, config/, .github/, assets/, scripts/) →
           # non_docs non-empty → full suite.
           non_docs=$(printf '%s\n' "$changed" | \
-            grep -vE '^(docs/|contracts/|[^/]+\.md)$' | head -1 || true)
+            grep -vE '^(docs/|contracts/|[^/]+\.md$)' | head -1 || true)
           if [ -z "$non_docs" ]; then
             echo "docs_only=true" >> "$GITHUB_OUTPUT"
             echo "→ Docs-only PR: heavy test steps will be skipped"
