@@ -1420,17 +1420,17 @@ def test_fin57_debt_toggle_end_to_end():
 # NO labeled P75/P90/P95/P99 or CVaR-5% (collapse to min at M≈10 under locked estimator)
 # ---------------------------------------------------------------------------
 
-# §A.1 fixture: 10 draws, unsorted, yielding these sorted NPV values (rate=0, CAPEX=200k):
-#   sorted: [-80k, -20k, 10k, 30k, 60k, 90k, 120k, 150k, 200k, 260k]
+# §A.1 fixture (PR #113 verbatim): 10 draws, unsorted, sorted NPV values (rate=0, CAPEX=200k):
+#   NPV_m = [-80k, -30k, 10k, 40k, 60k, 90k, 120k, 150k, 200k, 260k]   (§A.1 ascending)
 # P50 = x[floor(0.50*9)] = x[4] = 60,000             (§A.1 literal)
 # worst-of-N = x[0] = -80,000                         (§A.1 literal)
 # best-of-N  = x[9] = +260,000                        (§A.1 literal)
-# P(NPV<0)   = 2/10 = 0.20 (draws -80k and -20k)     (§A.1 literal)
+# P(NPV<0)   = 2/10 = 0.20 (draws -80k and -30k)     (§A.1 literal)
 # CVaR-5%: k=ceil(0.05*10)=1 = single worst = -80k -> same as worst-of-N -> SUPPRESS (§A.0)
 # P90=x[floor(0.10*9)]=x[0]=-80k = worst-of-N -> SUPPRESS
 # P75=x[floor(0.25*9)]=x[2]=10k  -> only P50 kept in R3 (§A.0)
 _R3_NPV_TARGETS = [
-    -80_000.0, -20_000.0, 10_000.0, 30_000.0,  60_000.0,
+    -80_000.0, -30_000.0, 10_000.0, 40_000.0,  60_000.0,
      90_000.0, 120_000.0, 150_000.0, 200_000.0, 260_000.0,
 ]
 # ^ NOT sorted — engine must sort internally when computing percentiles
@@ -1450,7 +1450,7 @@ def _make_m10_empirical_ensemble() -> PolicyEnsemble:
     runs = {}
     traj = []
     for target_npv in _R3_NPV_TARGETS:
-        grid_export_m = _CAPEX + target_npv   # >= 120k for all targets (all positive)
+        grid_export_m = _CAPEX + target_npv   # >= 120k for all targets (min: 200k-80k=120k)
         yr_m = _make_eval_result(
             grid_export_yuan=grid_export_m,
             generation_mwh=10_000.0,
@@ -1573,7 +1573,7 @@ def test_fin51_r3_p_npv_neg_present():
     result = _m10_r3_result()
     dr = result.per_policy["policy_a"].per_price_path["flat"].view_i.downside_risk
     assert dr is not None
-    # 2/10 = 0.20; strict less-than (draws -80k and -20k qualify; 0.0 and above do not)
+    # 2/10 = 0.20; strict less-than (draws -80k and -30k qualify; 0.0 and above do not)
     assert dr.p_npv_neg == pytest.approx(0.20, abs=1e-9), (
         "P(NPV<0) must be 0.20 = 2/10 (draws -80k, -20k < 0; §A.1 literal)"
     )
