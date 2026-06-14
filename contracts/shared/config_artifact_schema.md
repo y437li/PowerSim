@@ -46,6 +46,8 @@ ConfigArtifact:
 
 **Identity vs revision (binding):** `id` is stable for the lifetime of the artifact (a fork gets a NEW `id`); `version` increments on every mutation of the SAME `id` (the D44 shared-undo / history axis). `(id, version)` is the precise reference used by `provenance.forked_from` and by the comparison/session layer.
 
+**`version` is the optimistic-concurrency token (binding — answers the D44 shared-mutation concern, backend-reviewer):** under D44 the human AND the agent mutate the same artifact, so every mutating action declares the `expected_base_version` it read; the action layer / serving persistence **accepts only if `expected_base_version == current.version`** (then writes `current.version + 1`), else **REJECTS as a conflict** — the writer must re-read the current version and rebase its change. This is standard optimistic concurrency control; it makes concurrent human/agent edits safe and is what the shared undo stack (D44) unwinds. The OCC check is enforced by the action layer (D44 / #19) + serving; this schema defines `version` as its token.
+
 ---
 
 ## 3. `DesignBlock` — the authored form (concern 1; DESIGN params, D42)
@@ -77,10 +79,10 @@ FinanceOverrides:        # a PARTIAL FinanceConfig — only the fields this conf
   <subset of FinanceConfig fields>   # typically financing-structure: { gearing?, cost_of_debt?, debt_toggle?, hurdle? }
 ```
 
-**Common-vs-per-config scoping (binding, D42/D43):**
-- **Market-rate assumptions** (discount/CAPM inputs, escalation, price-path) are **COMMON** across compared configs and live at the **comparison/session layer** (§4.1), NOT in the per-config artifact — apples-to-apples (D42 common-scenario).
-- **Financing-structure** (gearing, cost of debt, debt toggle, hurdle) is **per-config-overridable** and lives in `finance_overrides`.
-- **Effective FinanceConfig = common ⊕ finance_overrides**, with **overrides winning on key collision** — the SAME overlay-merge semantics as the D32 private overlay (a documented, reused precedent, not a new merge rule). A test asserts the merge + that an absent override inherits the common value.
+**Common-vs-per-config scoping (binding, D42/D43) — SCOPE-RESTRICTED to preserve the D42 apples-to-apples guarantee (backend-reviewer):**
+- **`finance_overrides` MAY carry ONLY financing-structure fields — the FROZEN allow-set `{ gearing, cost_of_debt, debt_toggle, hurdle }`.** Any other key is **REJECTED** at validation with: *"market-rate is common-scenario, not per-config; set it on `ComparisonSession.common_finance`."*
+- **Market-rate assumptions are COMMON-ONLY and per-config override is FORBIDDEN** — every CAPM input (`beta_unlevered`, `equity_risk_premium`, `country_risk_premium`, `cost_of_equity`, the CGB/LPR curve, `discount_rate`), `escalation`, and `price_path`/`price_path_id` live ONLY at the **comparison/session layer** (§4.1). **Rationale (load-bearing):** without this reject, two compared configs could silently use different discount rates → D42's apples-to-apples (common-scenario) guarantee breaks. The allow-set is a *positive* whitelist (default-deny), not a denylist — a new FinanceConfig field is common-only until explicitly added to the allow-set by a superseding DECISION.
+- **Effective FinanceConfig = common ⊕ finance_overrides**, overrides winning on key collision — the SAME overlay-merge semantics as the D32 private overlay (reused precedent). **Null-vs-absent (binding):** an ABSENT override key inherits common; an EXPLICIT `null` override key is treated as **absent/inherit** (it does NOT null-out the common value) — matching the D32 overlay precedent, removing the partial-merge ambiguity.
 
 ### 4.1 Comparison/session layer (sibling object — defined here, owned by #19)
 ```
@@ -128,7 +130,7 @@ AgentConfig:                       # null unless agent-operated
   params:    object                # temperature, max_tokens, etc.
   # NO api_key / secret / token FIELD — EVER (D32 public-repo).
 ```
-**D32 (binding):** the artifact carries provider/model/endpoint/params but **NEVER a credential**. The key is resolved at run time from the **private overlay / env var** (`ENERGY_GO_PRIVATE_CONFIG` or provider-specific env) keyed by `(provider, endpoint)`. **Reviewer-grade test:** an artifact containing ANY key-like field (`api_key`, `secret`, `token`, `*_key`, `authorization`) is **REJECTED** by validation (a stop-the-line guard mirroring the D32 commit rule); `endpoint` carrying inline credentials (`https://user:pass@…`) is rejected.
+**D32 (binding):** the artifact carries provider/model/endpoint/params but **NEVER a credential**. The key is resolved at run time from the **private overlay / env var** (`ENERGY_GO_PRIVATE_CONFIG` or provider-specific env) keyed by `(provider, endpoint)`. **Reviewer-grade reject rule (matching is RECURSIVE + SUBSTRING/SUFFIX, not exact-name — backend-reviewer):** validation **REJECTS** the artifact if any object key (at ANY depth, including inside `agent_config.params` — the likely real leak path, e.g. `params: { api_key: "sk-…" }`) contains a credential token as a substring/suffix: `key` / `api_key` / `access_token` / `refresh_token` / `token` / `secret` / `client_secret` / `password` / `passwd` / `pwd` / `authorization` / `x-api-key` (so `access_token`, `client_secret`, `x-api-key` are caught — exact-match would miss them). Additionally, an `endpoint` carrying a credential **anywhere** — userinfo (`https://user:pass@…`), **query string** (`…?api_key=sk-…`), or **fragment** (`…#token=…`) — is rejected, not only `user:pass@`. A stop-the-line guard mirroring the D32 commit rule.
 
 ### 6.3 `ResultLink` (concern 6; result-linkage + regime/confidence)
 ```
@@ -153,6 +155,7 @@ Results are **referenced, never embedded** (results are large + versioned separa
 - `schema_version` is **semver**. **Additive** optional fields = **minor** (old artifacts still valid; no migration). **Removal / rename / retype / required-field-addition / merge-semantics change** = **major** → a registered **migration function** `migrate(artifact, from_ver, to_ver)` + a superseding DECISION + re-LOCK.
 - **Migration-aware loader (binding):** every artifact carries its `schema_version`; the loader migrates `old → current` on read (forward-only chain). A test round-trips an N-1 artifact through `migrate` → current and asserts semantic equality.
 - **Composition-version pinning:** the artifact references `device_model_schema` / `tariff_model_schema` / `checkpoint_format` by **ID only** (not by their version); the resolver/result-store enforces THOSE versions. So a bump in a referenced schema does NOT force a config-artifact major bump (decoupled), unless a referenced **join-key format** itself changes.
+- **Dangling reference = resolve-time error, NOT a version mismatch (binding, backend-reviewer):** because IDs are pinned (not versions), a referent that no longer exists in the CURRENT schema/store (`fleet[*].model_id`, a `dispatch_policy_id`-as-`checkpoint_id`, or `tariff_region`) surfaces as a **clear resolve-time error** ("referent `<id>` not found in `<schema/store>`") — distinct from a schema-version/migration error. The artifact stays schema-valid; only resolution fails. (Test #16 pins this boundary.)
 
 ---
 
