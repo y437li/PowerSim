@@ -2,16 +2,16 @@
 
 **Area:** shared  
 **Contract path:** `contracts/shared/benchmark_device_library.md`  
-**Schema file:** `config/device_models.yaml` (additive entries; schema_version "2.0.0" → "2.1.0")  
+**Schema file:** `config/device_models.yaml` (electrolyzer entries; schema_version "2.1.0" → "2.2.0")  
 **Test file:** `tests/shared/test_shared_benchmark_device_library.py`  
-**Spec sections:** §8.2 (electrolyzer asset model), §8.3 (composable assets), D32(h) (fleet sizing; CAPEX = units × unit-price)  
-**Decisions:** D2 (§8 composable assets), D23 (asset IDs = registry keys), D31 (B foundational, D keystone), D32 (product spine)  
+**Spec sections:** §8.2 (electrolyzer asset model — PEM/Alkaline only; AEM/SOEC are benchmark-sourced), §8.3 (composable assets), D32(h) (fleet sizing; CAPEX = units × unit-price)  
+**Decisions:** D2 (§8 composable assets), D23 (asset IDs = registry keys), D31 (B foundational, D keystone), D32 (product spine), D35 (electrolyzer entries cleared as INERT reference data; H₂ scenario stays gated; schema_version 2.1.0→2.2.0 additive minor, no re-LOCK; **AEM+SOEC are NOT in §8.2** — benchmark-sourced, explicit public provenance required per D35 condition 2)  
 **Plan:** `docs/design/master_plan_geo_finance.md` §5.6 (CAPEX/OPEX/lifetime benchmarks, Workstream D)  
 **Owner:** finance-engineer  
-**Version:** v1.0.0  
-**Acceptance gate:** finance-expert review  
+**Version:** v1.1.0  
+**Acceptance gate:** finance-expert review (economics) + backend-reviewer (physics/schema/INERT invariants)  
 **Related contracts:**  
-- `contracts/shared/device_model_schema.md` v2.0.0 (LOCKED — this PR adds entries; minor version bump; no re-LOCK)  
+- `contracts/shared/device_model_schema.md` v2.1.0 (LOCKED — this PR adds entries + electrolyzer type to §1.2; minor version bump to v2.2.0; no re-LOCK)  
 - `contracts/shared/config_validation.md` v1.0.0 (LOCKED — electrolyzer rules are gated pending electrolyzer env contract)  
 - `assets/3d/registry.json` v1.0.0 (LOCKED — IDs must match `^[a-z0-9][a-z0-9.-]*$`; new benchmark IDs do NOT have registry entries yet; 3d-assets-engineer adds them when GLB models land)
 
@@ -34,7 +34,7 @@ at their next write), citing the data source. The SST stub carries
 `provenance: "USER-provided, pending"` — no proprietary values committed.
 
 **Versioning:** Adding new model entries and a new device type is an additive (minor) change.
-`config/device_models.yaml` schema_version bumps from `"2.0.0"` to `"2.1.0"`. No re-LOCK
+`config/device_models.yaml` schema_version bumps from `"2.1.0"` to `"2.2.0"`. No re-LOCK
 of `device_model_schema.md` is required; the physics field contract for the Gansu 4 entries
 is unchanged. The existing 4 Gansu models are NOT modified; their entries are stable.
 
@@ -137,12 +137,18 @@ Additional economics fields beyond the base catalogue in `device_model_schema.md
 
 ### 3.5 Electrolyzers
 
-| Model ID | Tech | min_load | standby | e_spec | degrad | rated_mw | warmup | Source |
-|---|---|---|---|---|---|---|---|---|
-| `electrolyzer-alk-20mw` | ALK | 0.20 | 0.02 | 52.0 | 4.0 | 20.0 | 30 min | PERIC HG-Alk public; IRENA Green H₂ 2020; IEA Hydrogen 2023 |
-| `electrolyzer-pem-10mw` | PEM | 0.05 | 0.01 | 55.0 | 8.0 | 10.0 | 5 min | Siemens Silyzer 300 public; Nel H₂ public; IEA 2023 |
-| `electrolyzer-aem-1mw` | AEM | 0.05 | 0.01 | 53.0 | 10.0 | 2.4 | 5 min | Enapter EL 4.0 public datasheet; IEA 2023 projections |
-| `electrolyzer-soec-5mw` | SOEC | 0.20 | 0.05 | 40.0 | 15.0 | 5.0 | 240 min | Sunfire Refuel public; Bloom Energy public; IEA 2023 |
+**§8.2 scope note:** §8.2 specifies PEM and Alkaline only. AEM (`electrolyzer-aem-2.4mw`) and
+SOEC (`electrolyzer-soec-5mw`) are **benchmark-sourced** entries — NOT §8.2-sanctioned.
+Their physics values carry explicit public provenance citations (D35 condition 2).
+`warmup_minutes` is provisional for all 4 types — mentioned in §8.2 prose but not the formal
+parameter table; resolver/env ignore at Δt=1h (D35 condition 1).
+
+| Model ID | Tech | §8.2? | min_load | standby | e_spec | degrad | rated_mw | warmup | Source |
+|---|---|---|---|---|---|---|---|---|---|
+| `electrolyzer-alk-20mw` | ALK | ✓ verbatim | 0.20 | 0.02 | 52.0 | 4.0 | 20.0 | 30 min | PERIC HG-Alk public; Longi H₂ public; IRENA 2020; IEA 2023 |
+| `electrolyzer-pem-10mw` | PEM | ✓ verbatim | 0.05 | 0.01 | 55.0 | 8.0 | 10.0 | 5 min | Siemens Silyzer 300 public; Nel H₂ public; IRENA 2020; IEA 2023 |
+| `electrolyzer-aem-2.4mw` | AEM | ✗ benchmark | 0.05 | 0.01 | 53.0 | 10.0 | 2.4 | 5 min | Enapter EL 4.0 public datasheet rev.2024; IEA 2023 projections |
+| `electrolyzer-soec-5mw` | SOEC | ✗ benchmark | 0.20 | 0.05 | 40.0 | 15.0 | 5.0 | 240 min | Sunfire Refuel public rev.2024; Bloom Energy public; IEA 2023 |
 
 **Technology comparison notes (public domain):**
 - ALK: lowest CAPEX, best maturity; limited turndown; dominated by Chinese manufacturers (PERIC, Longi H₂, Suzhou Jingli)
@@ -302,7 +308,7 @@ All economics values are placeholder zeros. Proprietary SST data awaited from US
 | `residual_value_fraction` | 0.05 | |
 | `construction_months` | 9.0 | |
 
-#### electrolyzer-aem-1mw
+#### electrolyzer-aem-2.4mw
 
 | Field | Value | Notes |
 |---|---|---|
@@ -336,7 +342,7 @@ Tests live in `tests/shared/test_shared_benchmark_device_library.py`.
 The test file loads `config/device_models.yaml` via `yaml.safe_load`.
 
 ### T1 — Schema version
-`device_models.yaml` carries `schema_version: "2.1.0"` after the benchmark entries land.
+`device_models.yaml` carries `schema_version: "2.2.0"` after the electrolyzer entries land (D35).
 
 ### T2 — All expected IDs present
 The following model IDs MUST be present in `models:`:
@@ -354,7 +360,7 @@ EXPECTED_IDS = [
     "pcc-traditional-220kv", "pcc-sst-stub",
     # Electrolyzer benchmark
     "electrolyzer-alk-20mw", "electrolyzer-pem-10mw",
-    "electrolyzer-aem-1mw", "electrolyzer-soec-5mw",
+    "electrolyzer-aem-2.4mw", "electrolyzer-soec-5mw",
 ]
 ```
 
