@@ -53,7 +53,7 @@ This is the **serialized wire view** of the in-process `FinanceResult` (which li
   "npv_yuan":           { /* MetricPercentiles */ },   // null at R1; ¥ — the ONLY metric carrying bootstrap_ci (rule B)
   "mirr_pct":           { /* MetricPercentiles */ },   // null at R1; percent
   "lcoe_yuan_per_mwh":  { /* MetricPercentiles */ },   // null at R1; ¥/MWh
-  "payback_yr":         { /* MetricPercentiles */ },   // null at R1; years
+  "payback_discounted_yr":         { /* MetricPercentiles */ },   // null at R1; years
 
   // ── Downside risk — null at R1; PARTIAL at R3 ──
   "downside_risk": {
@@ -97,7 +97,7 @@ This is the **serialized wire view** of the in-process `FinanceResult` (which li
 }
 ```
 
-**Metric set (canonical):** `{irr_pct, npv_yuan, mirr_pct, lcoe_yuan_per_mwh, payback_yr}` + debt-gated `equity_irr_pct` — matching the engine row + the producer/consumer-agreed #134 dd36db1 / #132 set (NO `lcos`, single `payback_yr`; finance-expert ruling supersedes the earlier percentile-major draft's `lcos`/two-payback fields).
+**Metric set (canonical):** `{irr_pct, npv_yuan, mirr_pct, lcoe_yuan_per_mwh, payback_discounted_yr}` + debt-gated `equity_irr_pct` — matching the engine row + the producer/consumer-agreed #134 dd36db1 / #132 set (NO `lcos`, single `payback_discounted_yr`; finance-expert ruling supersedes the earlier percentile-major draft's `lcos`/two-payback fields).
 
 ---
 
@@ -105,7 +105,7 @@ This is the **serialized wire view** of the in-process `FinanceResult` (which li
 
 1. **`sample_kind` ∈ {"bootstrap","empirical"}** — the wire value. "synthetic"/"synthetic (block-bootstrap)" is a UI display label only, never the field value. (Enforces the #133 LOCK.)
 2. **Regime is DERIVED by the producer** from `(distribution_valid, sample_kind)` — `!distribution_valid→R1; bootstrap→R2; empirical→R3` — and must agree with the nullability below. Serving never trusts a caller-supplied regime.
-3. **Regime nullability (exhaustive; metric-major):** R1 → ALL per-metric `MetricPercentiles` (`irr_pct`/`npv_yuan`/`mirr_pct`/`lcoe_yuan_per_mwh`/`payback_yr` + `equity_irr_pct`) = `null` AND `downside_risk=null`; only `single_trajectory` carries values. R2 → every metric's p50/p75/p90/p95 present, p99 optional; downside full incl. `cvar5_yuan`; `best_of_n_npv_yuan=null`. R3 → every metric's p50 only (p75/p90/p95/p99 null), `cvar5_yuan=null`, `best_of_n_npv_yuan` present, `p_irr_below_hurdle` present. (Presence is UNIFORM across metrics — rule 11.)
+3. **Regime nullability (exhaustive; metric-major):** R1 → ALL per-metric `MetricPercentiles` (`irr_pct`/`npv_yuan`/`mirr_pct`/`lcoe_yuan_per_mwh`/`payback_discounted_yr` + `equity_irr_pct`) = `null` AND `downside_risk=null`; only `single_trajectory` carries values. R2 → every metric's p50/p75/p90/p95 present, p99 optional; downside full incl. `cvar5_yuan`; `best_of_n_npv_yuan=null`. R3 → every metric's p50 only (p75/p90/p95/p99 null), `cvar5_yuan=null`, `best_of_n_npv_yuan` present, `p_irr_below_hurdle` present. (Presence is UNIFORM across metrics — rule 11.)
 4. **R3 confidence is forced:** every R3 percentile (only p50) carries `confidence="indicative_low_confidence"` — never "sound". Any R2 p99 likewise indicative. The consumer must NOT render an `indicative_low_confidence` value as a bare/bold headline (§13.10c).
 5. **Units (pinned; folds #134 INV-CE-04/16):** IRR/MIRR/equity_irr = **percent ×100**; `min_dscr` = **bare ratio** (not ×100); `p_npv_neg`/`p_irr_below_hurdle` = **probability ∈[0,1]** (not ×100); NPV/drawdown/CF = **¥**; LCOE/LCOS = **¥/MWh**; payback = **years**; `*_year` = **1-indexed int**.
 6. **`p_irr_below_hurdle` is POPULATED at R2 AND R3** (empirical frequency `#{IRR_m<hurdle}/M`; does NOT collapse at M≈10). Null only at R1 (block absent). [The #132 bug; #134 had it right.]
@@ -149,7 +149,7 @@ This is the **serialized wire view** of the in-process `FinanceResult` (which li
 11. **# reviewer (backend): correctness-invariant preservation** — assert the #134 backend fixes survive the nested envelope (IRR ×100, min_dscr ratio, p_irr@R2+R3-frequency, debt-gating, closed allow-set).
 12. **# reviewer (frontend): consumer honesty** — `indicative_low_confidence` percentiles + R1 `single_trajectory` are not rendered as bare/bold headlines (§13.10c); R3 surfaces "k of N" not false-precision %.
 13. **Confidence percentile-level (rule 9/A):** at a given percentile q, `confidence` is EQUAL across all metrics (`irr_pct.p50.confidence == npv_yuan.p50.confidence == mirr_pct.p50.confidence == …`); a fixture with mismatched per-metric confidence at the same q → **reject**.
-14. **bootstrap_ci NPV-only (rule 10/B):** at R2, `npv_yuan.{p50..p95}.bootstrap_ci` is present `{lo,hi}`; `irr_pct`/`mirr_pct`/`lcoe_yuan_per_mwh`/`payback_yr` nodes have `bootstrap_ci=null` (or absent); a non-null CI on any non-NPV metric → **reject**. At R3 all `bootstrap_ci=null`.
+14. **bootstrap_ci NPV-only (rule 10/B):** at R2, `npv_yuan.{p50..p95}.bootstrap_ci` is present `{lo,hi}`; `irr_pct`/`mirr_pct`/`lcoe_yuan_per_mwh`/`payback_discounted_yr` nodes have `bootstrap_ci=null` (or absent); a non-null CI on any non-NPV metric → **reject**. At R3 all `bootstrap_ci=null`.
 15. **Percentile-presence uniform (rule 11/C):** the non-null percentile set is identical across metrics; a fixture with `irr_pct.p90` present but `npv_yuan.p90=null` (or any cross-metric presence mismatch) → **reject**.
 
 ---
