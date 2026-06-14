@@ -34,7 +34,7 @@ Gansu = **615 MW wind + 330 MW solar + 294.5 MWh / 98.16 MW battery serving 50�
 | View | CAPEX basis | Benefit stream | Answers |
 |---|---|---|---|
 | **(I) Absolute project** | full plant | annual operating net revenue under π (hourly-integrated, P1) | *Is the whole plant a good investment?* |
-| **(II) Incremental storage** | battery CAPEX only | Δ(operating result) of π-with-battery **vs the no-battery baseline** | *Does the battery pay; which policy maximizes its value?* |
+| **(II) Incremental storage** | incremental battery CAPEX (the sizing-tier delta) | Δ(operating result) of π **vs a reference config (typically an adjacent sizing tier)** | *Does the incremental storage tier pay (sizing); which policy maximizes its value?* |
 
 View (II) is the **per-policy headline discriminator** — all §11 policies share CAPEX and scenario, differing only in battery dispatch + wear→replacement (P2). For an own-load scenario (aluminum, future), View (II)'s "benefit" is literally the **avoided cost** vs the grid-only counterfactual.
 
