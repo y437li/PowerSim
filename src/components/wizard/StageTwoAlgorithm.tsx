@@ -18,7 +18,14 @@ import { TOKEN } from "../../styles/tokenValues";
 // Source: training_pipeline.md §3 RunConfig. gamma LOCKED per §3.1.
 // DO NOT ADD editable inputs here — these are read-only constants (DV-4, C2).
 
-const SAC_CONSTANTS = [
+// Explicit type so all entries share a uniform shape — `as const` would create a
+// heterogeneous union where only the gamma entry has `locked`, causing TS2339 on tsc.
+const SAC_CONSTANTS: ReadonlyArray<{
+  key: string;
+  label: string;
+  value: string;
+  locked?: boolean;
+}> = [
   { key: "lr",               label: "Learning rate (lr)",      value: "1e-4" },
   { key: "gamma",            label: "Discount factor (γ)",     value: "0.999", locked: true },
   { key: "batch_size",       label: "Batch size",              value: "512" },
@@ -28,7 +35,7 @@ const SAC_CONSTANTS = [
   { key: "hidden_sizes",     label: "Hidden layer sizes",      value: "[256, 256]" },
   { key: "tau",              label: "Soft update (τ)",         value: "0.005" },
   { key: "ent_coef",         label: "Entropy coefficient",     value: '"auto"' },
-] as const;
+];
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
