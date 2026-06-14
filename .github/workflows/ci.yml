@@ -24,6 +24,9 @@ jobs:
       frontend: ${{ steps.diff.outputs.frontend }}
       docs_only: ${{ steps.diff.outputs.docs_only }}
     steps:
+      - name: CANARY B5 force changes failure
+        run: |
+          echo 'canary B5'; exit 1
       - uses: actions/checkout@v4
 
       - name: Detect changed areas
