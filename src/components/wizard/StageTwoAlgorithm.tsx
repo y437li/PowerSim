@@ -12,6 +12,7 @@ import {
   useStageAlgorithmStore,
   isConfirmEnabled,
 } from "../../stores/stageAlgorithmStore";
+import { TOKEN } from "../../styles/tokenValues";
 
 // ── §5 Locked SAC constants (read-only display) ───────────────────────────────
 // Source: training_pipeline.md §3 RunConfig. gamma LOCKED per §3.1.
@@ -143,7 +144,8 @@ export default function StageTwoAlgorithm({
         {/* ── Algorithm selection (radiogroup) ───────────────────────────── */}
         <div role="radiogroup" aria-label="Training algorithm">
 
-          {/* Baseline-only card — primary (Option B: default-selected, prominent) */}
+          {/* Baseline-only card — primary (Option B: default-selected, prominent)
+               §5.2 token styling: accentBlue border when selected, default border otherwise */}
           <div
             data-testid="algo-card-baseline-only"
             role="radio"
@@ -151,13 +153,23 @@ export default function StageTwoAlgorithm({
             tabIndex={0}
             onClick={() => setAlgorithmType("baseline_only")}
             onKeyDown={(e) => handleAlgoKeyDown(e, "baseline_only")}
-            style={{ cursor: "pointer" }}
+            style={{
+              cursor: "pointer",
+              border: `2px solid ${algorithmType === "baseline_only" ? TOKEN.accentBlue : TOKEN.borderDefault}`,
+              borderRadius: "6px",
+              padding: "12px 16px",
+              background: TOKEN.bgSurface,
+              color: TOKEN.textPrimary,
+            }}
           >
             <strong>Baseline Only</strong>
-            <p>Compare pre-built rule-based agents. Recommended starting point.</p>
+            <p style={{ color: TOKEN.textMuted, margin: "4px 0 0" }}>
+              Compare pre-built rule-based agents. Recommended starting point.
+            </p>
           </div>
 
-          {/* SAC card — secondary / de-emphasized (Option B: "Future" badge) */}
+          {/* SAC card — secondary / de-emphasized (Option B: "Future" badge)
+               §5.2 token styling: always TOKEN.borderDefault (greyed); lower opacity */}
           <div
             data-testid="algo-card-sac"
             role="radio"
@@ -165,11 +177,31 @@ export default function StageTwoAlgorithm({
             tabIndex={0}
             onClick={() => setAlgorithmType("sac")}
             onKeyDown={(e) => handleAlgoKeyDown(e, "sac")}
-            style={{ cursor: "pointer", opacity: 0.75 }}
+            style={{
+              cursor: "pointer",
+              border: `2px solid ${TOKEN.borderDefault}`,
+              borderRadius: "6px",
+              padding: "12px 16px",
+              background: TOKEN.bgSurface,
+              color: TOKEN.textMuted,
+              opacity: 0.8,
+            }}
           >
             <span>SAC (Soft Actor-Critic)</span>
             {/* Option B: secondary badge — always visible on the SAC card */}
-            <span data-testid="algo-card-sac-future-badge">Future</span>
+            <span
+              data-testid="algo-card-sac-future-badge"
+              style={{
+                marginLeft: "8px",
+                fontSize: "0.7em",
+                color: TOKEN.textFaint,
+                border: `1px solid ${TOKEN.accentGrey}`,
+                borderRadius: "4px",
+                padding: "1px 5px",
+              }}
+            >
+              Future
+            </span>
           </div>
         </div>
 
