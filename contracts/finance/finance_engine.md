@@ -13,12 +13,12 @@
 **Prerequisite contracts:** `contracts/training/eval_result_extended.md` (task #55 —
                `PolicyEvalResult` with 6-stream accumulators + 22 physical quantities)
 
-> **R3 PENDING:** The `empirical` small-sample percentile regime (R3, M≈10, `sample_kind="empirical"`)
-> is architecturally defined but its test cases are **PENDING D39 merge** (PR #108).
-> The D39 R3 ruling is: per-year trajectory strip + empirical P50 + empirical worst/best-of-N
-> observed-year range + P(NPV<0); NO labeled P75/P90/P95/P99 or CVaR-5%. Test cases for
-> R3 are stubbed with `pytest.mark.skip` and will be finalized when D39 lands. All other
-> sections (R1/R2, Vectors 0–3, invariants) are stable and form the gate.
+> **R3 UNBLOCKED (PR #113 + #111 merged):** D39 is on main and PR #113 (§A.1 R3 worked
+> vector) is merged. FIN-47–52 are now active tests (no longer skipped). The D39 R3 ruling:
+> empirical P50 + worst/best-of-N + P(NPV<0); P75/P90/P95/P99/CVaR-5% ALL suppressed (None).
+> `DownsideRisk` shape change: `cvar5_yuan: float | None` (was float) + new additive field
+> `best_of_n_npv_yuan: float | None = None`. These default to None in R1/R2 (backward-compat);
+> `distribution_valid=True` at `sample_kind="empirical"` (any M>1). See §3.12 + FIN-47–52.
 
 ---
 
@@ -372,7 +372,7 @@ Tests FIN-28–FIN-31 verify.
 |---|---|---|---|
 | **R1** | M=1 | False | none (point estimates only, §13.10c) |
 | **R2** | `sample_kind="bootstrap"`, M≥50 | True | P50/P75/P90/P95 + bootstrap CI (D34) |
-| **R3** | `sample_kind="empirical"`, M≈10 | True | **PENDING D39 merge** — per-year trajectory strip + empirical P50 + worst/best-of-N range + P(NPV<0); NO labeled tail percentile or CVaR |
+| **R3** | `sample_kind="empirical"`, M>1 | True | **empirical P50** (locked estimator, §A.1 x[4]=60k at M=10) + **worst-of-N** (`worst_case_npv_yuan`=min) + **best-of-N** (`best_of_n_npv_yuan`=max, new field) + **P(NPV<0)** empirical frequency; P75/P90/P95/P99 = None; CVaR-5% = None (`cvar5_yuan: float\|None`); no bootstrap CI; all R3 outputs carry `empirical_caveat=true` semantically |
 
 ### 3.13 Percentile estimator — LOCKED (finance-expert PR #107 §A)
 
@@ -473,12 +473,23 @@ shown in comments** (engineering rule). The tolerance table (from PR #107 §C cr
 | FIN-58b | **INV-DEG §3.6 cash half (throughput arm beats calendar):** `_eol_events(5×[yr@100MWh], econ(lifetime_years=3, cycle_life_full_equiv=2.0, bat_capacity_mwh=100.0))` → threshold=200 MWh; cycle fires at yr2 (cum=200); `2 in reps and 3 not in reps`; second cycle fires at yr4; no replacement at yr5 (N); replacement_capex=¥700k | finance-expert PR #111 re-audit gate |
 | FIN-59 | **Vector 4 lifecycle:** `finance()` on N=4 ensemble, `lifetime_years=2, replacement_cost_fraction=0.70, residual_value_fraction=0.05, decommissioning_yuan=¥20k` → NPV=¥343,897.27; LCOE=¥48.72/MWh (§13.8 `PV(CAPEX+Replacement−Residual)/PV(E_net)`, decommissioning excluded from LCOE numerator); MIRR(0.10)=17.85% (multi-root IRR risk on 3 sign changes → gate on MIRR per §13.8) | finance-expert PR #114 §A Vector 4 |
 | FIN-60 | **Lifecycle throughput arm beats calendar:** `build_cash_flow_series([yr_heavy, yr_light, yr_light, yr_light], econ=econ)` with `lifetime_years=3, cycle_life_full_equiv=2.0, bat_capacity_mwh=100.0` (threshold=200 MWh) and bat_throughput=[120,100,100,100] → cycle fires at yr2 (cum=220≥200) before calendar yr3; CF[2]=EBITDA−replacement, CF[1]=CF[3]=CF[4]=EBITDA; degradation NOT subtracted | finance-expert PR #114 §B (INV-DEG throughput arm) |
+| FIN-47 | **R3 distribution_valid=True:** `finance(empirical_M10_ensemble)` → `result.distribution_valid=True`, `result.M=10` | §A.1 (PR #113); team-lead GO |
+| FIN-48 | **R3 no labeled tail/CVaR — ALL FIVE absent:** `view.P75=None`, `view.P90=None`, `view.P95=None`, `view.P99=None`, `view.downside_risk.cvar5_yuan=None` (k=1=worst-of-N relabel); downside_risk IS present (distribution_valid=True); FIN-48 asserts ALL FIVE absent per backend-reviewer forward-note (PR #111 re-audit) | §A.0/§A.1; D39 §4 |
+| FIN-49 | **R3 empirical P50 = ¥60,000:** `view.P50.npv_yuan = 60,000`; sorted 10 draws x[floor(0.50·9)]=x[4]=60k (LOCKED 'lower' estimator) | §A.1 worked vector |
+| FIN-50 | **R3 worst/best-of-N range:** `downside_risk.worst_case_npv_yuan = −80,000` (= min, "worst of 10 observed years"); `downside_risk.best_of_n_npv_yuan = +260,000` (= max, new field `float\|None`, None in R1/R2; "best of 10 observed years"); NOT labeled as P90/P95 | §A.1; §13.10c naming discipline |
+| FIN-51 | **R3 P(NPV<0) = 0.20:** `downside_risk.p_npv_neg = 0.20` (2 draws < 0 of 10; strict less-than) | §A.1 |
+| FIN-52 | **R3 same locked estimator as R2:** `exceedance_percentile(R3_targets, 0.50)=60,000` AND `engine_P50.npv_yuan=60,000` (one function, same result — a second estimator is a review-fail) | §A.0 "ONE estimator" rule; D39 |
 
-### 5.2 Pending test group (R3 — PENDING D39 merge)
+### 5.2 Implementation notes for R3 (gating this contract update)
 
-| ID range | Group | Status |
-|---|---|---|
-| FIN-47–FIN-52 | **R3 regime (empirical M≈10):** per-year strip, empirical P50, worst/best-of-N range, P(NPV<0); NO labeled P75/P90/P95/P99 or CVaR (FIN-48 asserts P75+P90+P95+P99+CVaR all absent) | `pytest.mark.skip` — PENDING D39 |
+**DownsideRisk dataclass changes** (backward-compatible; both default to None):
+```python
+cvar5_yuan: float | None      # was: float — None in R3 (k=1 relabels worst-of-N)
+best_of_n_npv_yuan: float | None = None  # new field — max(NPV_m) in R3, None in R1/R2
+```
+`FinanceResult` top-level shape: **unchanged** (M, distribution_valid, per_policy identical).
+`distribution_valid` rule: `True` when `(M≥50 and sample_kind=="bootstrap") or (sample_kind=="empirical" and M>1)`.
+`_build_view_result()` R3 branch: set P50 (locked estimator); leave P75/P90/P95/P99=None; populate downside_risk with cvar5_yuan=None, best_of_n_npv_yuan=max(npv_arr).
 
 ---
 
@@ -517,5 +528,9 @@ shown in comments** (engineering rule). The tolerance table (from PR #107 §C cr
 - [ ] Provenance block: all 12 required fields
 - [ ] `finance` area added to CLAUDE.md `<area>` list + `check_conventions.sh` (D39)
 - [ ] `finance` added to STACK.md as a new area with stack = "pure Python + NumPy"
-- [ ] All FIN-00–FIN-46, FIN-53–FIN-60 + FIN-58b tests pass; FIN-47–FIN-52 remain skipped until D39 lands
+- [ ] All FIN-00–FIN-52, FIN-53–FIN-60 + FIN-58b tests pass (66+6 = 72 pass total; 0 skipped)
+- [ ] R3 routing: `distribution_valid=True` at `sample_kind="empirical"` and M>1
+- [ ] `DownsideRisk.cvar5_yuan: float | None` (None in R3; float in R2; backward-compat)
+- [ ] `DownsideRisk.best_of_n_npv_yuan: float | None = None` (max(NPV_m) in R3; None in R1/R2)
+- [ ] R3 `_build_view_result()` branch: P50 populated; P75/P90/P95/P99=None; cvar5=None; best_of_n set
 - [ ] No hardcoded Gansu constants — works for any `PolicyEnsemble` + `DeviceEconParams`

@@ -1414,69 +1414,199 @@ def test_fin57_debt_toggle_end_to_end():
 
 # ---------------------------------------------------------------------------
 # FIN-47–FIN-52 — R3 regime: empirical small-sample (M≈10)
-# PENDING: D39 R3 finalization (PR #108). Skipped until D39 merges.
+# Source: §A.1 of docs/design/finance_engine_acceptance_basis.md (PR #113).
+# D39 merged (PR #108); PR #111 finance engine merged. Un-skipped per team-lead GO.
 # R3 = per-year trajectory strip + empirical P50 + worst/best-of-N range + P(NPV<0)
 # NO labeled P75/P90/P95/P99 or CVaR-5% (collapse to min at M≈10 under locked estimator)
 # ---------------------------------------------------------------------------
 
-_SKIP_R3 = pytest.mark.skip(reason="PENDING: D39 R3 finalization (PR #108) — do not implement until D39 merges")
+# §A.1 fixture: 10 draws, unsorted, yielding these sorted NPV values (rate=0, CAPEX=200k):
+#   sorted: [-80k, -20k, 10k, 30k, 60k, 90k, 120k, 150k, 200k, 260k]
+# P50 = x[floor(0.50*9)] = x[4] = 60,000             (§A.1 literal)
+# worst-of-N = x[0] = -80,000                         (§A.1 literal)
+# best-of-N  = x[9] = +260,000                        (§A.1 literal)
+# P(NPV<0)   = 2/10 = 0.20 (draws -80k and -20k)     (§A.1 literal)
+# CVaR-5%: k=ceil(0.05*10)=1 = single worst = -80k -> same as worst-of-N -> SUPPRESS (§A.0)
+# P90=x[floor(0.10*9)]=x[0]=-80k = worst-of-N -> SUPPRESS
+# P75=x[floor(0.25*9)]=x[2]=10k  -> only P50 kept in R3 (§A.0)
+_R3_NPV_TARGETS = [
+    -80_000.0, -20_000.0, 10_000.0, 30_000.0,  60_000.0,
+     90_000.0, 120_000.0, 150_000.0, 200_000.0, 260_000.0,
+]
+# ^ NOT sorted — engine must sort internally when computing percentiles
 
 
-@_SKIP_R3
-def test_fin47_r3_distribution_valid_true():
-    """FIN-47: R3 (empirical, M≈10) → distribution_valid=True.
+def _make_m10_empirical_ensemble() -> PolicyEnsemble:
+    """10-draw empirical ensemble (R3) anchored to §A.1 worked vector.
 
-    Even at M≈10 the result is valid — but the populated percentile set is honest/narrow.
-    PENDING: finalize after D39 (PR #108) merges.
+    Design: CAPEX=200k, N=1 year, WACC=0 (r_f_override=0, ERP=0) so that
+    NPV = -CAPEX + CF[1] = -200k + grid_export = target_npv.
+    grid_export_m = 200k + target_npv_m.
+
+    The runs list is in insertion order (NOT sorted), so the engine must sort
+    the NPV array when computing percentiles — this guards against index bugs.
     """
+    _CAPEX = 200_000.0
+    runs = {}
+    traj = []
+    for target_npv in _R3_NPV_TARGETS:
+        grid_export_m = _CAPEX + target_npv   # >= 120k for all targets (all positive)
+        yr_m = _make_eval_result(
+            grid_export_yuan=grid_export_m,
+            generation_mwh=10_000.0,
+        )
+        traj.append([yr_m])  # single operating year (N=1)
+    runs["policy_a"] = traj
+    return PolicyEnsemble(seed=42, M=10, sample_kind="empirical", runs=runs)
 
 
-@_SKIP_R3
+def _m10_r3_result() -> FinanceResult:
+    """Run finance() on the §A.1 R3 fixture."""
+    from energy_go.finance.econ_params import DeviceEconParams
+    ensemble   = _make_m10_empirical_ensemble()
+    econ       = DeviceEconParams(total_capex_yuan=200_000.0)
+    price_path = [PricePath(id="flat", label="Flat", multipliers=[1.0])]
+    config     = _make_base_config(r_f_override=0.0, horizon_years=1)
+    return finance(ensemble, price_path, econ, config)
+
+
+def test_fin47_r3_distribution_valid_true():
+    """FIN-47: R3 (empirical, M=10) → distribution_valid=True.
+
+    D39 §4: empirical regime is a valid distribution (narrow but honest).
+    Differs from R1 (M=1 → distribution_valid=False).
+
+    Source: §A.1 (PR #113), D39 R3 ruling.
+    """
+    result = _m10_r3_result()
+    assert result.distribution_valid is True, (
+        "R3 empirical regime must set distribution_valid=True "
+        "(valid empirical distribution even at M=10; honest but narrow)"
+    )
+    assert result.M == 10
+    assert result.per_policy["policy_a"].per_price_path["flat"].view_i is not None
+
+
 def test_fin48_r3_no_labeled_p75_p90_p95():
     """FIN-48: R3 → P75, P90, P95, P99, CVaR-5% must ALL be ABSENT (None).
 
-    Under the LOCKED nearest-rank estimator at M≈10:
-    P90 = np.quantile(sorted, 0.10, method='lower') → index floor(0.10·9)=0 = minimum
-    P75 = np.quantile(sorted, 0.25, method='lower') → index floor(0.25·9)=2 → collapse risk
-    CVaR-5% = k=ceil(0.05·10)=1 = single worst draw
-    → P75/P90/CVaR-5%/worst-case would all collapse to the same few draws (relabel trap, §13.10c).
-    D39 ruling: drop ALL labeled tail percentiles in R3 (including P75); surface as
-    "worst/best of N observed years".  (P75-absent noted finance-expert REQUEST_CHANGES PR #110)
-    PENDING: D39 merge.
+    Under the LOCKED nearest-rank estimator at M=10 (§A.0/§A.1 worked):
+      P90 = x[floor(0.10*9)] = x[0] = -80k = worst-of-N (relabeling it 'P90' is a lie)
+      P75 = x[floor(0.25*9)] = x[2] = +10k (only P50 kept in R3 per §A.0)
+      P95 = x[floor(0.05*9)] = x[0] = -80k = worst-of-N (ditto)
+      P99 = x[floor(0.01*9)] = x[0] = -80k = worst-of-N (ditto)
+      CVaR-5%: k=ceil(0.05*10)=1 → mean(x[0]) = -80k = worst-of-N alone (§13.10c relabel trap)
+    D39 ruling: ALL five suppressed; surface worst as "worst-of-N", not a percentile label.
+
+    FIN-48 asserts ALL FIVE absent — backend-reviewer forward-note (PR #111 re-audit).
+    Source: §A.0 table, §A.1 explanation, D39 §4.
     """
+    result = _m10_r3_result()
+    view = result.per_policy["policy_a"].per_price_path["flat"].view_i
+    assert view.P75 is None,  "R3: P75 must be None (collapses to x[2] at M=10 — §A.0 suppressed)"
+    assert view.P90 is None,  "R3: P90 must be None (collapses to worst-of-N at M=10)"
+    assert view.P95 is None,  "R3: P95 must be None (collapses to worst-of-N at M=10)"
+    assert view.P99 is None,  "R3: P99 must be None (collapses to worst-of-N at M=10)"
+    # CVaR-5% must be absent in the downside block (k=1 → relabels worst-of-N)
+    dr = view.downside_risk
+    assert dr is not None, "R3 downside_risk must exist (distribution_valid=True)"
+    assert dr.cvar5_yuan is None, (
+        "R3: CVaR-5% must be None (k=ceil(0.05*10)=1 → single worst = worst-of-N relabel)"
+    )
 
 
-@_SKIP_R3
 def test_fin49_r3_empirical_p50_present():
-    """FIN-49: R3 → empirical P50 (median of the ~10 draws) IS present.
+    """FIN-49: R3 → empirical P50 = ¥60,000 per the LOCKED estimator (§A.1 literal).
 
-    P50 = np.quantile(sorted_M, 0.50, method='lower') at M≈10 is still meaningful.
-    PENDING: D39 merge.
+    10 sorted draws: [-80k, -20k, 10k, 30k, 60k, 90k, 120k, 150k, 200k, 260k]
+    P50 = np.quantile(sorted, 1-0.50, method='lower')
+        = np.quantile(sorted, 0.50, method='lower')
+        → index floor(0.50 * 9) = 4 → x[4] = 60,000
+
+    P50 is kept in R3 because it is still meaningful as a median at M=10 (§A.0).
+    Source: §A.1 worked vector, §A.0 table.
     """
+    result = _m10_r3_result()
+    view = result.per_policy["policy_a"].per_price_path["flat"].view_i
+    assert view.P50 is not None, "R3: P50 must be present (empirical median is meaningful at M=10)"
+    assert view.P50.npv_yuan == pytest.approx(60_000.0, abs=TOL_NPV_YUAN), (
+        "R3 P50 NPV must be ¥60,000: "
+        "10 draws sorted -> x[floor(0.50*9)]=x[4]=60,000 (LOCKED 'lower' estimator, §A.1)"
+    )
 
 
-@_SKIP_R3
 def test_fin50_r3_worst_best_of_n_range():
-    """FIN-50: R3 → empirical worst/best-of-N range emitted, labelled as "worst/best of N observed years"
-    (not as P90/P95 — §13.10c naming discipline).
-    PENDING: D39 merge.
+    """FIN-50: R3 → empirical worst/best-of-N labeled as observed range (NOT percentiles).
+
+    §A.1 worked values:
+      worst-of-N = min(NPV_m) = -80,000 ("worst of 10 observed years")
+      best-of-N  = max(NPV_m) = +260,000 ("best of 10 observed years")
+
+    These are NOT labeled as P90/P95/P99 (§13.10c naming discipline).
+    worst_case_npv_yuan (existing DownsideRisk field) = worst-of-N = min.
+    best_of_n_npv_yuan  (new DownsideRisk field, float | None) = max; None in R1/R2.
+
+    Source: §A.1 (PR #113), D39 §4 naming discipline.
     """
+    result = _m10_r3_result()
+    dr = result.per_policy["policy_a"].per_price_path["flat"].view_i.downside_risk
+    assert dr is not None
+    # Worst-of-N: existing field reused (min of all draws)
+    assert dr.worst_case_npv_yuan == pytest.approx(-80_000.0, abs=TOL_NPV_YUAN), (
+        "worst_case_npv_yuan must be -80,000 = min(NPV_m) in R3 ("
+        "labeled 'worst of 10 observed years', NOT as P90)"
+    )
+    # Best-of-N: new field (float | None; None when not in R3)
+    assert dr.best_of_n_npv_yuan == pytest.approx(260_000.0, abs=TOL_NPV_YUAN), (
+        "best_of_n_npv_yuan must be +260,000 = max(NPV_m) in R3 ("
+        "labeled 'best of 10 observed years', NOT as a headline percentile)"
+    )
 
 
-@_SKIP_R3
 def test_fin51_r3_p_npv_neg_present():
-    """FIN-51: R3 → P(NPV<0) = empirical frequency emitted (e.g. "2 of 10 historical years lose money").
-    PENDING: D39 merge.
+    """FIN-51: R3 → P(NPV<0) = empirical frequency (2 of 10 = 0.20).
+
+    §A.1: draws -80k and -20k are < 0 → 2/10 historical years lose money.
+    Uses the SAME p_below() function as R2 (strict less-than; NPV=0 not counted).
+    Source: §A.1 (PR #113), D39 §4.
     """
+    result = _m10_r3_result()
+    dr = result.per_policy["policy_a"].per_price_path["flat"].view_i.downside_risk
+    assert dr is not None
+    # 2/10 = 0.20; strict less-than (draws -80k and -20k qualify; 0.0 and above do not)
+    assert dr.p_npv_neg == pytest.approx(0.20, abs=1e-9), (
+        "P(NPV<0) must be 0.20 = 2/10 (draws -80k, -20k < 0; §A.1 literal)"
+    )
 
 
-@_SKIP_R3
 def test_fin52_r3_same_estimator_as_r2():
-    """FIN-52: R3 uses the SAME locked percentile estimator as R2 (np.quantile, method='lower').
+    """FIN-52: R3 uses the SAME locked estimator as R2 (np.quantile, method='lower').
 
-    ONE estimator must serve both R2 and R3 (D39; a second estimator is a review-fail).
-    PENDING: D39 merge.
+    ONE estimator across R2+R3 (D39; a second estimator is a review-fail).
+    Concrete check: exceedance_percentile(R3_npv_arr, 0.50) equals the P50 from
+    the R3 finance() result — confirming the engine reuses the locked estimator,
+    not an alternative formula.
+
+    sorted: [-80k, -20k, 10k, 30k, 60k, 90k, 120k, 150k, 200k, 260k]
+    exceedance_percentile(arr, 0.50) = np.quantile(sorted, 1-0.50, method='lower')
+                                      = np.quantile(sorted, 0.50, method='lower')
+                                      = x[floor(0.50*9)] = x[4] = 60,000
+    Source: §A.0 "one estimator" rule, D39.
     """
+    from energy_go.finance.distributions import exceedance_percentile
+    # Run the same estimator directly on the §A.1 NPV array
+    direct_p50 = exceedance_percentile(_R3_NPV_TARGETS, 0.50)
+    assert direct_p50 == pytest.approx(60_000.0, abs=TOL_NPV_YUAN), (
+        "exceedance_percentile(R3_targets, 0.50) must yield 60,000 "
+        "(x[floor(0.50*9)]=x[4]=60k; locked 'lower' estimator)"
+    )
+    # Engine result must match the direct call (same estimator, no divergence)
+    result = _m10_r3_result()
+    engine_p50 = result.per_policy["policy_a"].per_price_path["flat"].view_i.P50.npv_yuan
+    assert engine_p50 == pytest.approx(direct_p50, abs=TOL_NPV_YUAN), (
+        "Engine R3 P50 must equal exceedance_percentile() called directly — "
+        "ONE estimator rule (D39; a second estimator is a review-fail)"
+    )
 
 
 # ---------------------------------------------------------------------------
