@@ -122,3 +122,36 @@ COMPLETE; Retry → clean). It is **RED at `4d7e42b`** and is the definition-of-
 
 **Verdict: REQUEST_CHANGES** — B5 + B6 must be fixed (with `[T-API-FAIL-1]` green). The dispute is
 resolved (T-API-RACE-1 + T-CONTINUE-2 corrected, 82/82 prior green). Re-review on the fix commit.
+
+---
+
+## Round 6 — `f94b174` — APPROVE (2026-06-13) — IMPLEMENTATION (B5+B6 fix)
+
+Re-audit of the B5/B6 fix. Diff `a329e6b..f94b174` touches **only** `src/stores/stageOneStore.ts`
+and `src/components/wizard/StageOneConfig.tsx` — the test file is **untouched** (no approved test
+weakened to pass; verified `git diff --stat -- tests/` is empty). Code-verified, not claim-verified:
+
+- **B5 ✓** — New `assembleError: string | null` field added to `StageOneStoreState` (initialized
+  `null`, reset in `reset()`, not persisted — correct; transient errors must not survive reload).
+  The assemble catch now sets `{ validationPending: false, assembleError: msg }`; `receiveValidation`
+  clears `assembleError: null` on success. `StageOneConfig` wires `apiError={store.assembleError ?? null}`
+  (was the unrelated `saveError`). An assemble 500/network error now reaches `ValidationPanel` and
+  renders `validation-api-error` (panel shows it on `apiError && !pending`, which the catch satisfies).
+- **B6 ✓** — New `retryAssemble()` action: `set({ assembleError: null }); _scheduleAssemble()` —
+  re-fires the real debounced assemble fetch when the §5.1 guard holds. `handleRetry` now calls it
+  (was a no-op pending-toggle). Retry genuinely recovers.
+- **`[T-API-FAIL-1]` integrity ✓** — was RED at `a329e6b`/`4d7e42b` (both paths broken) and is GREEN
+  at `f94b174`, so it genuinely exercises BOTH fixed paths (api-error surfaced + Retry re-fires →
+  clean). It also still asserts `stageState` does NOT advance to COMPLETE on failure (§5.1 deviation #2).
+- **Full suite 83/83 green.** `src/` feature files type-clean (`tsc --noEmit`: 0 errors in
+  stageOneStore/stageConfig/wizard/useSiteMetaForm). The 156 jest-dom matcher `tsc` errors are
+  repo-wide test-typing noise across all frontend suites (pre-existing, runtime-harmless), not in scope.
+
+### Carried non-blocking should-fix (NOT gating — fold into a follow-up)
+S3 `coverage-indicator` anchor (§4.2) still absent · S4 MapPicker is a placeholder, not a real
+MapLibre map — record the deviation in §12 or file a follow-up · S5 `handleSave` still sticks the
+button in "Saving…" (save persistence is out of scope, §11) · S6 add a global store-reset `afterEach`
+for test isolation. None block this gate.
+
+**Verdict: APPROVE** (implementation) covering `f94b174`. B5+B6 resolved and code-verified; dispute
+resolved; no test weakened; 83/83 green. Ready for QA re-verification on `f94b174`.
