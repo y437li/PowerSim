@@ -13,6 +13,7 @@ This guide is for **contributors** to the Energy GO codebase: understanding the 
 | [Worktree discipline](worktrees.md) | Where to put worktrees, naming, when to remove them |
 | [Verdict markers & PR gate](verdict_markers.md) | How to leave review verdicts, how `check_pr_gate.sh` reads them, what merge requires |
 | [Stack registry](stack.md) | Pointer to `STACK.md`, how to add or change a stack element |
+| [arm64 JAX venv](arm64_jax_venv.md) | Local test setup for Apple Silicon Macs — arm64 venv so `import jax` works and tests run in seconds instead of waiting for CI |
 
 ## Quick orientation
 
