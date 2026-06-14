@@ -285,6 +285,7 @@ sorted ascending (0-based): x[0]=−80,000 … x[9]=+260,000
 | **empirical worst-of-N** | `min_m NPV_m` — labeled **"worst of 10 observed years"**, NOT a percentile | **−¥80,000** |
 | **empirical best-of-N** | `max_m NPV_m` — labeled **"best of 10 observed years"**, NOT a percentile | **+¥260,000** |
 | **P(NPV<0)** | `#{NPV_m < 0} / M` — empirical frequency over the actual years | 2/10 = **0.20** ("2 of 10 historical years lose money") |
+| **P(IRR<hurdle)** | `#{IRR_m < hurdle} / M` — empirical **frequency** (NOT a percentile/tail estimator, so it does **not** collapse at small M; honest at M≈10, same class as P(NPV<0)) | populated; hurdle default = `r_e` |
 
 **R3 SUPPRESSED** (absent = `None`, **never fabricated** — the §13.10c discipline). Each would collapse to the observed worst at M≈10, so labeling it as a fitted percentile/tail is a relabel of the worst-of-N:
 
