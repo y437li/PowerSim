@@ -87,6 +87,8 @@ models:
       opex_var_per_mwh_yuan:             0.0  # ¥/MWh
       lifetime_years:                   12.0  # yr    — LFP calendar life at ≥80% SOH
       cycle_life_full_equiv:          6000.0  # cycles — LFP at 0.8 EOL; 1 cycle/day × 12yr ≈ 4380; 6k gives head-room
+                                              #         DoD basis unverified (CATL LMP public spec does not state DoD);
+                                              #         stub pending vendor confirmation — if 80% DoD true full-equiv = 4800
       eol_soh_threshold:                 0.80 # —     — 80% remaining capacity triggers replacement
                                               #         schema bound: (0,1); Gansu default in plausible LFP range (0.7–0.9)
       replacement_cost_fraction:         0.70 # —     — cell+BMS replacement; learning-curve reduction vs original
@@ -251,7 +253,8 @@ models:
       opex_fixed_per_kwh_year_yuan:     18.0  # ¥/kWh·yr — ≈2.5 USD/kWh·yr
       opex_var_per_mwh_yuan:             0.0  # ¥/MWh
       lifetime_years:                   15.0  # yr    — BYD warranty: 15 yr at ≥70% SOH
-      cycle_life_full_equiv:          8000.0  # cycles — BYD LFP blade battery public spec (8000 at 90% DoD)
+      cycle_life_full_equiv:          7200.0  # cycles — BYD LFP blade battery public spec (8000 at 90% DoD)
+                                              #         true full-equiv = 8000 × 0.90 = 7200 (DoD conversion per finance-expert PR #114)
       eol_soh_threshold:                 0.80 # —     — 80% remaining capacity triggers replacement
       replacement_cost_fraction:         0.65 # —     — cell+BMS module replacement; learning-curve pricing
       residual_value_fraction:           0.05 # —
@@ -278,6 +281,8 @@ models:
       opex_var_per_mwh_yuan:             0.0  # ¥/MWh
       lifetime_years:                   15.0  # yr    — Sungrow 15-year warranty basis
       cycle_life_full_equiv:          8000.0  # cycles — Sungrow public spec; liquid cooling enables higher cycle count
+                                              #         DoD basis unverified (Sungrow ST2752UX datasheet does not state DoD);
+                                              #         stub pending vendor confirmation — if 80% DoD true full-equiv = 6400
       eol_soh_threshold:                 0.80 # —
       replacement_cost_fraction:         0.60 # —
       residual_value_fraction:           0.05 # —
