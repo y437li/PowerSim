@@ -110,3 +110,25 @@
 | Stage | Head | Verdict |
 |---|---|---|
 | D33 implementation | `f5e7ae3` | APPROVE (backend-reviewer) |
+
+---
+
+## E-SCHEMA activation (v1.1.0, task #8 / PR #106) — backend-reviewer
+
+**Reviewer:** backend-reviewer · **Date:** 2026-06-13 · **Classification:** MINOR (rl-architect; activates a contracted-but-deferred gated rule; no `ValidationResult`/`ValidationIssue` shape change → no re-LOCK). Shared contract → rl-architect holds the v1.1.0 LOCK after this gate.
+
+### Round 1 → REQUEST_CHANGES (F1 grid gap + F2 test name), Round 2 @ 501911e → resolved
+- **F1 (resolved):** `assets.grid` added to the v1 power-composite required set (present AND dict). I traced + flagged that the original "covered by E-CAP-POS" rationale was false — `_resolve_grid_limits` returns `(None,None)` on a missing grid and E-CAP-POS skips it, so a grid-less config passed both E-SCHEMA and E-CAP-POS → broke at `resolve_site()`. rl-architect agreed (overrode own ruling). The false rationale is replaced with the accurate explanation; required-set = `battery` + (`wind` OR `solar`) + `grid`, D32(d)-framed as v1-power-composite. 3 grid tests added (missing/None/present-ok).
+- **F2 (resolved):** `test_e_schema_does_not_fire_device_models_none` → `test_e_schema_fires_when_device_models_none` (name now matches the assertion).
+
+### Verified sound
+- Battery required (6-dim action space, D32(d)); at-least-one of {wind,solar}; grid required; structural check independent of `device_models`; one issue per missing section; `≥2 issues` when multiple missing. §9 v1.1.0 changelog documents the observable behavior change; §6 rule-table row; §12 checklist. 1.1.0 MINOR / no re-LOCK correct.
+
+### Reviewer-added cases (`# reviewer:`; CLAUDE.md — I own these)
+- `test_wind_none_but_solar_valid_no_e_schema` — `assets.wind=None` + valid solar → **no** E-SCHEMA (at-least-one boundary; guards against firing on ANY non-dict generation key). PASSES pre- and post-impl.
+- `test_grid_string_fires_e_schema` — `assets.grid="<str>"` (present, not a dict) → E-SCHEMA, paralleling `battery=str` (the grid tests covered absent+None but not str). RED pre-impl, green post-impl.
+
+### Suite state
+17 TestESchema cases (15 dev + 2 reviewer): 11 RED pre-impl (assert E-SCHEMA fires; go green when E-SCHEMA lands), 6 green pre-impl. Correct for the contract-first gate.
+
+**Verdict: APPROVE.** Implementation may proceed; rl-architect holds the v1.1.0 D25 LOCK; QA verifies post-impl. When E-SCHEMA lands, the #105 strict-xfail `test_no_battery` auto-flips → backend-engineer un-xfails it in the same change.

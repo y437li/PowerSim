@@ -1,6 +1,6 @@
 # Contract: `config_validation` — two-tier site-config validator
 
-**Version:** 1.0.0  
+**Version:** 1.1.0  
 **Area:** shared  
 **Owner (resolver impl):** jax-env-engineer  
 **Owner (econ rules):** finance-expert  
@@ -296,6 +296,63 @@ Negative is the error — zero is legal for fields that represent "none".)
 **Constraint format example:**  
 `"capex_per_kw_yuan = -100.0 for model 'vestas-v150-4.2' — must be ≥ 0"`
 
+### E-SCHEMA — Required asset section absent (v1.1.0, task #8)
+
+Fires when a required asset category is absent or not a dict under `site.assets`.
+
+**v1 power-composite required set** (rl-architect ruling, task #8; grid added per F1 correction):
+
+| Required | check |
+|----------|-------|
+| `assets.battery` | present AND is a dict |
+| at least one of `assets.wind`, `assets.solar` | ≥ 1 present AND is a dict |
+| `assets.grid` | present AND is a dict |
+
+**Battery** is structurally required in v1: the Gansu env's 6-dim action space assumes a
+battery (D32(d) scenario composition; a battery-less site is a different composition
+with a different action_dim and its own checkpoint namespace).
+
+**Generation** requirement is **at least one of {wind, solar}**, not both — wind-only and
+solar-only renewable sites are physically valid.  E-SCHEMA fires when **neither** wind
+nor solar is present (no generation source at all).
+
+**Grid** is a direct section check (F1 correction — rl-architect ruling, task #8):
+`_resolve_grid_limits()` returns `(None, None)` when `assets.grid` is absent, and
+`E-CAP-POS` guards with `if max_export is not None` → **skips** on a missing grid.
+A grid-less config therefore passes both E-SCHEMA and E-CAP-POS under the original
+ruling — validating clean but breaking at `resolve_site()`.  v1 is a grid-connected
+merchant exporter (PCC export/import is the revenue core), so a missing grid section
+is as invalid as a missing battery.  The previous "covered by E-CAP-POS" rationale
+was factually incorrect and is withdrawn.
+
+**Forward-compat note (D32(d)):** this required-set is the **v1 power-composite**
+requirement, not a permanent universal rule.  Future scenario activations (H₂,
+aluminium, datacenter) derive their required-sections from the enabled-set; a future
+contract amendment will update this rule as scenario support expands.  Jax-env-engineer
+should validate the obs/action physics assumptions when that happens.
+
+**HARD ERROR iff:**
+```
+assets.battery absent or not a dict               → E-SCHEMA on "assets.battery"
+(assets.wind absent or not dict)
+  AND (assets.solar absent or not dict)            → E-SCHEMA on "assets"
+assets.grid absent or not a dict                  → E-SCHEMA on "assets.grid"
+```
+
+Each failing check produces a separate `ValidationIssue` with `rule_id="E-SCHEMA"`.
+
+**field values:**
+- Missing battery: `"assets.battery"`
+- No generation source: `"assets"` (covers the absence of both wind and solar)
+- Missing grid: `"assets.grid"`
+
+**Constraint format examples:**
+- `"assets.battery absent — battery required for v1 power-composite dispatch"`
+- `"assets.wind and assets.solar both absent — at least one generation source required"`
+- `"assets.grid absent — grid connection required for v1 power-composite dispatch"`
+
+**Gansu:** battery, wind, solar, and grid all present → no error.
+
 ---
 
 ## 5. Warning rules (WARNINGS — proceed with explicit ack)
@@ -394,6 +451,7 @@ WARNING iff (wind.fleet_rated_mw < 1.0
 
 | rule_id | tier | gated on | Gansu result |
 |---------|------|----------|--------------|
+| `E-SCHEMA` | ERROR | — (v1 power-composite required set) | OK |
 | `E-CAP-POS` | ERROR | — | OK |
 | `E-BAT-CRATE` | ERROR | device_models | OK (0.333C ≤ 0.333C) |
 | `E-BAT-UNIT` | ERROR | explicit unit_count | SKIP (not set) |
@@ -457,13 +515,22 @@ This is the single-source-of-truth requirement from D18.
 
 ## 9. Sequencing and future extensions
 
-### v1.0.0 (this contract — task #66)
+### v1.0.0 (task #66)
 Rules implemented: `E-CAP-POS`, `E-BAT-CRATE`, `E-BAT-UNIT`, `E-TAR-SHAPE` (v1),
 `E-ECON-NEG` (if economics blocks present), `W-BAT-CRATE-2C`, `W-BAT-DUR-10H`,
 `W-PCC-CURTAIL`, `W-SIZE-TRIVIAL`.
 
-Gated/skipped v1: `E-LOAD-SVC` (needs `load_peak_mw`), `E-TAR-SHAPE` v2 (needs PR #87),
+Gated/skipped v1.0: `E-SCHEMA` (deferred — "not in v1 scope"),
+`E-LOAD-SVC` (needs `load_peak_mw`), `E-TAR-SHAPE` v2 (needs PR #87),
 `E-ECON-WACC` (needs `finance.wacc_pct`), `W-H2-GT-GEN` (needs §8 electrolyzer).
+
+### v1.1.0 (task #8) — MINOR, no re-LOCK (activates contracted-but-deferred rule)
+Activates `E-SCHEMA`: missing battery or no generation source now emits a hard error.
+Observable behavior change from v1.0.0: configs lacking `assets.battery` or lacking
+both `assets.wind` and `assets.solar` were previously accepted (silently skipped);
+under v1.1.0 they produce `E-SCHEMA` errors.  Version bumped to signal this shift to
+consumers (rl-architect ruling, task #8).  No re-LOCK — activating a gated rule is
+minor per the config_validation LOCK policy.
 
 ### Post-PR #87 (device_model_schema v2.0.0) + D33 fix
 `E-TAR-SHAPE` under v2.0+ accepts **flat `(24,)` OR seasonal `(12,24)`**.
@@ -550,6 +617,10 @@ panel), `field` must encode the device index or ID (e.g.,
 
 ## 12. Implementation checklist (for QA)
 
+- [ ] `E-SCHEMA` fires when `assets.battery` absent/non-dict (one issue)
+- [ ] `E-SCHEMA` fires when both `assets.wind` and `assets.solar` absent/non-dict (one issue)
+- [ ] `E-SCHEMA` fires when `assets.grid` absent/non-dict (one issue)
+- [ ] `E-SCHEMA` does NOT fire when battery + grid present + at least one of wind/solar present
 - [ ] `ValidationIssue`, `ValidationResult`, `ConfigValidationError` defined as specified
 - [ ] `validate()` non-raising on all test inputs including malformed dicts
 - [ ] All rules exhaustive (no early exit)

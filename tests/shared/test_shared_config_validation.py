@@ -1203,3 +1203,239 @@ class TestReviewerGridCapPos:
         assert any("max_import" in e.field for e in result.errors), (
             "E-CAP-POS issue must reference the max_import field"
         )
+
+
+# ---------------------------------------------------------------------------
+# E-SCHEMA — required asset section absent (v1.1.0, task #8)
+# Contract: contracts/shared/config_validation.md §4 E-SCHEMA
+# Required set (v1 power-composite): battery + at-least-one-of(wind, solar)
+# Grid: not a section check (resolved via model physics, covered by E-CAP-POS)
+# ---------------------------------------------------------------------------
+
+class TestESchema:
+    """E-SCHEMA — missing required asset section fires a hard error (v1.1.0)."""
+
+    def test_missing_battery_fires_e_schema(self):
+        # Arithmetic: battery absent → config_validation must emit E-SCHEMA on
+        # "assets.battery" — battery is structurally required for v1 dispatch.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        del site["assets"]["battery"]
+        result = validate(site, GANSU_MODELS)
+        err_ids = [e.rule_id for e in result.errors]
+        assert "E-SCHEMA" in err_ids, (
+            f"Missing assets.battery must fire E-SCHEMA; got errors={err_ids}"
+        )
+        assert any(e.field == "assets.battery" for e in result.errors if e.rule_id == "E-SCHEMA"), (
+            "E-SCHEMA issue must have field='assets.battery'"
+        )
+
+    def test_missing_battery_issue_has_all_fields(self):
+        # Each ValidationIssue must have non-empty rule_id, field, message, constraint (§2).
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        del site["assets"]["battery"]
+        result = validate(site, GANSU_MODELS)
+        schema_issues = [e for e in result.errors if e.rule_id == "E-SCHEMA"]
+        assert schema_issues, "Expected at least one E-SCHEMA issue"
+        for issue in schema_issues:
+            assert isinstance(issue.rule_id, str) and issue.rule_id
+            assert isinstance(issue.field, str) and issue.field
+            assert isinstance(issue.message, str) and issue.message
+            assert isinstance(issue.constraint, str) and issue.constraint
+
+    def test_battery_none_fires_e_schema(self):
+        # assets.battery present but not a dict (malformed) → E-SCHEMA.
+        # Arithmetic: None is not a dict → same as absent.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        site["assets"]["battery"] = None
+        result = validate(site, GANSU_MODELS)
+        err_ids = [e.rule_id for e in result.errors]
+        assert "E-SCHEMA" in err_ids, (
+            f"assets.battery=None must fire E-SCHEMA; got {err_ids}"
+        )
+
+    def test_battery_string_fires_e_schema(self):
+        # assets.battery = "catl-lmp-300mwh" (model ID string, not dict) → E-SCHEMA.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        site["assets"]["battery"] = "catl-lmp-300mwh"
+        result = validate(site, GANSU_MODELS)
+        err_ids = [e.rule_id for e in result.errors]
+        assert "E-SCHEMA" in err_ids, (
+            f"assets.battery=str must fire E-SCHEMA; got {err_ids}"
+        )
+
+    def test_no_wind_no_solar_fires_e_schema(self):
+        # Neither wind nor solar present → E-SCHEMA: no generation source at all.
+        # Arithmetic: both absent → (wind_absent AND solar_absent) → fire.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        del site["assets"]["wind"]
+        del site["assets"]["solar"]
+        result = validate(site, GANSU_MODELS)
+        err_ids = [e.rule_id for e in result.errors]
+        assert "E-SCHEMA" in err_ids, (
+            f"No wind AND no solar must fire E-SCHEMA; got {err_ids}"
+        )
+
+    def test_wind_only_no_e_schema(self):
+        # Wind present, solar absent — at-least-one rule satisfied → no E-SCHEMA.
+        # Arithmetic: wind present → generation requirement met.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        del site["assets"]["solar"]
+        result = validate(site, GANSU_MODELS)
+        schema_errors = [e for e in result.errors if e.rule_id == "E-SCHEMA"]
+        assert not schema_errors, (
+            f"Wind-only site must NOT fire E-SCHEMA (at-least-one rule); got {schema_errors}"
+        )
+
+    def test_solar_only_no_e_schema(self):
+        # Solar present, wind absent — at-least-one rule satisfied → no E-SCHEMA.
+        # Arithmetic: solar present → generation requirement met.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        del site["assets"]["wind"]
+        result = validate(site, GANSU_MODELS)
+        schema_errors = [e for e in result.errors if e.rule_id == "E-SCHEMA"]
+        assert not schema_errors, (
+            f"Solar-only site must NOT fire E-SCHEMA (at-least-one rule); got {schema_errors}"
+        )
+
+    def test_gansu_full_site_no_e_schema(self):
+        # Gansu has battery + wind + solar → no E-SCHEMA error.
+        validate = _import_validate()
+        result = validate(GANSU_SITE, GANSU_MODELS)
+        schema_errors = [e for e in result.errors if e.rule_id == "E-SCHEMA"]
+        assert not schema_errors, (
+            f"Full Gansu site must not produce E-SCHEMA; got {schema_errors}"
+        )
+
+    def test_missing_assets_section_fires_e_schema(self):
+        # assets key entirely absent → all required sections missing → E-SCHEMA.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        del site["assets"]
+        result = validate(site, GANSU_MODELS)
+        err_ids = [e.rule_id for e in result.errors]
+        assert "E-SCHEMA" in err_ids, (
+            f"Missing assets section must fire E-SCHEMA; got {err_ids}"
+        )
+
+    def test_e_schema_fires_when_device_models_none(self):
+        # E-SCHEMA is NOT gated on device_models — it fires even when device_models=None.
+        # Arithmetic: the required-section check has no device-model dependency.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        del site["assets"]["battery"]
+        result = validate(site, None)  # device_models=None
+        err_ids = [e.rule_id for e in result.errors]
+        assert "E-SCHEMA" in err_ids, (
+            "E-SCHEMA must fire even with device_models=None; got "
+            f"{err_ids}"
+        )
+
+    def test_battery_and_no_generation_fires_two_issues(self):
+        # Battery absent AND no generation → two separate E-SCHEMA issues.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        del site["assets"]["battery"]
+        del site["assets"]["wind"]
+        del site["assets"]["solar"]
+        result = validate(site, GANSU_MODELS)
+        schema_errors = [e for e in result.errors if e.rule_id == "E-SCHEMA"]
+        assert len(schema_errors) >= 2, (
+            f"Missing battery + no generation must produce ≥2 E-SCHEMA issues; got {schema_errors}"
+        )
+
+    def test_real_gansu_config_no_e_schema(self):
+        # Load actual on-disk config/ YAMLs; validate returns no E-SCHEMA.
+        import pathlib
+        import yaml as _yaml
+        validate = _import_validate()
+        repo_root = pathlib.Path(__file__).resolve().parents[2]
+        site = _yaml.safe_load(open(repo_root / "config" / "site_gansu.yaml"))
+        models = _yaml.safe_load(open(repo_root / "config" / "device_models.yaml"))
+        result = validate(site, models)
+        schema_errors = [e for e in result.errors if e.rule_id == "E-SCHEMA"]
+        assert not schema_errors, (
+            f"Real Gansu config must not produce E-SCHEMA; got {schema_errors}"
+        )
+
+    # --- Grid required-section tests (F1 correction, rl-architect ruling) -----------
+
+    def test_missing_grid_fires_e_schema(self):
+        # Grid absent → E-SCHEMA on "assets.grid".
+        # Rationale: _resolve_grid_limits() returns (None,None) when assets.grid
+        # absent; E-CAP-POS guards `if max_export is not None` → skips.
+        # A grid-less config therefore passes E-CAP-POS, validating clean but
+        # breaking at resolve_site(). Grid is required for v1 power-composite.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        del site["assets"]["grid"]
+        result = validate(site, GANSU_MODELS)
+        err_ids = [e.rule_id for e in result.errors]
+        assert "E-SCHEMA" in err_ids, (
+            f"Missing assets.grid must fire E-SCHEMA; got {err_ids}"
+        )
+        assert any(e.field == "assets.grid" for e in result.errors if e.rule_id == "E-SCHEMA"), (
+            "E-SCHEMA issue must have field='assets.grid'"
+        )
+
+    def test_grid_none_fires_e_schema(self):
+        # assets.grid = None (not dict) → E-SCHEMA.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        site["assets"]["grid"] = None
+        result = validate(site, GANSU_MODELS)
+        err_ids = [e.rule_id for e in result.errors]
+        assert "E-SCHEMA" in err_ids, (
+            f"assets.grid=None must fire E-SCHEMA; got {err_ids}"
+        )
+
+    def test_grid_present_with_battery_and_generation_no_e_schema(self):
+        # All three required categories present (battery + wind + grid) → no E-SCHEMA.
+        # Arithmetic: solar absent but wind present → at-least-one satisfied.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        del site["assets"]["solar"]
+        result = validate(site, GANSU_MODELS)
+        schema_errors = [e for e in result.errors if e.rule_id == "E-SCHEMA"]
+        assert not schema_errors, (
+            f"battery+wind+grid (no solar) must not produce E-SCHEMA; got {schema_errors}"
+        )
+
+    # reviewer: backend-reviewer (at-least-one boundary: a non-dict generation key must
+    # not trip E-SCHEMA when the OTHER generation source is a valid dict)
+    def test_wind_none_but_solar_valid_no_e_schema(self):
+        # assets.wind = None (present but NOT a dict) + assets.solar a valid dict + battery + grid.
+        # Rule: "at least one of {wind, solar} present AND is a dict." wind=None fails its own
+        # check, but solar is a valid dict → at-least-one satisfied → NO E-SCHEMA.
+        # Guards against an impl that fires on ANY non-dict generation key instead of requiring
+        # BOTH to be absent/non-dict. Green both pre- and post-impl (E-SCHEMA must not fire).
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        site["assets"]["wind"] = None  # present but non-dict; solar stays valid
+        result = validate(site, GANSU_MODELS)
+        schema_errors = [e for e in result.errors if e.rule_id == "E-SCHEMA"]
+        assert not schema_errors, (
+            f"wind=None with a valid solar dict must NOT fire E-SCHEMA "
+            f"(at-least-one-of-{{wind,solar}} satisfied by solar); got {schema_errors}"
+        )
+
+    # reviewer: backend-reviewer (grid type-check: present-but-not-dict must fire, parallel
+    # to test_battery_string_fires_e_schema; the 3 grid tests cover absent + None but not str)
+    def test_grid_string_fires_e_schema(self):
+        # assets.grid = "pcc-substation-945mw" (model-ID string, not a dict) → E-SCHEMA on
+        # assets.grid. "present AND is a dict" — a string is present but not a dict → fire.
+        # RED pre-impl (E-SCHEMA unimplemented), GREEN post-impl. Mirrors battery=str.
+        validate = _import_validate()
+        site = copy.deepcopy(GANSU_SITE)
+        site["assets"]["grid"] = "pcc-substation-945mw"
+        result = validate(site, GANSU_MODELS)
+        err_ids = [e.rule_id for e in result.errors]
+        assert "E-SCHEMA" in err_ids, (
+            f"assets.grid=str (present, not a dict) must fire E-SCHEMA; got {err_ids}"
+        )
