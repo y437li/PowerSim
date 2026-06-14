@@ -193,8 +193,15 @@ LCOE (r=0.10, E_net = 10,000 MWh/yr, FixedOM=0 for clarity):
   PV(E_net) = Σ_{y=1..4} 10,000/1.10^y = 31,698.65 MWh
   LCOE_with_replacement = 1,544,361.72 / 31,698.65 = ¥ 48.72 /MWh     # assert ±¥0.01/MWh
   (LCOE_without_replacement = ¥31.55/MWh — ignoring replacement understates LCOE ~54%)
+
+MIRR(0.10) = 17.85 %                                                  # assert ±0.01 pp ; the IRR-companion
+  # the yr-2 replacement makes CF sign-flip (−,+,−,+,+ = 3 sign changes) ⇒ multiple-IRR risk (§13.8).
+  # Gate on NPV + LCOE + MIRR; do NOT gate a bare IRR (≈24% but multi-root) — this is exactly why §13.8
+  # mandates MIRR alongside IRR in replacement years.
 ```
-**Asserts:** replacement CAPEX appears as a **negative CF in the replacement year** (yr 2 here), once; terminal `residual − decommissioning` adds to `CF(N)`; LCOE includes `+Replacement − Residual` (§13.8). A horizon ≥ 2·lifetime runs unit-1 then unit-2, each with its own residual (§13.6).
+**Asserts:** gate on **NPV + LCOE + MIRR** (not bare IRR — replacement-year sign flip → multi-IRR, §13.8). Replacement CAPEX appears as a **negative CF in the replacement year** (yr 2 here), once; terminal `residual − decommissioning` adds to `CF(N)`; LCOE includes `+Replacement − Residual` (§13.8). A horizon ≥ 2·lifetime runs unit-1 then unit-2, each with its own residual (§13.6).
+
+**General mechanism, not a battery special-case (D39 §2 D1a; finance-expert scope call).** The engine implements **one data-driven lifecycle path**: any device whose econ block carries the lifecycle fields gets `first-of(lifetime_years, throughput→cycle_life)` replacement + terminal/residual. **Battery (first-of(10yr, cycle-life)) is the mandatory headline — Vector 4 gates it fully.** **PV-inverter** subsystem replacement (calendar-only, ~yr10–12, partial `replacement_cost_fraction`) and **wind overhaul** fall out of the same path; v1 vector coverage = Vector 4 (battery, full) **+ a light PV-inverter calendar-replacement smoke** (`lifetime_years`-only trigger, no cycle-life) confirming a non-battery calendar replacement rides the same code. A dedicated wind-overhaul vector is a v2 refinement (rides the mechanism with a smoke in v1).
 
 **INV-DEG EOL-replacement assert (the cash half FIN-24 does not cover):** with `lifetime_years = 3` but `cycle_life_full_equiv` reached at **yr 2** via throughput, the replacement fires at **yr 2** (`first-of` — the throughput trigger beats the calendar bound) ⇒ replacement CAPEX booked **once** at yr 2; `degradation_yuan` remains memo-only (never a period deduction). A **hard-cycling policy replaces earlier** than a gentle one under identical prices — exactly View II's per-policy discrimination (§13.1). *Test must assert both: (i) the throughput-triggered year, and (ii) cash impact = replacement CAPEX once, degradation memo-only.*
 
