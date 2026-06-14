@@ -1262,32 +1262,71 @@ describe("§T9 API call debounce and race-condition guard", () => {
   });
 
   it("[T-API-RACE-1] stale validation response is discarded (only latest applies)", async () => {
-    // We simulate two rapid validation calls; only the second response should update state.
-    // Implemented via AbortController: the first is aborted when the second fires.
+    // We simulate two rapid validation cycles; only the second (latest) response
+    // updates state, and the first in-flight request is aborted and discarded.
+    //
+    // # reviewer: ORIGINAL TEST WAS BROKEN (timed out, never exercised the guard).
+    // # reviewer: It added devices WITHOUT `valid: true` and NEVER set tariffRegion,
+    // # reviewer: so the §5.1 assemble guard `validCount > 0 && tariffRegion !== ''`
+    // # reviewer: was never met → `_scheduleAssemble` returned early (stageOneStore.ts
+    // # reviewer: L67) → no debounce timer, no fetch, no in-flight request → `firstAborted`
+    // # reviewer: could never become true. This is a TEST setup/timing bug, NOT an
+    // # reviewer: implementation race-guard gap: the store aborts the active controller
+    // # reviewer: on every meaningful change and discards AbortError responses
+    // # reviewer: (_scheduleAssemble L65 + catch L98), which is contract-§5.1-compliant.
+    // # reviewer: (The engineer's proposed reorder-only fix would ALSO have timed out
+    // # reviewer: for the same guard reason.) Corrected to (a) satisfy the guard,
+    // # reviewer: (b) drive request #1 genuinely in-flight before the 2nd change aborts
+    // # reviewer: it, and (c) STRENGTHEN coverage: assert the latest (clean) response —
+    // # reviewer: not the stale one — is what lands in the store.
+    // # reviewer: — frontend-reviewer, PR #102 impl review, 2026-06-13
     const { useStageOneStore } = await import("../../src/stores/stageOneStore");
     const store = useStageOneStore.getState();
+    // # reviewer: reset clears the module-singleton debounce timer + controller and any
+    // # reviewer: fleet left over from earlier §T9 tests (the original test relied on
+    // # reviewer: undefined cross-test store state — another latent bug).
+    await act(async () => { store.reset(); });
 
     let firstAborted = false;
     let callCount = 0;
     globalThis.fetch = vi.fn((_url, { signal }: { signal: AbortSignal }) => {
       callCount++;
       if (callCount === 1) {
-        // First call: listen for abort
-        return new Promise((_res, _rej) => {
-          signal.addEventListener("abort", () => { firstAborted = true; });
+        // First (stale) request: never resolves on its own; on abort it rejects with an
+        // AbortError, exercising the store's stale-response discard branch (catch L98).
+        return new Promise((_res, reject) => {
+          signal.addEventListener("abort", () => {
+            firstAborted = true;
+            const e = new Error("aborted");
+            (e as Error).name = "AbortError";
+            reject(e);
+          });
         });
       }
-      // Second call: returns clean validation
+      // Second (latest) request: returns clean validation.
       return Promise.resolve({ ok: true, json: () => Promise.resolve(MOCK_VALIDATION_CLEAN) });
     });
 
+    // Guard (§5.1): a tariff region AND ≥ 1 valid device are required for assemble to fire.
     await act(async () => {
-      store.addDevice({ id: "dev-1", count: 1 });
-      vi.advanceTimersByTime(100);   // partial debounce
-      store.addDevice({ id: "dev-2", count: 1 });  // resets debounce
-      vi.advanceTimersByTime(350);   // fires second debounce; first gets aborted
+      store.setTariffRegion("cn-gansu", false);
+      store.addDevice({ id: "dev-1", count: 1, valid: true });
     });
-    await waitFor(() => { expect(firstAborted).toBe(true); });
+    // Fire the first debounce (300 ms) → request #1 goes in flight.
+    await act(async () => { vi.advanceTimersByTime(350); });
+    expect(callCount).toBe(1);
+
+    // A new meaningful change aborts the in-flight request #1 and starts a fresh cycle.
+    await act(async () => { store.addDevice({ id: "dev-2", count: 1, valid: true }); });
+    expect(firstAborted).toBe(true);   // stale request #1 was aborted
+
+    // Fire the second debounce → request #2 (latest) returns clean.
+    await act(async () => { vi.advanceTimersByTime(350); });
+    await waitFor(() => {
+      expect(callCount).toBe(2);
+      // Only the LATEST response is applied — store holds the clean result, not the stale one.
+      expect(useStageOneStore.getState().lastValidation).toEqual(MOCK_VALIDATION_CLEAN);
+    });
   });
 });
 
@@ -1322,7 +1361,12 @@ describe("§T10 Continue invariants", () => {
       store.addDevice({ id: "vestas-v150-4.2", count: 1, valid: true });
       store.receiveValidation(MOCK_VALIDATION_WARNING);
     });
-    expect(store.stageState).not.toBe("COMPLETE");
+    // # reviewer: was `expect(store.stageState)` — a STALE snapshot captured at L1356
+    // # reviewer: before reset()+mutations, so it read leftover cross-test state, not the
+    // # reviewer: live store. It passed only by test-ordering luck; the corrected
+    // # reviewer: T-API-RACE-1 (which now ends in COMPLETE) exposed it. Read live state,
+    // # reviewer: consistent with L1370. — frontend-reviewer, PR #102 impl review, 2026-06-13
+    expect(useStageOneStore.getState().stageState).not.toBe("COMPLETE");
 
     // Acknowledge warning → should become COMPLETE
     await act(async () => {
