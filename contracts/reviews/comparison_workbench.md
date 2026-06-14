@@ -91,3 +91,62 @@ batch-only isolation — no telemetry fields (§14).
 (per-metric direction-of-good + delta coloring) must be fixed in the contract; then I add the reviewer
 edge-case tests and re-gate. SC1–SC4 carry to implementation. Strong contract overall — these are
 tighten-the-data-contract fixes, not a redesign.
+
+## Round 2 — `0a47d24` (v1.1.0-draft) — REQUEST_CHANGES (2026-06-14)
+
+Re-reviewed the contract + suite (now 933 / 1721 lines). **Excellent progress** — the finance-expert
+corrections + new sections are well-built: `PercentileResult.confidence` (sound|indicative_low_confidence)
+with a clean `data-confidence`/`data-headline` rendering contract (§15, T-CONF-1..4); `SingleTrajectoryResult`
+(R1 4-field, "NPV (single scenario)" label); `DownsideRiskResult` (R3 partial — p_irr_below_hurdle present,
+cvar5 null); restructured `FinanceResultSummary` (provenance + per-metric `MetricPercentiles`); new §16
+ConfigDiffPanel (carries `unit` ✓), §17 FinanceParamPanel instant-tier, §18 comment thread; corrected
+T-R1-4 / T-R3-7. Canonical `sample_kind {bootstrap|empirical}` applied throughout (matches the rl-architect
+#133 ruling). Of the Round-1 blockers:
+
+- **B2 — RESOLVED.** `FinanceResultSummary.provenance` now carries `distribution_valid` + `sample_kind`;
+  `deriveRegime(distribution_valid, sample_kind)` is canonical (bootstrap→R2, empirical→R3). *Minor nit
+  (should-fix, non-blocking):* a top-level `regime` field still coexists with `deriveRegime(provenance)` —
+  add one line naming the single read-path (recommend: UI derives via `deriveRegime(provenance.…)`; the
+  top-level `regime` is a backend denorm not read by table components) to foreclose drift.
+
+- **B1 — PARTIAL (still blocks).** §7.3 body (line 845) now correctly states "table uses MINIMUM regime."
+  But **Q5 (line 925) still contradicts it** — "minimum-regime for shared *sections*" + re-asks the
+  per-column-Upside variant. And there is still **no named `resolveComparisonRegime`** — T-MIXED-1 passes
+  `regime="R1"` with the comment "caller resolves," so the min-regime logic (R2+R1→R1) is untested. Fix:
+  (a) delete the contradictory "shared sections" phrasing — Q5 → RESOLVED: whole-table-minimum (deltas are
+  undefined against suppressed baseline cells; this is a frontend data-integrity call, finance-expert
+  confirms only the downside accounting); (b) export `resolveComparisonRegime(variants): FinanceRegime`
+  (severity R1 < R3 < R2 → returns the min) and I add unit tests (R2+R1→R1, R2+R3→R3, R3+R1→R1, all-R2→R2).
+
+- **B3 — PARTIAL (still blocks).** §7.4 now encodes direction-of-good for THREE metrics via the
+  "winner per metric" highlight (highest IRR, lowest LCOE, lowest p_npv_neg). But: (i) it is **not a
+  complete per-metric table** — MIRR, NPV, payback, max_drawdown, worst_case_npv, cvar5, worst_year_cf
+  direction is unspecified; (ii) the **delta-cell coloring** rule (distinct from the winner ★) is still
+  unspecified — e.g. an LCOE delta of −¥12/MWh is an *improvement* but no rule says it renders good/green;
+  (iii) §7 delta tests still only cover higher-better (T-DELTA-1..4: IRR, Worst NPV). Fix: add a §7.x
+  **direction-of-good table for every displayed metric** (higher-better: irr/mirr/npv/worst_case_npv/
+  best_of_n_npv/worst_year_cf/cvar5; lower-better: lcoe/payback/p_npv_neg/p_irr_below_hurdle/max_drawdown)
+  and state that **both** the winner-★ AND the delta-cell color derive from it (recommend a testable
+  encoding, e.g. `data-delta-direction="good"|"bad"|"neutral"` on the delta cell, mirroring §15's
+  `data-confidence`). I then add reviewer tests pinning LCOE + P(NPV<0) delta sign + good/bad direction.
+
+### Answers to the Round-2 open questions
+- **Q5 (mixed-regime):** whole-table-minimum — decisive (B1). Close Q5; delete "shared sections."
+- **Q6 (R3 `p_irr_below_hurdle` confidence):** finance-expert's call (finance honesty, not frontend). My
+  read: it's a frequency count, NOT a percentile, so the §15 per-percentile confidence rule does not apply;
+  the engineer's "not indicative-tagged" assumption is reasonable — but finance-expert confirms (SC4-adjacent).
+- **SC3 (dashboard charts):** standing condition — **do NOT hold the gate**; approve-with-[PENDING] (charts
+  stubbed per DV-5). Resolve before chart integration.
+- **SC5 (recompute-finance endpoint):** does not block the contract gate; standing condition before the
+  finance-slider implementation.
+
+### Verified-good this round
+§15 confidence rendering (data-confidence/data-headline, P99-always-indicative, R3-P50-indicative);
+§16 ConfigDiffPanel (differing-first, common-collapsed, instant ⚡, units carried); §17 FinanceParamPanel
+(sliders, instant label, scope); corrected R1 (no IRR, "NPV (single scenario)") + R3 (p_irr_below_hurdle
+shown as frequency); canonical sample_kind enum.
+
+**Verdict: REQUEST_CHANGES (Round 2).** B2 resolved; **B1** (reconcile Q5↔§7.3 + name+test
+`resolveComparisonRegime`) and **B3** (complete direction-of-good table + delta-coloring rule + lower-better
+delta tests) remain. Strongly converged — both are bounded contract edits; I add the held tests on the next
+revision. SC1/SC2/SC3/SC5 carry to implementation; SC4 resolved.
