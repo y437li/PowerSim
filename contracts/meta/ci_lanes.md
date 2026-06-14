@@ -221,6 +221,16 @@ The "never break the merge gate" lesson (recorded; #116/#124) made empirical:
   `-m "not slow and not local"` selects **none** of them — a static guard that does not rely on (F)
   actually OOM-ing to catch a mis-tagged heavy test.
 
+**PR mapping (which PR each criterion is verified on):**
+- **Step-1 quick-wins PR:** (A), (B), (C), (D), (E), (F).
+- **Step-2 slow-lane PR:** (G) and **(H)** — H lands **atomically with the `slow`→`local` migration**
+  (the completeness test would fail before the migration, by design; it must not be placed in the
+  quick-wins PR).
+- **Note — step-1 fast-lane correctness does NOT require the migration:** at step 1 the OOM tests are
+  still tagged `slow`, so the fast-lane selector `not slow and not local` **already excludes them**.
+  The migration's purpose is the step-2 nightly/local split (so `slow and not local` doesn't pick up
+  the OOM tests), not step-1 fast-lane safety.
+
 ---
 
 ## 11. Test cases (reviewer-gated before implementation)
