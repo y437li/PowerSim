@@ -1301,3 +1301,71 @@ def test_fin52_r3_same_estimator_as_r2():
     ONE estimator must serve both R2 and R3 (D39; a second estimator is a review-fail).
     PENDING: D39 merge.
     """
+
+
+# ---------------------------------------------------------------------------
+# FIN-53–FIN-55 — reviewer-added edge cases (backend-reviewer)
+# Stable (NOT skipped). Hand-computed expected values with arithmetic shown.
+# Added under the contract-first-dev reviewer mandate (missed-edge-case hunt).
+# ---------------------------------------------------------------------------
+
+def test_fin53_drawdown_no_shortfall_clamps_to_zero():
+    # reviewer: FIN-22b only tests the negative-drawdown case; nothing pins the
+    # load-bearing min(0, ·) shortfall-below-zero clamp when cumulative CF never
+    # goes negative. A peak-to-trough impl would (wrongly) report a positive
+    # "drawdown" here; the §13.10b shortfall-below-zero literal must yield 0.
+    #
+    # cf = [+100k, +50k, +200k] (year-0 CAPEX excluded)
+    # cumCF = [100k, 150k, 350k]; min(cumCF) = 100k > 0
+    # max_drawdown = min(0, 100,000) = 0.0   (no shortfall ever)
+    cf = [100_000.0, 50_000.0, 200_000.0]
+    cum_cf = np.cumsum(cf)  # [100k, 150k, 350k]
+    result = max_drawdown(cum_cf)
+    assert result["drawdown_yuan"] == pytest.approx(0.0, abs=TOL_NPV_YUAN), (
+        "no-shortfall trajectory must clamp max_drawdown to 0 (shortfall-below-zero, "
+        "NOT peak-to-trough)"
+    )
+    # reviewer: the no-shortfall max_drawdown_year convention is UNDEFINED in the
+    # contract (§2.2 types it int, 1-indexed argmin). Recommend the contract pin it
+    # (argmin year, or a sentinel) and add the assert here once defined. Flagged in
+    # the review; intentionally NOT asserting drawdown_year here to avoid encoding an
+    # unspecified convention.
+
+
+def test_fin54_cvar_k_ceil_at_integer_boundary():
+    # reviewer: FIN-18 only tests CVaR k=ceil(0.05·50)=ceil(2.5)=3 (non-integer).
+    # The ceil must also behave at EXACT-integer 0.05·M: a buggy int(0.05·M)+1 would
+    # over-count by one. Pin two integer boundaries.
+    #
+    # M=20: 0.05·20 = 1.0 → k = ceil(1.0) = 1 → CVaR = single worst draw.
+    #   NPV_m = −10,000 + (m−1)·1,000, m=1…20 (ascending); worst = −10,000.
+    #   CVaR-5% = mean([−10,000]) = −¥10,000
+    arr20 = np.array([-10_000.0 + (m - 1) * 1_000.0 for m in range(1, 21)])
+    assert cvar5(arr20, M=20) == pytest.approx(-10_000.0, abs=TOL_NPV_YUAN), (
+        "M=20: k=ceil(0.05·20)=ceil(1.0)=1 → CVaR = single worst = −10,000"
+    )
+    # M=40: 0.05·40 = 2.0 → k = ceil(2.0) = 2 → mean of the 2 worst.
+    #   NPV_m = −20,000 + (m−1)·1,000, m=1…40; worst two = −20,000, −19,000.
+    #   CVaR-5% = mean(−20,000, −19,000) = −¥19,500
+    arr40 = np.array([-20_000.0 + (m - 1) * 1_000.0 for m in range(1, 41)])
+    assert cvar5(arr40, M=40) == pytest.approx(-19_500.0, abs=TOL_NPV_YUAN), (
+        "M=40: k=ceil(0.05·40)=ceil(2.0)=2 → CVaR = mean(−20k, −19k) = −19,500"
+    )
+
+
+def test_fin55_mirr_single_valued_on_multi_sign_cf():
+    # reviewer: §4 says "MIRR is reported alongside IRR (replacement years → multi-IRR
+    # risk)" but no test exercises a sign-flipping CF where IRR is ambiguous. Pin that
+    # MIRR is single-valued there.
+    #
+    # cf = [−1000, +2500, −1560]  (two sign changes → up to 2 IRR roots)
+    # finance/reinvest rate r = 0.10, N = 2
+    # FV_pos@yr2 (reinvest) = 2500·1.10^(2−1) = 2,750
+    # PV_neg@yr0 (finance)  = −1000 − 1560/1.10^2 = −1000 − 1289.2562 = −2289.2562
+    # MIRR = (2750 / 2289.2562)^(1/2) − 1 = (1.201270)^0.5 − 1
+    #      = 1.096024 − 1 = 0.096022 = 9.6022%
+    cf = [-1_000.0, 2_500.0, -1_560.0]
+    result = mirr(cf, finance_rate=0.10, reinvest_rate=0.10)
+    assert result == pytest.approx(0.096022, abs=TOL_RATE_PP), (
+        "MIRR must be single-valued (9.6022%) on a multi-sign CF where IRR has 2 roots"
+    )
