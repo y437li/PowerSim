@@ -297,14 +297,33 @@ Absent → View I only; View II **omitted, never fabricated**.
 
 ### 3.5 INV-BASIS (§13.0 P3, §13.2)
 
-Finance reads **only** D13 real-money fields from `PolicyEvalResult`:
-- `streams[*].{volume, value_yuan}` (6-stream accumulators)
-- Physical quantities (generation_mwh, bat_throughput_mwh, bat_discharge_mwh, …)
-- `real_money.*` (energy_cost_yuan, demand_charge_yuan, degradation_yuan, curtailment_yuan, voll_yuan)
+Finance reads from `PolicyEvalResult`:
+- `streams[*].{volume, value_yuan}` (6-stream accumulators) — **the authoritative operating-cash source (§3.5a)**
+- Physical quantities (`generation_mwh`, `bat_throughput_mwh`, `bat_discharge_mwh`, …)
+- `real_money` **cash-bearing** (no stream representation): `degradation_yuan`, `curtailment_yuan`, `voll_yuan` — cash treatment per §3.6–§3.8 (INV-DEG/CURT/VOLL)
+- `real_money` **view-only / non-additive reconciliation (§3.5a)**: `energy_cost_yuan`, `demand_charge_yuan`, `total_cost_yuan` — **NOT** fed into cash
 
 The `memo_only` block (`penalty_yuan`, `soc_violation_mwh`, `soc_violations_count`) is
-**structurally unreachable** from the cash-flow path — not merely unused. A reviewer-grade
-test fixture proves this (FIN-23).
+**structurally unreachable** from the cash-flow path — not merely unused. Reviewer-grade
+test fixtures prove this: FIN-23 (penalty/soc unreachability) and FIN-23b (stream-authority).
+
+### 3.5a INV-STREAM-AUTHORITY (§13.2/§13.7)
+
+Operating cash flow is built from the **6 stream accumulators ONLY** (`streams[*].value_yuan`):
+revenue = Σ revenue-streams (`grid_export`, +future `h2_sale`/`avoided_cost`/`token_sale`);
+cost = Σ cost-streams (`grid_import`, `demand_charge`).
+
+The `real_money` aggregates `energy_cost_yuan`, `demand_charge_yuan`, `total_cost_yuan` are
+**non-additive reconciliation VIEWS** of those same streams:
+- `energy_cost_yuan ≡ grid_import.value_yuan − grid_export.value_yuan`
+- `demand_charge_yuan ≡ demand_charge.value_yuan`
+
+These MUST NOT be summed into EBITDA or cash flow. The only `real_money` fields read
+for cash (no stream representation, distinct treatment) are `degradation_yuan`,
+`curtailment_yuan`, `voll_yuan` (§3.6–§3.8). Adding `energy_cost`/`demand_charge`/
+`total_cost` onto the stream-derived figures is a **double-count and a review-fail**.
+
+Test FIN-23b verifies (stream-net ¥100k; `energy_cost_yuan` decoy ¥555,555; assert cf==¥100k).
 
 ### 3.6 INV-DEG (§13.2)
 
@@ -399,6 +418,9 @@ for comparison (the serving layer enforces this; the engine provides provenance)
 CF(0) = −Total_overnight_CAPEX
 CF(y) = EBITDA(y) − Replacement(y) − Tax(y);  CF(N) adds Terminal
 EBITDA(y) = Σ_streams (rev − cost) − FixedOM − VarOM − asset-mgmt  (P1, after price-path)
+           # built from streams[*].value_yuan ONLY (INV-STREAM-AUTHORITY §3.5a)
+           # real_money.{energy_cost_yuan, demand_charge_yuan, total_cost_yuan} are non-additive
+           # reconciliation views — NEVER added here (double-count + review-fail)
 
 NPV(r)   = Σ_{y=0}^{N} CF(y) / (1+r)^y
 IRR      : Σ CF(y) / (1+IRR)^y = 0          # numeric; MIRR reported alongside
@@ -435,7 +457,7 @@ shown in comments** (engineering rule). The tolerance table (from PR #107 §C cr
 | FIN-07–FIN-10 | **Vector 2:** TAX TOGGLE — delta NPV, after-tax NPV, after-tax IRR, delta-only reporting | PR #107 Vector 2 |
 | FIN-11–FIN-14 | **Vector 3:** LEVERED DELTA — DSCR, equity-IRR, delta, debt-gating (absent when off) | PR #107 Vector 3 |
 | FIN-15–FIN-22 | **Downside stats (§A):** M=50 linear ensemble — worst-case NPV, P(NPV<0), P(IRR<hurdle), CVaR-5%, P50/P75/P90/P95, max drawdown, worst-year CF | PR #107 §A |
-| FIN-23–FIN-27 | **No-double-count invariants:** INV-BASIS, INV-DEG, INV-CURT, INV-VOLL, INV-FINLAYER | PR #107 §B |
+| FIN-23–FIN-27 | **No-double-count invariants:** INV-BASIS (penalty/soc unreachability), INV-STREAM-AUTHORITY FIN-23b (energy_cost_yuan decoy→streams-only), INV-DEG, INV-CURT, INV-VOLL, INV-FINLAYER | PR #107 §B; finance-expert INV-STREAM-AUTHORITY |
 | FIN-28–FIN-31 | **R1 regime (M=1) honesty:** distributional fields absent, banner present, single_trajectory present | §13.10c |
 | FIN-32–FIN-36 | **R2 regime (bootstrap M≥50):** percentile estimator, bootstrap CI, convergence hint, P99 indicative-only | D34 / §13.10a |
 | FIN-37 | **Purity:** no I/O reachable from `finance()` | §13.12 |
@@ -476,7 +498,7 @@ shown in comments** (engineering rule). The tolerance table (from PR #107 §C cr
 - [ ] `PolicyEnsemble` dataclass with `seed`, `M`, `sample_kind`, `runs`; ragged check on entry
 - [ ] `FinanceConfig` dataclass with all fields + defaults per §13.5b
 - [ ] `discount.py`: `compute_wacc()` — CGB linear-interp → r_f → Hamada → r_e → WACC; Vector 0 passes
-- [ ] `cash_flow.py`: D13→cash mapping with all 5 named invariants (INV-BASIS/DEG/CURT/VOLL/FINLAYER)
+- [ ] `cash_flow.py`: D13→cash mapping with all invariants; EBITDA built from `streams[*].value_yuan` ONLY (INV-STREAM-AUTHORITY §3.5a); `energy_cost_yuan`/`demand_charge_yuan`/`total_cost_yuan` NOT added to EBITDA (INV-BASIS/DEG/CURT/VOLL/FINLAYER)
 - [ ] `metrics.py`: NPV/IRR/MIRR/LCOE/LCOS/payback/DSCR; exact formulas §13.8; Vectors 1–3 pass
 - [ ] `distributions.py`: LOCKED estimator (`np.quantile(...,'lower'/'higher')`); CVaR k=ceil(0.05·M); shortfall-below-zero drawdown; M=50 §A worked ensemble passes
 - [ ] `price_path.py`: preset library + `requires_retrain=True` for non-uniform paths; INV-FINLAYER guard

@@ -759,6 +759,37 @@ def test_fin23_inv_basis():
     )
 
 
+def test_fin23b_inv_stream_authority():
+    """FIN-23b: INV-STREAM-AUTHORITY — operating cash = streams only; energy_cost_yuan is a
+    non-additive reconciliation view and MUST NOT be summed into EBITDA.
+
+    streams: grid_export=¥800,000, grid_import=¥700,000
+      stream-net operating cash = grid_export − grid_import = ¥100,000
+    real_money.energy_cost_yuan = ¥555,555  (DECOY — faithful sign would be
+      import−export = −100,000; we use 555,555 so a buggy additive impl produces
+      100,000 + 555,555 = 655,555 → detectable double-count)
+
+    Expected CF = ¥100,000 (stream-net only). Any other value proves double-counting.
+
+    INV-STREAM-AUTHORITY §3.5a: energy_cost_yuan ≡ grid_import.value_yuan − grid_export.value_yuan
+    (a derived view, already captured in the streams). Adding it to EBITDA is a double-count.
+    finance-expert ruling (REQUEST_CHANGES PR #110 / teammate message).
+    """
+    yr = _make_eval_result(
+        grid_export_yuan=800_000.0,
+        grid_import_yuan=700_000.0,
+        energy_cost_yuan=555_555.0,   # DECOY — streams already account for import/export
+    )
+    cf = build_cash_flow_series([yr])
+    # stream-net = grid_export − grid_import = 800,000 − 700,000 = ¥100,000
+    # energy_cost_yuan (¥555,555) must be IGNORED (non-additive view, not a cash source)
+    # additive impl → cf[1] = 100,000 + 555,555 = 655,555 → FAIL
+    assert cf[1] == pytest.approx(100_000.0, abs=TOL_NPV_YUAN), (
+        "real_money.energy_cost_yuan is a non-additive reconciliation view; "
+        "cash = stream-net only (INV-STREAM-AUTHORITY §3.5a)"
+    )
+
+
 def test_fin24_inv_deg():
     """FIN-24: INV-DEG — degradation_yuan is memo-only; cash impact = replacement CAPEX at EOL year.
 
