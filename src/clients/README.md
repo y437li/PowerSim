@@ -22,7 +22,7 @@ The singleton files are the only place that wire transport clients to stores —
 |--------|------|---------|
 | `RestClientOptions` | `interface` | — |
 | `RestClient` | `interface` | — |
-| `createRestClient` | `function` | Request timeout in ms. Default: 30_000. Uses Promise.race for fake-timer compat. */ |
+| `createRestClient` | `function` | Factory that creates a typed REST client for the Energy GO serving API. |
 
 ### `restClientSingleton.ts`
 
@@ -36,18 +36,18 @@ The singleton files are the only place that wire transport clients to stores —
 |--------|------|---------|
 | `WsClientOptions` | `interface` | — |
 | `WsClient` | `interface` | — |
-| `createWsClient` | `function` | Called when the server sends a kind="status" control frame. */ |
+| `createWsClient` | `function` | Factory that creates a managed WebSocket client with: |
 
 ### `wsClientSingleton.ts`
 
 | Symbol | Kind | Purpose |
 |--------|------|---------|
-| `TELEMETRY_WS_URL` | `const` | wsClientSingleton — two WsClient instances wired to telemetryStore + trainingStore. |
-| `TRAINING_WS_URL` | `const` | wsClientSingleton — two WsClient instances wired to telemetryStore + trainingStore. |
-| `handleEnvStep` | `function` | wsClientSingleton — two WsClient instances wired to telemetryStore + trainingStore. |
-| `handleTrainMetrics` | `function` | wsClientSingleton — two WsClient instances wired to telemetryStore + trainingStore. |
-| `handleStatusChange` | `function` | wsClientSingleton — two WsClient instances wired to telemetryStore + trainingStore. |
-| `telemetryWsClient` | `const` | wsClientSingleton — two WsClient instances wired to telemetryStore + trainingStore. |
-| `trainingWsClient` | `const` | wsClientSingleton — two WsClient instances wired to telemetryStore + trainingStore. |
+| `TELEMETRY_WS_URL` | `const` | WS endpoint for env_step + status (contracts/serving/inference_stream.md:24) |
+| `TRAINING_WS_URL` | `const` | WS endpoint for train_metrics (contracts/serving/training_proxy.md:98) |
+| `handleEnvStep` | `function` | Routes env_step envelopes to telemetryStore.receiveEnvStep. |
+| `handleTrainMetrics` | `function` | Routes train_metrics envelopes to trainingStore.receiveTrainMetrics. |
+| `handleStatusChange` | `function` | Routes WS status changes to telemetryStore.setWsStatus. |
+| `telemetryWsClient` | `const` | Telemetry client — connects to /ws/inference. |
+| `trainingWsClient` | `const` | Training client — connects to /ws/training/stream. |
 
 <!-- generated:end -->

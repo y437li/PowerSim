@@ -30,7 +30,7 @@ TypeScript type definitions shared across the frontend. No runtime logic lives h
 | `ValidationIssue` | `interface` | — |
 | `ValidationResult` | `interface` | — |
 | `WeatherCoverage` | `interface` | — |
-| `TariffRegion` | `interface` | Per-unit physics stored in DeviceRow after resolution (§4.1, T-FLEET-6). |
+| `TariffRegion` | `interface` | Mirrors one entry from GET /api/tariff/regions (geo_site_api §3.2). |
 | `WindEntry` | `type` | — |
 | `PVEntry` | `type` | — |
 | `BatteryEntry` | `type` | — |
@@ -61,8 +61,8 @@ TypeScript type definitions shared across the frontend. No runtime logic lives h
 | `PolicyMetrics` | `interface` | — |
 | `EvalComparePayload` | `interface` | — |
 | `ServerStatusFrame` | `interface` | Server → client session status frame (no `payload` wrapper). |
-| `ServerErrorFrame` | `interface` | Server → client session status frame (no `payload` wrapper). */ |
-| `RunInfo` | `interface` | Server → client session status frame (no `payload` wrapper). */ |
+| `ServerErrorFrame` | `interface` | Server → client error frame (no `payload` wrapper). |
+| `RunInfo` | `interface` | REST API schema for GET /runs and GET /runs/latest — contracts/serving/rest_api.md §GET-runs. |
 | `SiteConfig` | `interface` | — |
 
 <!-- generated:end -->

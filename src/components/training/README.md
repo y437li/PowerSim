@@ -26,7 +26,7 @@ RL semantics (what SAC metrics mean, how eval scores are computed) are defined i
 
 | Symbol | Kind | Purpose |
 |--------|------|---------|
-| `EvalCompareTable` | `function` | Display names for known policy keys. Unknown keys get title-cased fallback. */ |
+| `EvalCompareTable` | `function` | Comparison table: RL vs all baseline policies. |
 
 ### `MetricCurves.tsx`
 
@@ -34,7 +34,7 @@ RL semantics (what SAC metrics mean, how eval scores are computed) are defined i
 |--------|------|---------|
 | `ChartPanel` | `interface` | — |
 | `PANELS` | `const` | — |
-| `MetricCurves` | `function` | Truncate a checkpoint_id string to at most 10 chars for the marker label. */ |
+| `MetricCurves` | `function` | Five line-chart panels driven by trainingStore.history. |
 
 ### `RunSelector.tsx`
 
@@ -46,7 +46,7 @@ RL semantics (what SAC metrics mean, how eval scores are computed) are defined i
 
 | Symbol | Kind | Purpose |
 |--------|------|---------|
-| `StreamStatusBanner` | `function` | Data-stale threshold: no train_metrics message received in >30s (wall clock). */ |
+| `StreamStatusBanner` | `function` | Renders a status banner when the training stream is degraded. |
 
 ### `ThroughputCard.tsx`
 

@@ -30,7 +30,7 @@ No store contains network transport logic. No store should be written to from re
 | `InferenceServerState` | `type` | — |
 | `InferenceSessionState` | `interface` | — |
 | `inferenceSessionStore` | `const` | — |
-| `useInferenceSessionStore` | `const` | inferenceSessionStore — inference session state and control actions. |
+| `useInferenceSessionStore` | `const` | React hook for subscribing to inferenceSessionStore state. |
 
 ### `stageOneStore.ts`
 

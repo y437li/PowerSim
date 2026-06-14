@@ -23,9 +23,9 @@ This folder is validation-only. It does not render, does not mutate stores, and 
 | `ValidationOk` | `interface` | — |
 | `ValidationFail` | `interface` | — |
 | `ValidationResult` | `type` | — |
-| `checkFiniteness` | `function` | telemetryValidator.ts |
-| `checkD13Identities` | `function` | telemetryValidator.ts |
-| `checkConservation` | `function` | telemetryValidator.ts |
-| `validate` | `function` | telemetryValidator.ts |
+| `checkFiniteness` | `function` | Returns dotted paths of all non-finite numeric fields (NaN, ±Infinity) found |
+| `checkD13Identities` | `function` | Checks the three monetary D13 cost identities for an env_step payload's costs. |
+| `checkConservation` | `function` | Checks per-source (solar, wind) conservation for an env_step payload. |
+| `validate` | `function` | Validates an incoming WebSocket telemetry message against the LOCKED schema. |
 
 <!-- generated:end -->

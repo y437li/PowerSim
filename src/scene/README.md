@@ -22,8 +22,8 @@ This folder does not perform data-fetching, does not connect to WebSockets, and 
 
 | Symbol | Kind | Purpose |
 |--------|------|---------|
-| `glbUrl` | `function` | SceneContent — React Three Fiber 3D scene content. |
-| `SceneContent` | `function` | SceneContent — React Three Fiber 3D scene content. |
+| `glbUrl` | `function` | Resolve a registry assetId to a full GLB URL path. |
+| `SceneContent` | `function` | Actual 3D scene: lights, GLB instances, and live animation. |
 
 ### `SiteScene.tsx`
 
@@ -35,43 +35,43 @@ This folder does not perform data-fetching, does not connect to WebSockets, and 
 
 | Symbol | Kind | Purpose |
 |--------|------|---------|
-| `calcSocFill` | `function` | Battery SOC fill animation. |
+| `calcSocFill` | `function` | — |
 
 ### `flowAnimation.ts`
 
 | Symbol | Kind | Purpose |
 |--------|------|---------|
-| `calcFlowWidth` | `function` | Power-flow line animation: width, particle speed, and PV emissive intensity. |
-| `calcFlowSpeed` | `function` | Power-flow line animation: width, particle speed, and PV emissive intensity. |
-| `calcEmissive` | `function` | Power-flow line animation: width, particle speed, and PV emissive intensity. |
+| `calcFlowWidth` | `function` | Power-flow line width in canvas units. |
+| `calcFlowSpeed` | `function` | Power-flow particle speed. |
+| `calcEmissive` | `function` | PV panel emissive intensity from solar irradiance. |
 
 ### `isPayloadFinite.ts`
 
 | Symbol | Kind | Purpose |
 |--------|------|---------|
-| `isPayloadFinite` | `function` | isPayloadFinite — NaN/Inf guard for EnvStepPayload. |
+| `isPayloadFinite` | `function` | Returns true iff every numeric field in `step` is a finite number. |
 
 ### `registry.ts`
 
 | Symbol | Kind | Purpose |
 |--------|------|---------|
-| `resolveAsset` | `function` | Asset registry resolution. |
+| `resolveAsset` | `function` | Look up a registry entry by its asset ID. O(1) keyed lookup. |
 
 ### `turbineAnimation.ts`
 
 | Symbol | Kind | Purpose |
 |--------|------|---------|
-| `calcRotorOmega` | `function` | Turbine rotor angular velocity from wind speed. |
+| `calcRotorOmega` | `function` | — |
 
 ### `types.ts`
 
 | Symbol | Kind | Purpose |
 |--------|------|---------|
 | `AssetType` | `type` | — |
-| `Vec3` | `interface` | 3D scene type definitions. |
-| `AnimationHooks` | `interface` | 3D scene type definitions. |
-| `AssetRegistryEntry` | `interface` | 3D scene type definitions. |
-| `AssetRegistry` | `interface` | 3D scene type definitions. |
+| `Vec3` | `interface` | 3D vector used for dimensions and pivot offsets (metres). |
+| `AnimationHooks` | `interface` | Animation hooks: Three.js node names within the GLB for driven animations. |
+| `AssetRegistryEntry` | `interface` | Single entry in the asset registry. |
+| `AssetRegistry` | `interface` | The full registry object — shape of assets/3d/registry.json LOCKED v1.0.0. |
 | `Position3` | `type` | — |
 | `Rotation3` | `type` | — |
 | `TurbineInstance` | `interface` | — |
@@ -79,6 +79,6 @@ This folder does not perform data-fetching, does not connect to WebSockets, and 
 | `BatteryInstance` | `interface` | — |
 | `GridConfig` | `interface` | — |
 | `TerrainConfig` | `interface` | — |
-| `SiteSceneConfig` | `interface` | 3D scene type definitions. |
+| `SiteSceneConfig` | `interface` | Complete scene configuration derived from a site YAML. |
 
 <!-- generated:end -->

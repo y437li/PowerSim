@@ -29,7 +29,7 @@ Shared pure-function utilities with no React, no state, and no network dependenc
 |--------|------|---------|
 | `TOU_COLORS` | `const` | — |
 | `getTouColor` | `function` | Returns the colour tokens for a TOU tier. |
-| `getTouCssVar` | `function` | Returns the colour tokens for a TOU tier. */ |
+| `getTouCssVar` | `function` | Returns the CSS variable name for a TOU tier, e.g. "--tou-peak". |
 
 ### `touSchedule.ts`
 
@@ -42,7 +42,7 @@ Shared pure-function utilities with no React, no state, and no network dependenc
 | `getTouTier` | `function` | — |
 | `getTouPrice` | `function` | — |
 | `BandSegment` | `interface` | One contiguous run of steps sharing the same TOU tier on the PriceTimeline x-axis. |
-| `computeBandSegments` | `function` | One contiguous run of steps sharing the same TOU tier on the PriceTimeline x-axis. |
+| `computeBandSegments` | `function` | Map history entries onto x-axis band segments for PriceTimeline ReferenceArea. |
 
 ### `units.ts`
 
@@ -51,14 +51,14 @@ Shared pure-function utilities with no React, no state, and no network dependenc
 | Symbol | Kind | Purpose |
 |--------|------|---------|
 | `socToPercent` | `function` | SOC: fraction [0,1] → display percent. D4: 0.2→20.0, 0.9→90.0. |
-| `mwToKw` | `function` | SOC: fraction [0,1] → display percent. D4: 0.2→20.0, 0.9→90.0. |
-| `kwToMw` | `function` | SOC: fraction [0,1] → display percent. D4: 0.2→20.0, 0.9→90.0. |
-| `formatYuan` | `function` | SOC: fraction [0,1] → display percent. D4: 0.2→20.0, 0.9→90.0. |
-| `formatYuanPerMwh` | `function` | SOC: fraction [0,1] → display percent. D4: 0.2→20.0, 0.9→90.0. |
-| `formatPower` | `function` | SOC: fraction [0,1] → display percent. D4: 0.2→20.0, 0.9→90.0. |
-| `formatSimTime` | `function` | SOC: fraction [0,1] → display percent. D4: 0.2→20.0, 0.9→90.0. |
-| `formatThroughput` | `function` | SOC: fraction [0,1] → display percent. D4: 0.2→20.0, 0.9→90.0. |
-| `formatSteps` | `function` | SOC: fraction [0,1] → display percent. D4: 0.2→20.0, 0.9→90.0. |
-| `formatWallSeconds` | `function` | SOC: fraction [0,1] → display percent. D4: 0.2→20.0, 0.9→90.0. |
+| `mwToKw` | `function` | Power: MW → kW (display only; wire values are always MW). |
+| `kwToMw` | `function` | Power: kW → MW |
+| `formatYuan` | `function` | Format a ¥ amount with thousands separator. |
+| `formatYuanPerMwh` | `function` | Format a ¥/MWh price. Contract rule: wire prices are ¥/MWh, NEVER ¥/kWh. |
+| `formatPower` | `function` | Format power picking unit by magnitude: |
+| `formatSimTime` | `function` | Format an ISO-8601 UTC sim clock as "DDD HH:MM". |
+| `formatThroughput` | `function` | Format env_steps_per_sec throughput. |
+| `formatSteps` | `function` | Format a global_step count. |
+| `formatWallSeconds` | `function` | Format wall_seconds duration. Floor (not round) for sub-unit truncation. |
 
 <!-- generated:end -->

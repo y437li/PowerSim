@@ -20,14 +20,14 @@ Backend API contracts and serving-layer port assignments are defined in `contrac
 
 | Symbol | Kind | Purpose |
 |--------|------|---------|
-| `ASSET_REGISTRY` | `const` | gansuSiteConfig — static SiteSceneConfig + ASSET_REGISTRY for the Gansu site. |
+| `ASSET_REGISTRY` | `const` | Direct JSON import of the locked assets/3d/registry.json (v1.0.1, PR #24). |
 | `GANSU_SITE_CONFIG` | `const` | — |
 
 ### `viteProxy.ts`
 
 | Symbol | Kind | Purpose |
 |--------|------|---------|
-| `buildViteProxy` | `function` | viteProxy — Vite dev-server proxy config for /api and /ws. |
-| `VITE_PROXY_CONFIG` | `const` | viteProxy — Vite dev-server proxy config for /api and /ws. |
+| `buildViteProxy` | `function` | Build the Vite dev-server proxy config for a given backend port. |
+| `VITE_PROXY_CONFIG` | `const` | Module-level constant — evaluated once at Vite startup, reads |
 
 <!-- generated:end -->

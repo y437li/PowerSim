@@ -166,19 +166,35 @@ _TS_NAMED_RE = re.compile(
     r"^export\s+(?:type\s+)?\{([^}]+)\}",
     re.MULTILINE,
 )
-# JSDoc comment immediately preceding an export
-_JSDOC_RE = re.compile(r"/\*\*\s*(.*?)\s*\*/\s*$", re.DOTALL)
+# Matches an individual /** ... */ block (non-greedy, no anchoring).
+# Using finditer() over preceding text lets us take the LAST match, which is
+# the JSDoc closest to the export — not the first one in the file.
+_JSDOC_BLOCK_RE = re.compile(r"/\*\*.*?\*/", re.DOTALL)
 _JSDOC_LINE_RE = re.compile(r"^[ \t]*\*?\s?(.+)$")
 
 
 def _extract_jsdoc(source: str, match_start: int) -> str:
-    """Extract first sentence from a JSDoc comment that ends just before match_start."""
+    """Extract first content line from the JSDoc immediately preceding match_start.
+
+    Algorithm:
+    1. Collect all /** ... */ blocks in source[:match_start].
+    2. Take the LAST one (closest to the export declaration).
+    3. Accept only if the gap between the block's end and match_start is pure
+       whitespace — i.e. the JSDoc is directly above the export with no
+       intervening code.
+    4. Return the first non-empty, non-@tag line of that block's content.
+    """
     preceding = source[:match_start]
-    m = _JSDOC_RE.search(preceding)
-    if not m:
+    blocks = list(_JSDOC_BLOCK_RE.finditer(preceding))
+    if not blocks:
         return ""
-    # Take the first non-empty content line of the JSDoc
-    for line in m.group(1).splitlines():
+    last = blocks[-1]
+    # Reject if there is non-whitespace code between the JSDoc end and export
+    if preceding[last.end():].strip():
+        return ""
+    # Parse the JSDoc content (strip /** and */)
+    raw = last.group()[3:-2]
+    for line in raw.splitlines():
         lm = _JSDOC_LINE_RE.match(line)
         if lm:
             text = lm.group(1).strip()

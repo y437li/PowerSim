@@ -26,7 +26,7 @@ Domain-specific panel components are co-located with their route: `components/li
 
 | Symbol | Kind | Purpose |
 |--------|------|---------|
-| `ErrorBoundary` | `class` | When this value changes while in error state, the boundary self-heals. |
+| `ErrorBoundary` | `class` | Class-based error boundary. Catches render errors in children and shows a fallback. |
 
 ### `FrameErrorBanner.tsx`
 
@@ -46,7 +46,7 @@ Domain-specific panel components are co-located with their route: `components/li
 
 | Symbol | Kind | Purpose |
 |--------|------|---------|
-| `SceneMountPoint` | `function` | Called with the container element once it is mounted in the DOM. */ |
+| `SceneMountPoint` | `function` | A plain div that the 3d-assets-engineer mounts Three.js/R3F into. |
 
 ### `SessionControlStrip.tsx`
 
@@ -64,6 +64,6 @@ Domain-specific panel components are co-located with their route: `components/li
 
 | Symbol | Kind | Purpose |
 |--------|------|---------|
-| `TouBadge` | `function` | Wire value in ¥/MWh (from price_buy_yuan_per_mwh); formatted via formatYuanPerMwh. */ |
+| `TouBadge` | `function` | TOU-tier coloured badge. Tier label from TIER_LABELS; colour tokens from touColors.ts. |
 
 <!-- generated:end -->
