@@ -66,32 +66,35 @@ STALE       → was COMPLETE; user returned and changed algorithm or hyperparams
 type AlgorithmType = 'sac' | 'baseline_only';
 ```
 
-Default on first visit: `'sac'`.
+Default on first visit: `'baseline_only'` (**CALL 2** — heuristic-first v1; rl-architect authority 2026-06-14; see §8).
 
 ### 3.2 SAC hyperparameters
 
 ```typescript
 interface SacHyperparams {
-  totalSteps:   number;   // Total env steps.   Default: 2_000_000.  Valid: ≥ 100_000
+  totalSteps:   number;   // Total env steps.   Default: 500_000.    Valid: ≥ 100_000
   evalFreq:     number;   // Eval every N steps. Default: 50_000.    Valid: ≥ 1_000
-  batchSize:    number;   // Samples per update. Default: 256.        Valid: power of 2, 32–4096
-  learningRate: number;   // Adam LR.            Default: 3e-4.       Valid: 1e-5 ≤ lr ≤ 1e-2
-  gamma:        number;   // Reward discount.    Default: 0.99.       Valid: 0 < γ ≤ 1
+  batchSize:    number;   // Samples per update. Default: 512.        Valid: power of 2, 32–4096
+  learningRate: number;   // Adam LR.            Default: 1e-4.       Valid: 1e-5 ≤ lr ≤ 1e-2
+  gamma:        number;   // Reward discount.    Default: 0.999.      Valid: 0 < γ ≤ 1
   bufferSize:   number;   // Replay buffer cap.  Default: 1_000_000.  Valid: ≥ batchSize × 4
-  nEnvs:        number;   // Vmapped env count.  Default: 16.         Valid: power of 2, 1–256
+  nEnvs:        number;   // Vmapped env count.  Default: 4.          Valid: power of 2, 1–256
 }
 ```
 
 Constants sent to API (not surfaced in v1 UI):
-- `tau`: 0.005 (target network soft-update)
-- `hiddenLayers`: [256, 256] (actor/critic dims)
+- `tau`: 0.005 (§5 τ — target network soft-update)
+- `ent_coef`: `"auto"` (§5 — entropy coefficient; auto-tuned during training)
+- `train_freq`: 1 (§5 — env steps between gradient updates)
+- `gradient_steps`: 1 (§5 — gradient steps per env step)
+- `hidden_layers`: [256, 256] (actor/critic MLP dims)
 
 **Cross-field rules:**
 - `bufferSize >= batchSize * 4` (hard constraint; error blocks Continue)
 - `batchSize` must be a power of 2
 - `nEnvs` must be a power of 2
 
-**Note (discrepancy with §5):** REBUILD_SPEC §5 lists different defaults (`lr=1e-4`, `γ=0.999`, `batch=512`, `500k steps`, `4 envs`). The UX design (`stage_2_algorithm.md` §5.2) specifies the values above. The frontend form shows the UX design values. **Action required before implementation:** confirm with training-engineer which defaults the training pipeline will actually use; if they differ, the form should show `"recommended"` next to the API's actual default. This discrepancy is flagged as a deliberate deviation to resolve before merging the implementation PR.
+**Defaults (**CALL 1** — resolved 2026-06-14; rl-architect authority):** REBUILD_SPEC §5 is canonical. UX-design placeholders (`lr=3e-4`, `γ=0.99`, `batch=256`, `2M steps`, `16 envs` from stage_2_algorithm.md) are superseded. γ=0.999 is §5-justified: demand charge is a monthly signal; agent must value rewards hundreds of steps ahead. `evalFreq` is not specified in §5; 50 000 is retained as a reasonable UI default pending training-engineer guidance (non-blocking, surfaced in DV-3 note removed).
 
 ### 3.3 Baseline IDs
 
@@ -171,7 +174,7 @@ function isConfirmEnabled(state: StageTwoStoreState): boolean {
 }
 ```
 
-Note: `algorithmType` is always set (SAC is the default), so no "no algorithm selected" case.
+Note: `algorithmType` is always set (`baseline_only` is the default), so no "no algorithm selected" case.
 
 ### 3.8 POST /api/training/config — request
 
@@ -181,15 +184,18 @@ interface TrainingConfigRequest {
   algorithm_type: 'sac' | 'baseline_only';
   // Present when algorithm_type === 'sac'; absent (field omitted) when baseline_only
   sac_hyperparams?: {
-    total_steps:   number;
-    eval_freq:     number;
-    batch_size:    number;
-    learning_rate: number;
-    gamma:         number;
-    buffer_size:   number;
-    n_envs:        number;
-    tau:           number;   // constant: 0.005
-    hidden_layers: number[]; // constant: [256, 256]
+    total_steps:      number;
+    eval_freq:        number;
+    batch_size:       number;
+    learning_rate:    number;
+    gamma:            number;
+    buffer_size:      number;
+    n_envs:           number;
+    tau:              number;    // constant: 0.005   (§5)
+    ent_coef:         string;   // constant: "auto"  (§5)
+    train_freq:       number;   // constant: 1       (§5)
+    gradient_steps:   number;   // constant: 1       (§5)
+    hidden_layers:    number[]; // constant: [256, 256]
   };
   baselines: BaselineId[];   // ≥ 1 required
 }
@@ -262,7 +268,15 @@ interface AlgorithmCardProps {
 
 Selected card: `data-testid="algo-card-selected"` also present on the currently selected card.
 
-**Baseline-only notice** (`data-testid="algo-baseline-notice"`): rendered below the cards when `baseline_only` is selected.
+**SAC card — coming-soon treatment (**CALL 2** — rl-architect authority 2026-06-14):**
+> v1 ships heuristic baselines only; RL training (SAC) is deferred to a later release. The SAC card MUST carry an explicit label making this clear — NOT an un-caveated "Recommended" treatment. Exact copy:
+> - Card subtitle/badge: `"Coming soon — RL training ships in a later release"`
+> - Selecting SAC shows an informational notice: `data-testid="algo-sac-coming-soon-notice"` with text explaining that SAC will be available in a future version; the current run will evaluate baseline agents.
+> - SAC is selectable in v1 (for UI testing / forward compatibility) but the coming-soon copy is mandatory.
+>
+> **Visual prominence of SAC (PENDING USER call — see §12):** Whether SAC is the visual hero card (with coming-soon badge) or a secondary/de-emphasized "future" option is awaiting USER input relayed via team-lead. Apply the coming-soon copy now; hold final visual treatment. rl-architect's default if USER is indifferent: hero SAC + coming-soon badge.
+
+**Baseline-only notice** (`data-testid="algo-baseline-notice"`): rendered below the cards when `baseline_only` is selected. Since `baseline_only` is the v1 functional default, this notice is visible on initial render (no interaction required to trigger it).
 
 ### 4.3 `HyperparamForm`
 
@@ -442,10 +456,11 @@ Key token usages for Stage ②:
 |---|---|---|
 | DV-1 | Back button is `<span>`, not `<button>` | Consistent with stage-1 (T-A11Y-6 pattern; established PR #102) |
 | DV-2 | Confirm button uses `aria-disabled`, not HTML `disabled` | Same pattern as `StageSaveButton` (stage-1 contract); keeps button focusable for tooltip/screen reader |
-| DV-3 | Hyperparam defaults differ from REBUILD_SPEC §5 | UX design (stage_2_algorithm.md §5.2) specifies the UI defaults; §5 specifies backend training defaults. These may differ. **Must resolve with training-engineer before implementation merges.** |
-| DV-4 | τ and hiddenLayers not in v1 UI form | UX design §5.2 omits them from the per-screen layout; they are sent as constants. Surfacing deferred to v1.1. |
+| ~~DV-3~~ | ~~Hyperparam defaults differ from REBUILD_SPEC §5~~ | **RESOLVED** (CALL 1 — rl-architect authority 2026-06-14): §5 wins; defaults updated in §3.2. |
+| DV-4 | τ, ent_coef, train_freq, gradient_steps, hiddenLayers not in v1 UI form | UX design §5.2 omits them from the per-screen layout; sent as constants in POST body. Surfacing deferred to v1.1. |
 | DV-5 | COMPLETE → IN_PROGRESS on rehydrate | Same as stage-1 S2 rule; forces re-confirm on page reload to guard against stale config_hash |
 | DV-6 | Collapsed hyperparam inputs absent from DOM (not hidden) | Prevents tabbing into invisible fields; reduces DOM noise for screen readers |
+| DV-7 | Default algorithm = `baseline_only`, not `sac` | **CALL 2** (rl-architect authority 2026-06-14): v1 is heuristic-first; RL training deferred. SAC-default would route into non-functional Stage ③. SAC card carries explicit coming-soon copy. Visual prominence of SAC PENDING USER call (§12). |
 
 ---
 
@@ -463,4 +478,16 @@ Key token usages for Stage ②:
 
 ---
 
+## 12. Open questions (pending USER call — do not finalize implementation until resolved)
+
+**Q1 — SAC visual prominence (PENDING USER call, relayed via team-lead):**
+Two options for how the SAC card appears alongside the functional `Baseline only` default:
+- **Option A (rl-architect default):** SAC is the visual hero card (larger, left-first, blue border treatment) + explicit "Coming soon" badge. User sees it as the aspirational option.
+- **Option B:** SAC is de-emphasized (secondary card, greyed border, "Future" label). User sees baseline as the clear primary.
+
+Both options keep `baseline_only` as the functional default and SAC with honest coming-soon copy. Apply Option A (hero + badge) if USER is indifferent; await team-lead relay before finalizing the implementation's visual treatment.
+
+---
+
 *contracts/frontend/stage_algorithm.md — frontend-engineer, feat/frontend-stage-algorithm — 2026-06-14*
+*Amended 2026-06-14: CALL 1 (§5 defaults win — §3.2 updated); CALL 2 (baseline_only default + SAC coming-soon — §3.1, §4.2, §8 updated). Both rl-architect authority. SAC visual prominence PENDING USER call (§12).*
