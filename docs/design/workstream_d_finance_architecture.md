@@ -142,7 +142,7 @@ Schema unchanged — a different M-set + a tighter "what's populated" rule, NO `
 same estimator with a reduced, honestly-labeled output set. If a P90-ish number is ever wanted in R3
 it MUST switch to an interpolating estimator AND be tagged `indicative_low_confidence` — but the
 locked v1 call is the explicit empirical-range framing. The **convergence hint** (§13.10a) fires in
-R3 by construction. The canonical R1/R2/R3 acceptance table is finance-expert PR #107 (§6.7 ref).
+R3 by construction. The canonical R1/R2/R3 acceptance table is finance-expert PR #107 §A.0.
 
 ---
 
@@ -178,7 +178,7 @@ implementer is not an independent acceptance gate.
    of `price_path` (D3-side test).
 6. **CRN:** identical M draws across policies → per-policy metric deltas are pure dispatch; ragged
    ensemble rejected.
-7. **Three regimes (R1/R2/R3, §4; canonical table = PR #107 §6.7):** M=1 → point estimates only,
+7. **Three regimes (R1/R2/R3, §4; canonical table = PR #107 §A.0):** M=1 → point estimates only,
    banner; bootstrap M≥50 → P50/P75/P90/P95 + CI; **empirical ~10 → per-year strip + empirical P50 +
    empirical worst/best-of-N range + P(NPV<0); NO labeled P75/P90/P95/P99 or CVaR-5%** (they collapse
    to min/2nd-min at N≈10 under the locked nearest-rank estimator — absent, not faked).
