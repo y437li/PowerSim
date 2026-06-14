@@ -86,9 +86,14 @@ models:
       opex_fixed_per_kwh_year_yuan:     20.0  # ¥/kWh·yr — ≈2.8 USD/kWh·yr
       opex_var_per_mwh_yuan:             0.0  # ¥/MWh
       lifetime_years:                   12.0  # yr    — LFP calendar life at ≥80% SOH
-      cycle_life_full_equiv:          6000.0  # cycles — LFP at 0.8 EOL; 1 cycle/day × 12yr ≈ 4380; 6k gives head-room
-                                              #         DoD basis unverified (CATL LMP public spec does not state DoD);
-                                              #         stub pending vendor confirmation — if 80% DoD true full-equiv = 4800
+      cycle_life_full_equiv:          6000.0  # cycles — CONSERVATIVE STUB; NEEDS_VENDOR_INPUT (see below)
+                                              #         CATL EnerC/LMP published spec: 12,000 cycles (CATL ees Europe 2022
+                                              #         press release; prnewswire 2022-05-11) but DoD basis NOT stated in
+                                              #         any public document — bare cycle count with no test-condition qualifier.
+                                              #         Stub retains conservative calendar estimate (1 cycle/day×12yr≈4380;
+                                              #         6k with head-room) until CATL confirms DoD.
+                                              #         If 80% DoD → full-equiv=9600; if 100% DoD → full-equiv=12000.
+                                              #         Escalated to team-lead 2026-06-14 for vendor input.
       eol_soh_threshold:                 0.80 # —     — 80% remaining capacity triggers replacement
                                               #         schema bound: (0,1); Gansu default in plausible LFP range (0.7–0.9)
       replacement_cost_fraction:         0.70 # —     — cell+BMS replacement; learning-curve reduction vs original
@@ -264,7 +269,7 @@ models:
   sungrow-lfp-lc:
     # Sungrow PowerTitan ST2752UX — LFP liquid-cooled 5 MWh container system
     type: battery
-    provenance: "public; Sungrow PowerTitan ST2752UX product datasheet (2024); Sungrow investor presentations 2024 (public); CNESA China Energy Storage Market Report 2024"
+    provenance: "public; Sungrow ST2752UX-US Datasheet V15 (DS_20220225_ST2752UX-US_Datasheet_V15_EN.pdf, 2022-02-25); ENF Solar datasheet index https://www.enfsolar.com/pv/storage-system-datasheet/13161; cycle_life DoD verified 2026-06-14 (6000@80%DoD → full-equiv=4800)"
     physics:
       eta_ch:               0.970  # —   — charge efficiency; Sungrow PowerTitan round-trip ~94.1%;
                                     #       split 0.970×0.970=0.941 (non-overridable)
@@ -280,9 +285,10 @@ models:
       opex_fixed_per_kwh_year_yuan:     17.0  # ¥/kWh·yr — liquid cooling reduces cooling O&M vs air-cooled
       opex_var_per_mwh_yuan:             0.0  # ¥/MWh
       lifetime_years:                   15.0  # yr    — Sungrow 15-year warranty basis
-      cycle_life_full_equiv:          8000.0  # cycles — Sungrow public spec; liquid cooling enables higher cycle count
-                                              #         DoD basis unverified (Sungrow ST2752UX datasheet does not state DoD);
-                                              #         stub pending vendor confirmation — if 80% DoD true full-equiv = 6400
+      cycle_life_full_equiv:          4800.0  # cycles — Sungrow ST2752UX-US Datasheet V15 (2022-02-25): 6000@80%DoD
+                                              #         true full-equiv = 6000 × 0.80 = 4800 (DoD basis VERIFIED)
+                                              #         source: Sungrow DS_20220225_ST2752UX-US_Datasheet_V15_EN.pdf
+                                              #         indexed at ENF Solar https://www.enfsolar.com/pv/storage-system-datasheet/13161
       eol_soh_threshold:                 0.80 # —
       replacement_cost_fraction:         0.60 # —
       residual_value_fraction:           0.05 # —
