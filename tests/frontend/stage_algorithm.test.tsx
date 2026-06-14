@@ -5,10 +5,20 @@
  * REBUILD_SPEC: §5 (training methodology)
  * LINEAGE: D32 §(a)/(c) (algorithm registry + five-stage spine)
  *
- * AMENDED 2026-06-14 (rl-architect authority):
+ * AMENDED 2026-06-14 Round 1 (rl-architect authority):
  *   CALL 1 — §5 defaults win (lr=1e-4, γ=0.999, batch=512, 500k steps, 4 envs,
  *             τ=0.005, ent_coef=auto, train_freq=1, gradient_steps=1)
  *   CALL 2 — baseline_only is the v1 functional default; SAC carries coming-soon copy
+ *
+ * AMENDED 2026-06-14 Round 2 (frontend-reviewer C1/C2/C3 + USER Option B):
+ *   C1 — POST body field names → RunConfig canonical (total_env_steps, eval_every_steps,
+ *         lr, hidden_sizes); pending serving contract contracts/serving/training_config.md
+ *   C2 — gamma REMOVED from SacHyperparams (LOCKED constant 0.999, training_pipeline.md §3.1);
+ *         T-HYPER-5/6 repurposed; gamma appears only in POST body constants
+ *   C3 — nEnvs 256 cap removed; valid = power of 2, ≥ 1; UI cap pending training-engineer
+ *   TQ12 — isConfirmEnabled gates hyperparam errors on algorithmType=sac (§3.7)
+ *   OPT-B — SAC secondary/de-emphasized; Baseline-only is visual primary (§4.2)
+ *   evalFreq default: 50_000 → 10_000 (RunConfig eval_every_steps canonical)
  *
  * Vitest + React Testing Library v16
  */
@@ -45,18 +55,20 @@ function makeFetchFail(status = 500, body = { error: 'Internal error' }) {
   );
 }
 
-// ── §5-canonical defaults (CALL 1) ─────────────────────────────────────────
-// REBUILD_SPEC §5: lr 1e-4, γ 0.999, batch 512, buffer 1e6, τ 0.005,
-//                 ent_coef auto, train_freq 1, gradient_steps 1, 500k steps, 4 envs
+// ── §5-canonical defaults (CALL 1, Round 2 amendments) ────────────────────
+// REBUILD_SPEC §5 / training_pipeline.md §3 RunConfig:
+//   lr=1e-4, batch=512, buffer=1e6, 500k steps, 4 envs (DummyVecEnv)
+//   evalFreq=10_000 (RunConfig eval_every_steps default)
+//   gamma=0.999 LOCKED — NOT in this interface (constant only, C2)
 
 const DEFAULT_HYPERPARAMS = {
   totalSteps:   500_000,     // §5: 500k timesteps
-  evalFreq:     50_000,      // not in §5; retained UI default
+  evalFreq:     10_000,      // RunConfig eval_every_steps default (Round 2)
   batchSize:    512,         // §5: batch 512
-  learningRate: 1e-4,        // §5: lr 1e-4
-  gamma:        0.999,       // §5: γ 0.999 (monthly demand-charge signal)
+  learningRate: 1e-4,        // §5: lr 1e-4  (→ POST body field: lr)
   bufferSize:   1_000_000,   // §5: buffer 1e6
-  nEnvs:        4,           // §5: 4 parallel envs (DummyVecEnv)
+  nEnvs:        4,           // CALL 1: 4 parallel envs (DummyVecEnv)
+  // gamma: intentionally absent — LOCKED constant 0.999 (training_pipeline.md §3.1, C2)
 };
 
 // ── Default helpers ─────────────────────────────────────────────────────────
@@ -164,16 +176,18 @@ describe('§T2 Initial render — baseline_only is the v1 functional default (CA
     expect(importMin.checked).toBe(false);
   });
 
-  it('[T-INIT-4] hyperparam section ABSENT on initial render (baseline_only mode); baseline notice shown', () => {
+  it('[T-INIT-4] hyperparam section ABSENT on initial render (baseline_only); baseline notice shown; gamma never rendered', () => {
     renderStage();
 
     // CALL 2: default is baseline_only → HyperparamForm must not be in DOM
     expect(screen.queryByTestId('hyperparam-section')).toBeNull();
     // Baseline-only notice visible immediately (no interaction needed)
     expect(screen.getByTestId('algo-baseline-notice')).toBeTruthy();
+    // C2: gamma is a LOCKED constant — no gamma input anywhere in the form
+    expect(screen.queryByTestId('hyperparam-gamma')).toBeNull();
   });
 
-  it('[T-INIT-5] SAC card has coming-soon copy (data-testid="algo-sac-coming-soon-notice" NOT shown until SAC selected)', () => {
+  it('[T-INIT-5] SAC card has coming-soon copy; notice not shown until SAC selected', () => {
     renderStage();
     // Coming-soon notice only appears when SAC is actively selected
     expect(screen.queryByTestId('algo-sac-coming-soon-notice')).toBeNull();
@@ -191,6 +205,14 @@ describe('§T2 Initial render — baseline_only is the v1 functional default (CA
   it('[T-INIT-7] stage-two-algorithm testid exists at root', () => {
     renderStage();
     expect(screen.getByTestId('stage-two-algorithm')).toBeTruthy();
+  });
+
+  it('[T-INIT-8] SAC card has future-badge element (Option B: SAC is secondary/de-emphasized)', () => {
+    // Option B (USER decision 2026-06-14): SAC is a secondary "future capability" entry
+    renderStage();
+    expect(screen.getByTestId('algo-card-sac-future-badge')).toBeTruthy();
+    // The baseline-only card should NOT have a future-badge
+    expect(screen.queryByTestId('algo-card-baseline-only-future-badge')).toBeNull();
   });
 });
 
@@ -262,18 +284,19 @@ describe('§T3 Algorithm card interaction', () => {
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §T4 — Hyperparam validation (pure getHyperparamErrors; §5-canonical defaults)
+//        Note: gamma is NOT in SacHyperparams — LOCKED constant 0.999 (C2)
 // ══════════════════════════════════════════════════════════════════════════════
 
 describe('§T4 Hyperparam validation', () => {
-  it('[T-HYPER-1] getHyperparamErrors returns empty for all §5-canonical defaults (CALL 1)', () => {
-    // Hand-computed: all §5 defaults are within their valid ranges:
+  it('[T-HYPER-1] getHyperparamErrors returns empty for all §5-canonical defaults (CALL 1, Round 2)', () => {
+    // Hand-computed: all 6 user-editable §5 defaults within valid ranges:
     // totalSteps=500_000 ≥ 100_000 ✓ (×5 the minimum)
-    // evalFreq=50_000 ≥ 1_000 ✓
+    // evalFreq=10_000 ≥ 1_000 ✓ (RunConfig eval_every_steps canonical)
     // batchSize=512 is power-of-2, 32–4096 ✓ (2^9)
     // learningRate=1e-4 in [1e-5, 1e-2] ✓ (middle of range)
-    // gamma=0.999 in (0, 1] ✓ (§5-justified: monthly demand charge signal)
     // bufferSize=1_000_000 ≥ 512×4=2048 ✓ (×488 the minimum)
-    // nEnvs=4 is power-of-2, 1–256 ✓ (2^2)
+    // nEnvs=4 is power-of-2, ≥ 1 ✓ (2^2; no 256 cap — C3)
+    // gamma: NOT in DEFAULT_HYPERPARAMS — LOCKED constant (C2)
     const errors = getHyperparamErrors(DEFAULT_HYPERPARAMS);
     expect(errors).toHaveLength(0);
   });
@@ -297,16 +320,22 @@ describe('§T4 Hyperparam validation', () => {
     expect(errors.filter(e => e.field === 'learningRate')).toHaveLength(1);
   });
 
-  it('[T-HYPER-5] gamma = 0 (boundary: must be strictly > 0)', () => {
-    // gamma = 0 violates (0, 1] — no discounting at all is invalid
-    const errors = getHyperparamErrors({ ...DEFAULT_HYPERPARAMS, gamma: 0 });
-    expect(errors.filter(e => e.field === 'gamma')).toHaveLength(1);
+  it('[T-HYPER-5] gamma is NOT a SacHyperparams field; getHyperparamErrors produces no gamma key (C2)', () => {
+    // C2 fix: gamma is LOCKED constant 0.999 (training_pipeline.md §3.1).
+    // getHyperparamErrors() does not accept or return gamma errors.
+    // DEFAULT_HYPERPARAMS has no 'gamma' key — confirm absence.
+    const errors = getHyperparamErrors(DEFAULT_HYPERPARAMS);
+    const gammaErrors = errors.filter(e => e.field === ('gamma' as never));
+    expect(gammaErrors).toHaveLength(0);
+    expect(Object.prototype.hasOwnProperty.call(DEFAULT_HYPERPARAMS, 'gamma')).toBe(false);
   });
 
-  it('[T-HYPER-6] gamma = 1.0 (boundary: valid, inclusive upper)', () => {
-    // gamma = 1 is valid (discount factor of 1 = no discounting = valid configuration)
-    const errors = getHyperparamErrors({ ...DEFAULT_HYPERPARAMS, gamma: 1.0 });
-    expect(errors.filter(e => e.field === 'gamma')).toHaveLength(0);
+  it('[T-HYPER-6] nEnvs=512 is VALID — no 256 cap (C3; RunConfig power-of-2 ≥ 1 only)', () => {
+    // C3 fix: removed incorrect 256 cap from §3.2.
+    // 512 = 2^9 is a power of 2 ≥ 1 → valid per RunConfig (training_pipeline.md §3).
+    // Hand-computed: 512 is 2^9 ✓; 512 ≥ 1 ✓; no explicit max in RunConfig.
+    const errors = getHyperparamErrors({ ...DEFAULT_HYPERPARAMS, nEnvs: 512 });
+    expect(errors.filter(e => e.field === 'nEnvs')).toHaveLength(0);
   });
 
   it('[T-HYPER-7] bufferSize too small: < batchSize × 4', () => {
@@ -327,26 +356,31 @@ describe('§T4 Hyperparam validation', () => {
     expect(errors.filter(e => e.field === 'nEnvs')).toHaveLength(1);
   });
 
-  it('[T-HYPER-10] nEnvs power-of-2 but > 256 produces error', () => {
-    // nEnvs=512 > 256 → out of valid range
-    const errors = getHyperparamErrors({ ...DEFAULT_HYPERPARAMS, nEnvs: 512 });
-    expect(errors.filter(e => e.field === 'nEnvs')).toHaveLength(1);
+  it('[T-HYPER-10] nEnvs=4096 is VALID (C3: no cap; RunConfig §7 canonical vmap value)', () => {
+    // C3 fix: removed incorrect 256 cap.
+    // 4096 = 2^12 is a power of 2 ≥ 1 → valid per RunConfig.
+    // Hand-computed: 4096 = 2^12 ✓; 4096 ≥ 1 ✓; §7 "vmap 4096 envs" is the canonical value.
+    const errors = getHyperparamErrors({ ...DEFAULT_HYPERPARAMS, nEnvs: 4096 });
+    expect(errors.filter(e => e.field === 'nEnvs')).toHaveLength(0);
   });
 
   it('[T-HYPER-11] nEnvs = 1 (minimum valid power-of-2)', () => {
-    // nEnvs=1 = 2^0 → valid
+    // nEnvs=1 = 2^0 → valid (minimum per RunConfig "power of 2 ≥ 1")
     const errors = getHyperparamErrors({ ...DEFAULT_HYPERPARAMS, nEnvs: 1 });
     expect(errors.filter(e => e.field === 'nEnvs')).toHaveLength(0);
   });
 
-  it('[T-HYPER-12] multiple errors reported simultaneously', () => {
-    // Both totalSteps and gamma invalid simultaneously
-    // totalSteps=50_000 < 100_000; gamma=1.5 > 1
-    const errors = getHyperparamErrors({ ...DEFAULT_HYPERPARAMS, totalSteps: 50_000, gamma: 1.5 });
+  it('[T-HYPER-12] multiple errors reported simultaneously (gamma NOT included — C2)', () => {
+    // Both totalSteps and nEnvs invalid simultaneously
+    // totalSteps=50_000 < 100_000 → invalid; nEnvs=15 not a power of 2 → invalid
+    // gamma is excluded (it is not a user-editable field)
+    const errors = getHyperparamErrors({ ...DEFAULT_HYPERPARAMS, totalSteps: 50_000, nEnvs: 15 });
     expect(errors.length).toBeGreaterThanOrEqual(2);
     const fields = errors.map(e => e.field);
     expect(fields).toContain('totalSteps');
-    expect(fields).toContain('gamma');
+    expect(fields).toContain('nEnvs');
+    // gamma must NOT appear as a reported error field
+    expect(fields).not.toContain('gamma');
   });
 
   it('[T-HYPER-13] validation error shown inline; role=alert; confirm button disabled', () => {
@@ -391,7 +425,7 @@ describe('§T4 Hyperparam validation', () => {
     expect(hint.textContent).toMatch(/16/);
   });
 
-  it('[T-HYPER-15] reset to defaults restores §5-canonical values; clears errors', () => {
+  it('[T-HYPER-15] reset to defaults restores §5-canonical values (lr=1e-4); clears errors', () => {
     renderStage();
     switchToSac();
 
@@ -409,7 +443,7 @@ describe('§T4 Hyperparam validation', () => {
     // Reset
     fireEvent.click(screen.getByTestId('hyperparam-reset'));
 
-    // Error cleared; value restored to §5 default: 1e-4
+    // Error cleared; value restored to §5 default: 1e-4 (not 3e-4 — CALL 1)
     expect(screen.queryByTestId('hyperparam-error-learningRate')).toBeNull();
     const restoredLr = (screen.getByTestId('hyperparam-learningRate') as HTMLInputElement).value;
     expect(parseFloat(restoredLr)).toBeCloseTo(1e-4, 6);
@@ -430,7 +464,6 @@ describe('§T4 Hyperparam validation', () => {
   it('[T-HYPER-18] editing SAC hyperparam while COMPLETE transitions to STALE', async () => {
     makeFetchOk();
     renderStage();
-    // Confirm with SAC to reach a SAC-based COMPLETE state
     switchToSac();
 
     await act(async () => {
@@ -450,6 +483,43 @@ describe('§T4 Hyperparam validation', () => {
     fireEvent.blur(totalStepsInput);
 
     expect(useStageAlgorithmStore.getState().stageState).toBe('STALE');
+  });
+
+  it('[T-HYPER-19] gamma input absent from DOM even in SAC mode (constant, not user-editable, C2)', () => {
+    renderStage();
+    switchToSac();
+
+    const header = screen.queryByTestId('hyperparam-header');
+    if (header && header.getAttribute('aria-expanded') === 'false') {
+      fireEvent.click(header);
+    }
+
+    // gamma is a LOCKED constant; must never render a user-editable input
+    expect(screen.queryByTestId('hyperparam-gamma')).toBeNull();
+  });
+
+  it('[T-HYPER-20] baseline_only + invalid SAC hyperparams → confirm still enabled (TQ12, §3.7)', () => {
+    // §3.7: isConfirmEnabled gates hyperparam errors on algorithmType === 'sac'.
+    // A user who set invalid params in SAC mode then switched to baseline_only
+    // must still be able to confirm — hyperparams are not sent in baseline_only POSTs.
+    renderStage();
+
+    // Set an invalid learningRate while in SAC mode
+    switchToSac();
+    const header = screen.queryByTestId('hyperparam-header');
+    if (header && header.getAttribute('aria-expanded') === 'false') {
+      fireEvent.click(header);
+    }
+    const lrInput = screen.getByTestId('hyperparam-learningRate');
+    fireEvent.change(lrInput, { target: { value: '999' } });
+    fireEvent.blur(lrInput);
+
+    // Confirm disabled in SAC mode (hyperparam error blocks it)
+    expect(screen.getByTestId('stage-two-confirm').getAttribute('aria-disabled')).toBe('true');
+
+    // Switch back to baseline_only — confirm must re-enable despite stale invalid LR in store
+    fireEvent.click(screen.getByTestId('algo-card-baseline-only'));
+    expect(screen.getByTestId('stage-two-confirm').getAttribute('aria-disabled')).toBe('false');
   });
 });
 
@@ -500,7 +570,6 @@ describe('§T5 HyperparamForm collapsed / expanded state', () => {
     if (header.getAttribute('aria-expanded') === 'true') {
       fireEvent.click(header);
     }
-    // Collapsed header should contain a summary of key params (steps, LR, gamma, envs)
     const text = header.textContent ?? '';
     expect(text.length).toBeGreaterThan(0);
   });
@@ -567,7 +636,6 @@ describe('§T6 Baseline selection', () => {
   it('[T-BASE-7] baseline-only mode + no baselines: confirm still disabled', () => {
     renderStage();
 
-    // Already in baseline_only mode (default); deselect all
     fireEvent.click(screen.getByTestId('baseline-checkbox-do_nothing'));
     fireEvent.click(screen.getByTestId('baseline-checkbox-peak_shave'));
 
@@ -599,7 +667,6 @@ describe('§T7 Confirm & Continue — happy path', () => {
     makeFetchOk();
     renderStage();
 
-    // Default state: baseline_only selected, do_nothing + peak_shave baselines
     await act(async () => {
       fireEvent.click(screen.getByTestId('stage-two-confirm'));
     });
@@ -611,17 +678,17 @@ describe('§T7 Confirm & Continue — happy path', () => {
 
     const body = JSON.parse(opts.body);
     expect(body.algorithm_type).toBe('baseline_only');
-    // sac_hyperparams must be absent for baseline_only
+    // sac_hyperparams must be absent for baseline_only (field must not exist)
     expect(Object.prototype.hasOwnProperty.call(body, 'sac_hyperparams')).toBe(false);
     expect(body.baselines).toContain('do_nothing');
     expect(body.baselines).toContain('peak_shave');
   });
 
-  it('[T-CONFIRM-2] SAC confirm fires POST with §5-canonical hyperparams + all constants', async () => {
+  it('[T-CONFIRM-2] SAC confirm fires POST with RunConfig canonical field names + all constants (C1, C2)', async () => {
     makeFetchOk();
     renderStage();
 
-    switchToSac(); // switch from baseline_only default to SAC
+    switchToSac();
 
     await act(async () => {
       fireEvent.click(screen.getByTestId('stage-two-confirm'));
@@ -634,19 +701,30 @@ describe('§T7 Confirm & Continue — happy path', () => {
     expect(body.sac_hyperparams).toBeDefined();
 
     const h = body.sac_hyperparams;
-    // §5-canonical user-visible defaults (CALL 1):
-    expect(h.total_steps).toBe(500_000);
-    expect(h.batch_size).toBe(512);
-    expect(h.learning_rate).toBeCloseTo(1e-4, 6);
+
+    // C1: RunConfig canonical field names must be present
+    expect(typeof h.total_env_steps).toBe('number');    // NOT total_steps
+    expect(typeof h.eval_every_steps).toBe('number');   // NOT eval_freq
+    expect(typeof h.batch_size).toBe('number');
+    expect(typeof h.lr).toBe('number');                 // NOT learning_rate
+    expect(typeof h.buffer_size).toBe('number');
+    expect(typeof h.n_envs).toBe('number');
+
+    // C1: old field names must NOT be present
+    expect(Object.prototype.hasOwnProperty.call(h, 'total_steps')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(h, 'eval_freq')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(h, 'learning_rate')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(h, 'hidden_layers')).toBe(false);
+
+    // C2: gamma must appear as a LOCKED CONSTANT (not from user input), value 0.999
     expect(h.gamma).toBeCloseTo(0.999, 4);
-    expect(h.buffer_size).toBe(1_000_000);
-    expect(h.n_envs).toBe(4);
-    // §5 constants:
+
+    // Other constants
     expect(h.tau).toBeCloseTo(0.005, 4);
     expect(h.ent_coef).toBe('auto');
     expect(h.train_freq).toBe(1);
     expect(h.gradient_steps).toBe(1);
-    expect(h.hidden_layers).toEqual([256, 256]);
+    expect(h.hidden_sizes).toEqual([256, 256]);          // NOT hidden_layers
   });
 
   it('[T-CONFIRM-3] on 200 response: stageState → COMPLETE; onContinue() called', async () => {
@@ -773,7 +851,7 @@ describe('§T8 Confirm & Continue — API error + Retry', () => {
   });
 
   it('[T-API-ERR-4] POST 422 (validation error) → error shown; stageState not COMPLETE', async () => {
-    makeFetchFail(422, { error: 'Invalid config', field: 'total_steps', message: 'Too low' });
+    makeFetchFail(422, { error: 'Invalid config', field: 'total_env_steps', message: 'Too low' });
     renderStage();
 
     await act(async () => {
@@ -801,12 +879,10 @@ describe('§T9 Back button', () => {
   it('[T-BACK-2] clicking back calls onBack(); store state preserved', () => {
     const { onBack } = renderStage();
 
-    // Switch to SAC
     switchToSac();
     fireEvent.click(screen.getByTestId('stage-two-back'));
 
     expect(onBack).toHaveBeenCalledOnce();
-    // algorithmType preserved after back navigation
     expect(useStageAlgorithmStore.getState().algorithmType).toBe('sac');
   });
 });
@@ -816,7 +892,6 @@ describe('§T9 Back button', () => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 describe('§T10 STALE state transitions (Class A edit rule)', () => {
-  /** Reach COMPLETE via baseline_only (the functional v1 default). */
   async function reachCompleteBaseline() {
     makeFetchOk();
     const result = renderStage();
@@ -829,7 +904,6 @@ describe('§T10 STALE state transitions (Class A edit rule)', () => {
     return result;
   }
 
-  /** Reach COMPLETE via SAC (switch first, then confirm). */
   async function reachCompleteSac() {
     makeFetchOk();
     const result = renderStage();
@@ -858,7 +932,6 @@ describe('§T10 STALE state transitions (Class A edit rule)', () => {
   it('[T-STALE-3] COMPLETE (SAC) → STALE on hyperparam field change', async () => {
     await reachCompleteSac();
 
-    // Already in SAC mode; expand hyperparam form
     const header = screen.queryByTestId('hyperparam-header');
     if (header && header.getAttribute('aria-expanded') === 'false') {
       fireEvent.click(header);
@@ -874,11 +947,9 @@ describe('§T10 STALE state transitions (Class A edit rule)', () => {
   it('[T-STALE-4] STALE → COMPLETE after a new successful confirm', async () => {
     await reachCompleteBaseline();
 
-    // Trigger STALE
     fireEvent.click(screen.getByTestId('baseline-checkbox-import_minimiser'));
     expect(useStageAlgorithmStore.getState().stageState).toBe('STALE');
 
-    // Re-confirm
     makeFetchOk();
     await act(async () => {
       fireEvent.click(screen.getByTestId('stage-two-confirm'));
@@ -911,20 +982,21 @@ describe('§T11 Store persistence and rehydration', () => {
     expect(useStageAlgorithmStore.getState().saveError).toBeNull();
   });
 
-  it('[T-PERSIST-3] rehydrate with COMPLETE immediately downgrades to IN_PROGRESS', () => {
+  it('[T-PERSIST-3] onRehydrateStorage: COMPLETE → IN_PROGRESS via the real persist callback', () => {
+    // Exercises the actual Zustand persist `onRehydrateStorage` hook, not a manual setState.
+    // The store must expose an `onRehydrate(state)` method that the middleware calls on hydration.
+    // Calling it with stageState='COMPLETE' must downgrade to 'IN_PROGRESS' — forces re-confirm
+    // on page reload so the persisted config_hash must match the current Stage ① config.
     const store = useStageAlgorithmStore;
-    store.setState({ stageState: 'COMPLETE' });
-    // Simulate onRehydrateStorage downgrade
-    if (store.getState().stageState === 'COMPLETE') {
-      store.setState({ stageState: 'IN_PROGRESS' });
-    }
+    const hydratedState = { ...store.getState(), stageState: 'COMPLETE' as const };
+    store.getState().onRehydrate(hydratedState);
     expect(store.getState().stageState).toBe('IN_PROGRESS');
   });
 
   it('[T-PERSIST-4] reset() returns all persisted state to initial values (CALL 2: default baseline_only)', () => {
     const store = useStageAlgorithmStore.getState();
     store.setAlgorithmType('sac');
-    store.toggleBaseline('do_nothing'); // deselect
+    store.toggleBaseline('do_nothing');
 
     store.reset();
 
@@ -1004,7 +1076,7 @@ describe('§T12 Accessibility', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// §T13 — POST body schema (contract golden-example validation, CALL 1 + CALL 2)
+// §T13 — POST body schema (contract golden-example validation, all amendments)
 // ══════════════════════════════════════════════════════════════════════════════
 
 describe('§T13 POST body schema (contract golden-example validation)', () => {
@@ -1012,7 +1084,6 @@ describe('§T13 POST body schema (contract golden-example validation)', () => {
     makeFetchOk();
     renderStage();
 
-    // Default is baseline_only — no switchToSac needed
     await act(async () => {
       fireEvent.click(screen.getByTestId('stage-two-confirm'));
     });
@@ -1021,21 +1092,18 @@ describe('§T13 POST body schema (contract golden-example validation)', () => {
       (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body,
     );
 
-    // Contract §3.8 baseline_only shape:
     expect(body.algorithm_type).toBe('baseline_only');
-    // sac_hyperparams must be absent (not just null — the field itself must not exist)
+    // sac_hyperparams must be absent (field must not exist — not just null)
     expect(Object.prototype.hasOwnProperty.call(body, 'sac_hyperparams')).toBe(false);
     expect(Array.isArray(body.baselines)).toBe(true);
     expect(body.baselines.length).toBeGreaterThanOrEqual(1);
-    // Default baselines: do_nothing + peak_shave
     expect(body.baselines).toContain('do_nothing');
     expect(body.baselines).toContain('peak_shave');
   });
 
-  it('[T-BODY-2] SAC body matches contract §3.8 golden example with §5-canonical values (CALL 1)', async () => {
+  it('[T-BODY-2] SAC body matches §3.8 golden — RunConfig names + CALL 1 values + C2 gamma constant', async () => {
     makeFetchOk();
     renderStage();
-
     switchToSac();
 
     await act(async () => {
@@ -1046,51 +1114,50 @@ describe('§T13 POST body schema (contract golden-example validation)', () => {
       (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body,
     );
 
-    // Contract §3.8 SAC shape (CALL 1 canonical values):
     expect(body.algorithm_type).toBe('sac');
     expect(typeof body.sac_hyperparams).toBe('object');
 
     const h = body.sac_hyperparams;
-    // All 7 user-visible fields present:
-    expect(typeof h.total_steps).toBe('number');
-    expect(typeof h.eval_freq).toBe('number');
+
+    // C1 fix: RunConfig canonical field names (training_pipeline.md §3)
+    // 6 user-editable fields:
+    expect(typeof h.total_env_steps).toBe('number');    // NOT total_steps
+    expect(typeof h.eval_every_steps).toBe('number');   // NOT eval_freq
     expect(typeof h.batch_size).toBe('number');
-    expect(typeof h.learning_rate).toBe('number');
-    expect(typeof h.gamma).toBe('number');
+    expect(typeof h.lr).toBe('number');                 // NOT learning_rate
     expect(typeof h.buffer_size).toBe('number');
     expect(typeof h.n_envs).toBe('number');
-    // §5 constants present:
+    // 6 constants (RunConfig canonical names):
+    expect(typeof h.gamma).toBe('number');              // C2: LOCKED constant
     expect(typeof h.tau).toBe('number');
     expect(typeof h.ent_coef).toBe('string');
     expect(typeof h.train_freq).toBe('number');
     expect(typeof h.gradient_steps).toBe('number');
-    expect(Array.isArray(h.hidden_layers)).toBe(true);
+    expect(Array.isArray(h.hidden_sizes)).toBe(true);  // NOT hidden_layers
 
-    // Golden example values (§5-canonical, CALL 1):
-    // total_steps = 500_000 (§5: 500k timesteps)
-    // eval_freq = 50_000
-    // batch_size = 512 (§5: batch 512)
-    // learning_rate ≈ 1e-4 = 0.0001 (§5: lr 1e-4)
-    // gamma = 0.999 (§5: γ 0.999, monthly demand-charge signal)
-    // buffer_size = 1_000_000 (§5: buffer 1e6)
-    // n_envs = 4 (§5: 4 parallel envs DummyVecEnv)
-    // tau = 0.005 (§5: τ 0.005)
-    // ent_coef = "auto" (§5: ent_coef="auto")
-    // train_freq = 1 (§5: train_freq 1)
-    // gradient_steps = 1 (§5: gradient_steps 1)
-    // hidden_layers = [256, 256]
-    expect(h.total_steps).toBe(500_000);
-    expect(h.eval_freq).toBe(50_000);
+    // C1: old field names must NOT be present
+    expect(Object.prototype.hasOwnProperty.call(h, 'total_steps')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(h, 'eval_freq')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(h, 'learning_rate')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(h, 'hidden_layers')).toBe(false);
+
+    // Golden example values (CALL 1 + Round 2 amendments):
+    // total_env_steps=500_000 (§5); eval_every_steps=10_000 (RunConfig default);
+    // batch_size=512 (§5); lr≈1e-4 (§5); buffer_size=1_000_000 (§5); n_envs=4 (CALL 1 DummyVecEnv)
+    // gamma=0.999 (LOCKED constant — C2); tau=0.005; ent_coef="auto"; train_freq=1; gradient_steps=1
+    // hidden_sizes=[256,256]
+    expect(h.total_env_steps).toBe(500_000);
+    expect(h.eval_every_steps).toBe(10_000);
     expect(h.batch_size).toBe(512);
-    expect(h.learning_rate).toBeCloseTo(1e-4, 6);
-    expect(h.gamma).toBeCloseTo(0.999, 4);
+    expect(h.lr).toBeCloseTo(1e-4, 6);
     expect(h.buffer_size).toBe(1_000_000);
     expect(h.n_envs).toBe(4);
+    expect(h.gamma).toBeCloseTo(0.999, 4);
     expect(h.tau).toBeCloseTo(0.005, 4);
     expect(h.ent_coef).toBe('auto');
     expect(h.train_freq).toBe(1);
     expect(h.gradient_steps).toBe(1);
-    expect(h.hidden_layers).toEqual([256, 256]);
+    expect(h.hidden_sizes).toEqual([256, 256]);
 
     expect(Array.isArray(body.baselines)).toBe(true);
     expect(body.baselines.length).toBeGreaterThanOrEqual(1);
@@ -1135,5 +1202,25 @@ describe('§T14 lockStage / unlockStage propagation', () => {
     );
     expect(screen.getByTestId('stage-two-locked')).toBeTruthy();
     expect(screen.queryByTestId('stage-two-content')).toBeNull();
+  });
+
+  it('[T-LOCK-PROP-4] false → true → false stageOneComplete cycle: content visible after re-enable', () => {
+    // Verifies the LOCKED flip false→true→false cycle (TQ13 reviewer requirement)
+    const { rerender } = render(
+      <StageTwoAlgorithm stageOneComplete={true} onBack={vi.fn()} onContinue={vi.fn()} />,
+    );
+    expect(screen.getByTestId('stage-two-content')).toBeTruthy();
+
+    rerender(
+      <StageTwoAlgorithm stageOneComplete={false} onBack={vi.fn()} onContinue={vi.fn()} />,
+    );
+    expect(screen.getByTestId('stage-two-locked')).toBeTruthy();
+
+    // Re-enable Stage ①: Stage ② content must be accessible again (not stuck LOCKED)
+    rerender(
+      <StageTwoAlgorithm stageOneComplete={true} onBack={vi.fn()} onContinue={vi.fn()} />,
+    );
+    expect(screen.getByTestId('stage-two-content')).toBeTruthy();
+    expect(screen.queryByTestId('stage-two-locked')).toBeNull();
   });
 });

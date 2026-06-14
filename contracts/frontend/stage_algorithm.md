@@ -73,28 +73,32 @@ Default on first visit: `'baseline_only'` (**CALL 2** — heuristic-first v1; rl
 ```typescript
 interface SacHyperparams {
   totalSteps:   number;   // Total env steps.   Default: 500_000.    Valid: ≥ 100_000
-  evalFreq:     number;   // Eval every N steps. Default: 50_000.    Valid: ≥ 1_000
+  evalFreq:     number;   // Eval every N steps. Default: 10_000.    Valid: ≥ 1_000
   batchSize:    number;   // Samples per update. Default: 512.        Valid: power of 2, 32–4096
   learningRate: number;   // Adam LR.            Default: 1e-4.       Valid: 1e-5 ≤ lr ≤ 1e-2
-  gamma:        number;   // Reward discount.    Default: 0.999.      Valid: 0 < γ ≤ 1
   bufferSize:   number;   // Replay buffer cap.  Default: 1_000_000.  Valid: ≥ batchSize × 4
-  nEnvs:        number;   // Vmapped env count.  Default: 4.          Valid: power of 2, 1–256
+  nEnvs:        number;   // Vmapped env count.  Default: 4.          Valid: power of 2, ≥ 1
 }
 ```
 
+**`gamma` is NOT user-editable.** It is a LOCKED constant (training_pipeline.md §3.1): "gamma MUST be 0.999. Any PR that lowers it requires a new rl-architect DECISION (demand charge is a monthly signal; §5 'Why γ=0.999')." Sent in the POST body as a constant; no form field rendered.
+
 Constants sent to API (not surfaced in v1 UI):
+- `gamma`: 0.999 (**LOCKED** — training_pipeline.md §3.1; cannot be user-edited without rl-architect DECISION)
 - `tau`: 0.005 (§5 τ — target network soft-update)
 - `ent_coef`: `"auto"` (§5 — entropy coefficient; auto-tuned during training)
 - `train_freq`: 1 (§5 — env steps between gradient updates)
 - `gradient_steps`: 1 (§5 — gradient steps per env step)
-- `hidden_layers`: [256, 256] (actor/critic MLP dims)
+- `hidden_sizes`: [256, 256] (actor/critic MLP dims; RunConfig field name `hidden_sizes`)
 
 **Cross-field rules:**
 - `bufferSize >= batchSize * 4` (hard constraint; error blocks Continue)
 - `batchSize` must be a power of 2
 - `nEnvs` must be a power of 2
 
-**Defaults (**CALL 1** — resolved 2026-06-14; rl-architect authority):** REBUILD_SPEC §5 is canonical. UX-design placeholders (`lr=3e-4`, `γ=0.99`, `batch=256`, `2M steps`, `16 envs` from stage_2_algorithm.md) are superseded. γ=0.999 is §5-justified: demand charge is a monthly signal; agent must value rewards hundreds of steps ahead. `evalFreq` is not specified in §5; 50 000 is retained as a reasonable UI default pending training-engineer guidance (non-blocking, surfaced in DV-3 note removed).
+**nEnvs cap:** RunConfig (training_pipeline.md §3) defines `n_envs` as "MUST be a power of 2 ≥ 1; implementations MAY reduce for CPU-only runs." No explicit maximum is stated (canonical JAX vmap target is 4096). The UI shows a default of 4 (DummyVecEnv — CALL 1) and validates power-of-2 ≥ 1 only; an explicit upper bound is pending training-engineer confirmation and will be locked before implementation.
+
+**Defaults (CALL 1 — resolved 2026-06-14; rl-architect authority):** REBUILD_SPEC §5 is canonical. UX-design placeholders (`lr=3e-4`, `γ=0.99`, `batch=256`, `2M steps`, `16 envs` from stage_2_algorithm.md) are superseded. `evalFreq` default: 10 000 (matches RunConfig `eval_every_steps` in training_pipeline.md §3).
 
 ### 3.3 Baseline IDs
 
@@ -166,9 +170,16 @@ Computed from store state (not persisted). The `getHyperparamErrors(hyperparams:
 
 ```typescript
 function isConfirmEnabled(state: StageTwoStoreState): boolean {
+  // Hyperparam errors only block confirm in SAC mode — hyperparams are not
+  // sent in baseline_only POST bodies. A user who set invalid params in SAC mode
+  // then switched to baseline_only must still be able to confirm.
+  const hyperparamsOk =
+    state.algorithmType !== 'sac' ||
+    getHyperparamErrors(state.hyperparams).length === 0;
+
   return (
     state.selectedBaselines.length >= 1 &&
-    getHyperparamErrors(state.hyperparams).length === 0 &&
+    hyperparamsOk &&
     !state.saveInProgress
   );
 }
@@ -178,24 +189,31 @@ Note: `algorithmType` is always set (`baseline_only` is the default), so no "no 
 
 ### 3.8 POST /api/training/config — request
 
+**Field names match `RunConfig` in `training_pipeline.md §3` exactly (C1 fix — frontend-reviewer Round 1).**
+
+> **Serving contract dependency:** `POST /api/training/config` does not yet have a serving-side contract (serving-engineer). Per D37 + D32(b), wizard→canonical-config assembly is single server-side. A `contracts/serving/training_config.md` (the stage-② analog of `site_assemble.md`) is required before implementation — it will document the server-side assembly, validation, and response. The field names below are determined by `RunConfig` (training_pipeline.md §3) regardless.
+
 ```typescript
 // POST /api/training/config
+// Body field names must match RunConfig (training_pipeline.md §3) exactly.
 interface TrainingConfigRequest {
   algorithm_type: 'sac' | 'baseline_only';
   // Present when algorithm_type === 'sac'; absent (field omitted) when baseline_only
   sac_hyperparams?: {
-    total_steps:      number;
-    eval_freq:        number;
-    batch_size:       number;
-    learning_rate:    number;
-    gamma:            number;
-    buffer_size:      number;
-    n_envs:           number;
-    tau:              number;    // constant: 0.005   (§5)
+    // User-editable (6 fields):
+    total_env_steps:  number;   // RunConfig: total_env_steps
+    eval_every_steps: number;   // RunConfig: eval_every_steps
+    batch_size:       number;   // RunConfig: batch_size
+    lr:               number;   // RunConfig: lr
+    buffer_size:      number;   // RunConfig: buffer_size
+    n_envs:           number;   // RunConfig: n_envs
+    // Constants (not user-editable — sent as fixed values; see §3.2):
+    gamma:            number;   // constant: 0.999  (LOCKED — training_pipeline.md §3.1)
+    tau:              number;   // constant: 0.005   (§5)
     ent_coef:         string;   // constant: "auto"  (§5)
     train_freq:       number;   // constant: 1       (§5)
     gradient_steps:   number;   // constant: 1       (§5)
-    hidden_layers:    number[]; // constant: [256, 256]
+    hidden_sizes:     number[]; // constant: [256, 256] — RunConfig field name
   };
   baselines: BaselineId[];   // ≥ 1 required
 }
@@ -273,8 +291,12 @@ Selected card: `data-testid="algo-card-selected"` also present on the currently 
 > - Card subtitle/badge: `"Coming soon — RL training ships in a later release"`
 > - Selecting SAC shows an informational notice: `data-testid="algo-sac-coming-soon-notice"` with text explaining that SAC will be available in a future version; the current run will evaluate baseline agents.
 > - SAC is selectable in v1 (for UI testing / forward compatibility) but the coming-soon copy is mandatory.
->
-> **Visual prominence of SAC (PENDING USER call — see §12):** Whether SAC is the visual hero card (with coming-soon badge) or a secondary/de-emphasized "future" option is awaiting USER input relayed via team-lead. Apply the coming-soon copy now; hold final visual treatment. rl-architect's default if USER is indifferent: hero SAC + coming-soon badge.
+
+**Visual prominence — OPTION B APPLIED (USER decision 2026-06-14; relayed via team-lead):**
+> - **Baseline-only** is the **clear visual primary**: rendered as the prominently-styled default card (blue accent border, full-size, left/top position, default-selected).
+> - **SAC** is a **secondary / de-emphasized "future capability" entry**: smaller, lower visual weight, greyed border (use `TOKEN.border` not `TOKEN.accentBlue`), positioned after/below Baseline-only, labelled `"Future"` or `"Coming soon"` in the card header.
+> - The intent: the operator's eye naturally lands on the functional path; SAC sits in the background as an honest future item.
+> - `data-testid="algo-card-sac-future-badge"` on the future/coming-soon badge element.
 
 **Baseline-only notice** (`data-testid="algo-baseline-notice"`): rendered below the cards when `baseline_only` is selected. Since `baseline_only` is the v1 functional default, this notice is visible on initial render (no interaction required to trigger it).
 
@@ -456,11 +478,12 @@ Key token usages for Stage ②:
 |---|---|---|
 | DV-1 | Back button is `<span>`, not `<button>` | Consistent with stage-1 (T-A11Y-6 pattern; established PR #102) |
 | DV-2 | Confirm button uses `aria-disabled`, not HTML `disabled` | Same pattern as `StageSaveButton` (stage-1 contract); keeps button focusable for tooltip/screen reader |
-| ~~DV-3~~ | ~~Hyperparam defaults differ from REBUILD_SPEC §5~~ | **RESOLVED** (CALL 1 — rl-architect authority 2026-06-14): §5 wins; defaults updated in §3.2. |
-| DV-4 | τ, ent_coef, train_freq, gradient_steps, hiddenLayers not in v1 UI form | UX design §5.2 omits them from the per-screen layout; sent as constants in POST body. Surfacing deferred to v1.1. |
+| ~~DV-3~~ | ~~Hyperparam defaults differ from REBUILD_SPEC §5~~ | **RESOLVED** (CALL 1 — rl-architect authority 2026-06-14): §5 wins; defaults updated in §3.2. evalFreq matches `eval_every_steps` in RunConfig (10_000). |
+| DV-4 | γ, τ, ent_coef, train_freq, gradient_steps, hidden_sizes not in v1 UI form | γ=0.999 LOCKED (training_pipeline.md §3.1); others per UX design §5.2. All sent as constants in POST body. Surfacing deferred to v1.1. |
 | DV-5 | COMPLETE → IN_PROGRESS on rehydrate | Same as stage-1 S2 rule; forces re-confirm on page reload to guard against stale config_hash |
 | DV-6 | Collapsed hyperparam inputs absent from DOM (not hidden) | Prevents tabbing into invisible fields; reduces DOM noise for screen readers |
-| DV-7 | Default algorithm = `baseline_only`, not `sac` | **CALL 2** (rl-architect authority 2026-06-14): v1 is heuristic-first; RL training deferred. SAC-default would route into non-functional Stage ③. SAC card carries explicit coming-soon copy. Visual prominence of SAC PENDING USER call (§12). |
+| DV-7 | Default algorithm = `baseline_only`, not `sac` | **CALL 2** (rl-architect authority 2026-06-14): v1 is heuristic-first; RL training deferred. SAC-default would route into non-functional Stage ③. SAC card carries explicit coming-soon copy. Visual prominence: **Option B applied** (USER decision 2026-06-14): SAC is secondary/de-emphasized; Baseline-only is the clear visual primary (see §4.2). |
+| DV-8 | POST body field names = RunConfig canonical names from training_pipeline.md §3 | Fixes C1 (frontend-reviewer Round 1). Serving contract `contracts/serving/training_config.md` required before implementation (analog of `site_assemble.md`). |
 
 ---
 
@@ -478,16 +501,17 @@ Key token usages for Stage ②:
 
 ---
 
-## 12. Open questions (pending USER call — do not finalize implementation until resolved)
+## 12. Open questions
 
-**Q1 — SAC visual prominence (PENDING USER call, relayed via team-lead):**
-Two options for how the SAC card appears alongside the functional `Baseline only` default:
-- **Option A (rl-architect default):** SAC is the visual hero card (larger, left-first, blue border treatment) + explicit "Coming soon" badge. User sees it as the aspirational option.
-- **Option B:** SAC is de-emphasized (secondary card, greyed border, "Future" label). User sees baseline as the clear primary.
+**Q1 — SAC visual prominence: RESOLVED (USER decision 2026-06-14, relayed via team-lead).**
+Option B applied. Baseline-only is the clear visual primary; SAC is secondary/de-emphasized "future capability." See §4.2 and DV-7.
 
-Both options keep `baseline_only` as the functional default and SAC with honest coming-soon copy. Apply Option A (hero + badge) if USER is indifferent; await team-lead relay before finalizing the implementation's visual treatment.
+**Q2 — nEnvs upper bound:** RunConfig (training_pipeline.md §3) specifies "power of 2 ≥ 1" with no explicit max; canonical JAX vmap target is 4096. Explicit UI cap PENDING training-engineer confirmation. Tracked as C3 (frontend-reviewer Round 1). Resolution required before implementation.
+
+**Q3 — Serving contract for POST /api/training/config:** A `contracts/serving/training_config.md` (the stage-② analog of `site_assemble.md`) is required. Tracked as C1 dependency (frontend-reviewer Round 1). Must be created by serving-engineer and locked before implementation.
 
 ---
 
 *contracts/frontend/stage_algorithm.md — frontend-engineer, feat/frontend-stage-algorithm — 2026-06-14*
-*Amended 2026-06-14: CALL 1 (§5 defaults win — §3.2 updated); CALL 2 (baseline_only default + SAC coming-soon — §3.1, §4.2, §8 updated). Both rl-architect authority. SAC visual prominence PENDING USER call (§12).*
+*Amended 2026-06-14 (Round 1): CALL 1 (§5 defaults win — §3.2 updated); CALL 2 (baseline_only default + SAC coming-soon — §3.1, §4.2, §8 updated). Both rl-architect authority.*
+*Amended 2026-06-14 (Round 2): C1 — POST body field names corrected to RunConfig canonical (§3.8); C2 — gamma removed from SacHyperparams, LOCKED constant (§3.2, §3.8); C3 — nEnvs 256 cap removed (§3.2, cap pending training-engineer); §3.7 isConfirmEnabled gates hyperparam errors on algorithmType=sac (TQ12); §4.2 Option B visual treatment applied (USER decision); §8 DV-7/DV-8 updated; §12 Q1 resolved.*
