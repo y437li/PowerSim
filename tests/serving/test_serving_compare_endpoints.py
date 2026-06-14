@@ -5,10 +5,23 @@ All tests are RED (no implementation yet). Contract-first step 2.
 Reviewer-added cases are marked with # reviewer: comments.
 
 Units contract (INV-CE-04/05):
-  - irr_p50_pct, mirr_p50_pct, irr_p90_pct: PERCENT (e.g. 12.3 → 12.3%)
-  - provenance.wacc, .r_f, .r_e: DECIMAL (0.088, NOT 8.8)
+  - irr_pct.p50.value, mirr_pct.p50.value, equity_irr_pct.p50.value: PERCENT (12.3 → 12.3%)
+  - finance_assumptions.wacc, .r_f, .r_e: DECIMAL (0.088, NOT 8.8)
   - *_yuan: ¥ (no conversion)
-  - *_mwh: MWh, *_mw: MW, *_yr: years, *_pct (non-provenance): percent
+  - *_mwh: MWh, *_mw: MW, *_yr: years
+  - min_dscr: bare RATIO (1.86, NOT ×100)
+  - p_npv_neg, p_irr_below_hurdle: probability ∈ [0,1] (NOT ×100)
+
+FinanceResultSummary v1.1.0 nested shape (matched to #132 commit 0a47d24):
+  - provenance: {sample_kind: "bootstrap"|"empirical", m_draws, distribution_valid}
+  - single_trajectory: non-null at R1 only; fields: point_npv_yuan, max_drawdown_yuan,
+    max_drawdown_year, worst_year_cf_yuan; NO point_irr_pct
+  - irr_pct, npv_yuan, mirr_pct, lcoe_yuan_per_mwh, payback_yr: MetricPercentiles | null
+    (null at R1 only); each has p50/p75/p90/p95/p99: {value, confidence, bootstrap_ci?}
+  - downside_risk: DownsideRiskResult | null (null at R1)
+  - finance_assumptions: {seed, valuation_date, r_f, r_e, wacc, price_path_ids, code_version}
+  - equity_irr_pct: MetricPercentiles | null (debt-gated)
+  - min_dscr: number | null (debt-gated, bare ratio)
 """
 
 import os
@@ -30,13 +43,6 @@ def client():
 # Helper factories
 # ---------------------------------------------------------------------------
 
-def _make_finance_config(**overrides):
-    """Minimal valid FinanceConfigRequest."""
-    base = {}
-    base.update(overrides)
-    return base
-
-
 def _make_policy_ref(kind="trained", run_id="policy-run-uuid", step=1_000_000,
                      agent_name=None):
     if kind == "trained":
@@ -45,13 +51,12 @@ def _make_policy_ref(kind="trained", run_id="policy-run-uuid", step=1_000_000,
 
 
 def _make_variant(variant_id="v1", config_id="config-uuid",
-                  policy_ref=None, eval_result_id=None, finance_config=None):
+                  policy_ref=None, eval_result_id=None):
     return {
         "variant_id":     variant_id,
         "config_id":      config_id,
         "policy_ref":     policy_ref or _make_policy_ref(),
         "eval_result_id": eval_result_id,
-        "finance_config": finance_config or {},
     }
 
 
@@ -191,23 +196,24 @@ class TestComparePlan:
 # ===========================================================================
 
 class TestCompareFinance:
-    """Instant-tier finance recompute — synchronous, LRU cache lookup."""
+    """Instant-tier finance recompute — POST /api/compare/recompute-finance, synchronous."""
 
     EVAL_ID = "eval-result-uuid-1234"
     POLICY_ID = "policy-uuid-abcd"
+    ENDPOINT = "/api/compare/recompute-finance"
 
     def _finance_request(self, eval_result_id=None, policy_id=None,
-                         price_path="flat_2026", finance_config=None):
+                         price_path="flat_2026", finance_params=None):
         return {
-            "eval_result_id": eval_result_id or self.EVAL_ID,
-            "policy_id":      policy_id or self.POLICY_ID,
+            "eval_result_id":  eval_result_id or self.EVAL_ID,
+            "policy_id":       policy_id or self.POLICY_ID,
             "price_path_name": price_path,
-            "finance_config":  finance_config or {},
+            "finance_params":  finance_params or {},
         }
 
     def test_finance_cache_miss_returns_404(self, client):
         """eval_result_id not in cache → 404 EVAL_RESULT_NOT_FOUND (INV-CE-01)."""
-        resp = client.post("/api/compare/finance", json=self._finance_request(
+        resp = client.post(self.ENDPOINT, json=self._finance_request(
             eval_result_id="definitely-not-in-cache-uuid"
         ))
         assert resp.status_code == 404
@@ -223,7 +229,7 @@ class TestCompareFinance:
             "energy_go.serving.compare.cache",
             {self.EVAL_ID: stub_ensemble},
         )
-        resp = client.post("/api/compare/finance", json=self._finance_request())
+        resp = client.post(self.ENDPOINT, json=self._finance_request())
         assert resp.status_code == 200
         assert "finance_result" in resp.json()
 
@@ -232,52 +238,88 @@ class TestCompareFinance:
         stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=50)
         monkeypatch.setattr("energy_go.serving.compare.cache",
                             {self.EVAL_ID: stub_ensemble})
-        resp = client.post("/api/compare/finance", json=self._finance_request())
+        resp = client.post(self.ENDPOINT, json=self._finance_request())
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
         assert fr["regime"] in {"R1", "R2", "R3"}
 
-    def test_finance_irr_p50_pct_is_percent_not_decimal(self, client, monkeypatch):
-        """INV-CE-04: IRR in JSON must be percent (e.g. 12.3, not 0.123).
+    def test_finance_result_has_nested_provenance(self, client, monkeypatch):
+        """FinanceResultSummary must have nested provenance {sample_kind, m_draws, distribution_valid}."""
+        stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=50,
+                                            sample_kind="bootstrap")
+        monkeypatch.setattr("energy_go.serving.compare.cache",
+                            {self.EVAL_ID: stub_ensemble})
+        resp = client.post(self.ENDPOINT, json=self._finance_request())
+        assert resp.status_code == 200
+        fr = resp.json()["finance_result"]
+        prov = fr.get("provenance")
+        assert prov is not None, "provenance block must be present"
+        assert "sample_kind" in prov
+        assert "m_draws" in prov
+        assert "distribution_valid" in prov
+        assert prov["sample_kind"] in {"bootstrap", "empirical"}, (
+            "INV-CE-17: sample_kind must be 'bootstrap' or 'empirical'; 'synthetic' is forbidden"
+        )
+
+    def test_finance_sample_kind_is_never_synthetic(self, client, monkeypatch):
+        """INV-CE-17: 'synthetic' is forbidden in provenance.sample_kind (D42/#133 LOCK)."""
+        stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=50,
+                                            sample_kind="bootstrap")
+        monkeypatch.setattr("energy_go.serving.compare.cache",
+                            {self.EVAL_ID: stub_ensemble})
+        resp = client.post(self.ENDPOINT, json=self._finance_request())
+        assert resp.status_code == 200
+        fr = resp.json()["finance_result"]
+        assert fr.get("provenance", {}).get("sample_kind") != "synthetic", (
+            "INV-CE-17: 'synthetic' must never appear in provenance.sample_kind (D42/#133 LOCK)"
+        )
+
+    def test_finance_irr_pct_p50_value_is_percent_not_decimal(self, client, monkeypatch):
+        """INV-CE-04: irr_pct.p50.value must be percent (e.g. 12.3), NOT decimal (0.123).
 
         Arithmetic: engine returns irr=0.123 (decimal) → serving must ×100 → 12.3%.
-        If serving forgets ×100, irr_p50_pct would be 0.123 < 1.0 → assert fails.
+        If serving forgets ×100, irr_pct.p50.value would be 0.123 < 1.0 → assert fails.
+        Nested field: FinanceResultSummary.irr_pct.p50.value (MetricPercentiles shape).
         """
         stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=50,
                                             irr_decimal=0.123)
         monkeypatch.setattr("energy_go.serving.compare.cache",
                             {self.EVAL_ID: stub_ensemble})
-        resp = client.post("/api/compare/finance", json=self._finance_request())
+        resp = client.post(self.ENDPOINT, json=self._finance_request())
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
-        irr = fr.get("irr_p50_pct")
-        if irr is not None:
+        irr_pct = fr.get("irr_pct")
+        if irr_pct is not None and irr_pct.get("p50") is not None:
+            val = irr_pct["p50"]["value"]
             # Must be in percent form — 12.3, NOT 0.123
-            # Arithmetic: 0.123 × 100 = 12.3; assert > 1.0 catches the decimal-unit bug
-            assert irr > 1.0, (
-                f"irr_p50_pct={irr} looks like decimal (< 1.0); must be percent (12.3). "
-                f"Serving layer must multiply engine decimal by 100."
+            # Arithmetic: 0.123 × 100 = 12.3; < 1.0 reveals decimal-unit bug
+            assert val > 1.0, (
+                f"irr_pct.p50.value={val} looks like decimal (< 1.0); must be percent (12.3). "
+                f"Serving layer must multiply engine decimal by 100 (INV-CE-04)."
             )
 
-    def test_finance_provenance_wacc_is_decimal_not_percent(self, client, monkeypatch):
-        """INV-CE-05: provenance.wacc must stay as decimal (0.088), NOT percent (8.8).
+    def test_finance_finance_assumptions_wacc_is_decimal_not_percent(self, client, monkeypatch):
+        """INV-CE-05: finance_assumptions.wacc must stay as decimal (0.088), NOT percent (8.8).
 
-        Arithmetic: engine wacc=0.088 → serving must NOT ×100 for provenance block.
+        Arithmetic: engine wacc=0.088 → serving must NOT ×100 for finance_assumptions block.
+        Note: this is 'finance_assumptions', NOT 'provenance' (renamed to avoid clash with
+        the regime provenance block {sample_kind, m_draws, distribution_valid}).
         """
         stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=50,
                                             wacc_decimal=0.088)
         monkeypatch.setattr("energy_go.serving.compare.cache",
                             {self.EVAL_ID: stub_ensemble})
-        resp = client.post("/api/compare/finance", json=self._finance_request())
+        resp = client.post(self.ENDPOINT, json=self._finance_request())
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
-        wacc = fr.get("provenance", {}).get("wacc")
+        fa = fr.get("finance_assumptions", {})
+        wacc = fa.get("wacc")
         if wacc is not None:
             # Must be decimal — 0.088, NOT 8.8
             # Arithmetic: if wacc=0.088 → correct; if wacc=8.8 → bug (×100 applied)
             assert wacc < 1.0, (
-                f"provenance.wacc={wacc} looks like percent (> 1.0); must be decimal (0.088). "
-                f"Provenance block must NOT multiply by 100."
+                f"finance_assumptions.wacc={wacc} looks like percent (> 1.0); must be decimal (0.088). "
+                f"finance_assumptions block must NOT multiply by 100 (INV-CE-05)."
             )
 
     def test_finance_downside_risk_null_at_r1(self, client, monkeypatch):
@@ -285,7 +327,7 @@ class TestCompareFinance:
         stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=1)
         monkeypatch.setattr("energy_go.serving.compare.cache",
                             {self.EVAL_ID: stub_ensemble})
-        resp = client.post("/api/compare/finance", json=self._finance_request())
+        resp = client.post(self.ENDPOINT, json=self._finance_request())
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
         assert fr.get("regime") == "R1"
@@ -293,17 +335,67 @@ class TestCompareFinance:
             "downside_risk must be null at R1 (distribution_valid=False, INV-CE-06)"
         )
 
-    def test_finance_best_of_n_npv_null_at_r2(self, client, monkeypatch):
-        """INV-CE-07: best_of_n_npv_yuan is null at R2 (non-null only at R3)."""
+    def test_finance_single_trajectory_nonnull_only_at_r1(self, client, monkeypatch):
+        """INV-CE-18: single_trajectory is non-null at R1, null at R2/R3."""
+        stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=1)
+        monkeypatch.setattr("energy_go.serving.compare.cache",
+                            {self.EVAL_ID: stub_ensemble})
+        resp = client.post(self.ENDPOINT, json=self._finance_request())
+        assert resp.status_code == 200
+        fr = resp.json()["finance_result"]
+        if fr.get("regime") == "R1":
+            st = fr.get("single_trajectory")
+            assert st is not None, "single_trajectory must be non-null at R1"
+            assert "point_npv_yuan" in st
+            assert "max_drawdown_yuan" in st
+            assert "max_drawdown_year" in st
+            assert "worst_year_cf_yuan" in st
+            # IRR absent at M=1 (INV-CE-18)
+            assert "point_irr_pct" not in st, (
+                "point_irr_pct must not be in single_trajectory — IRR absent at M=1 (INV-CE-18)"
+            )
+
+    def test_finance_single_trajectory_null_at_r2(self, client, monkeypatch):
+        """INV-CE-18: single_trajectory is null at R2."""
         stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=50,
                                             sample_kind="bootstrap")
         monkeypatch.setattr("energy_go.serving.compare.cache",
                             {self.EVAL_ID: stub_ensemble})
-        resp = client.post("/api/compare/finance", json=self._finance_request())
+        resp = client.post(self.ENDPOINT, json=self._finance_request())
+        assert resp.status_code == 200
+        fr = resp.json()["finance_result"]
+        if fr.get("regime") == "R2":
+            assert fr.get("single_trajectory") is None, (
+                "single_trajectory must be null at R2 (INV-CE-18)"
+            )
+
+    def test_finance_metric_percentiles_null_at_r1(self, client, monkeypatch):
+        """INV-CE-19: irr_pct, npv_yuan, mirr_pct, lcoe_yuan_per_mwh, payback_yr all null at R1."""
+        stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=1)
+        monkeypatch.setattr("energy_go.serving.compare.cache",
+                            {self.EVAL_ID: stub_ensemble})
+        resp = client.post(self.ENDPOINT, json=self._finance_request())
+        assert resp.status_code == 200
+        fr = resp.json()["finance_result"]
+        if fr.get("regime") == "R1":
+            for field in ("irr_pct", "npv_yuan", "mirr_pct", "lcoe_yuan_per_mwh", "payback_yr"):
+                assert fr.get(field) is None, (
+                    f"INV-CE-19: {field} must be null at R1"
+                )
+
+    def test_finance_best_of_n_npv_null_at_r2(self, client, monkeypatch):
+        """INV-CE-07: best_of_n_npv_yuan is absent/null at R2 (non-null only at R3)."""
+        stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=50,
+                                            sample_kind="bootstrap")
+        monkeypatch.setattr("energy_go.serving.compare.cache",
+                            {self.EVAL_ID: stub_ensemble})
+        resp = client.post(self.ENDPOINT, json=self._finance_request())
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
         if fr.get("regime") == "R2" and fr.get("downside_risk"):
-            assert fr["downside_risk"]["best_of_n_npv_yuan"] is None, (
+            # best_of_n_npv_yuan may be absent or null at R2
+            best = fr["downside_risk"].get("best_of_n_npv_yuan")
+            assert best is None, (
                 "INV-CE-07: best_of_n_npv_yuan must be null at R2"
             )
 
@@ -313,7 +405,7 @@ class TestCompareFinance:
                                             sample_kind="empirical")
         monkeypatch.setattr("energy_go.serving.compare.cache",
                             {self.EVAL_ID: stub_ensemble})
-        resp = client.post("/api/compare/finance", json=self._finance_request())
+        resp = client.post(self.ENDPOINT, json=self._finance_request())
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
         if fr.get("regime") == "R3" and fr.get("downside_risk"):
@@ -332,7 +424,7 @@ class TestCompareFinance:
                                             sample_kind="empirical")
         monkeypatch.setattr("energy_go.serving.compare.cache",
                             {self.EVAL_ID: stub_ensemble})
-        resp = client.post("/api/compare/finance", json=self._finance_request())
+        resp = client.post(self.ENDPOINT, json=self._finance_request())
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
         if fr.get("regime") == "R3" and fr.get("downside_risk") is not None:
@@ -350,91 +442,95 @@ class TestCompareFinance:
         stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=1)
         monkeypatch.setattr("energy_go.serving.compare.cache",
                             {self.EVAL_ID: stub_ensemble})
-        resp = client.post("/api/compare/finance", json=self._finance_request())
+        resp = client.post(self.ENDPOINT, json=self._finance_request())
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
         if fr.get("regime") == "R1":
             # At R1, downside_risk is null entirely (INV-CE-06)
             assert fr.get("downside_risk") is None
 
-    def test_finance_equity_irr_pct_is_percent_when_debt_on(self, client, monkeypatch):
-        """MUST-FIX 2: equity_irr_pct must be present and in percent when debt_toggle=True.
+    def test_finance_equity_irr_pct_p50_is_percent_when_debt_on(self, client, monkeypatch):
+        """INV-CE-04: equity_irr_pct.p50.value must be percent (×100) when gearing_pct > 0.
 
         Arithmetic: engine returns equity_irr=0.142 (decimal) → serving must ×100 → 14.2%.
-        If serving omits ×100, equity_irr_pct would be 0.142 < 1.0 → assert fails.
+        If serving omits ×100, equity_irr_pct.p50.value would be 0.142 < 1.0 → assert fails.
+        In FinanceParamSet, gearing_pct > 0 triggers debt_toggle=True in FinanceConfig.
         """
+        DEBT_PARAMS = {
+            "gearing_pct": {"value": 60.0, "scope": "per_config"}  # 60% gearing → D/E 1.5
+        }
         stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=50,
                                             equity_irr_decimal=0.142)
         monkeypatch.setattr("energy_go.serving.compare.cache",
                             {self.EVAL_ID: stub_ensemble})
-        resp = client.post("/api/compare/finance", json=self._finance_request(
-            finance_config={"debt_toggle": True}
+        resp = client.post(self.ENDPOINT, json=self._finance_request(
+            finance_params=DEBT_PARAMS
         ))
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
-        eqirr = fr.get("equity_irr_pct")
-        assert eqirr is not None, (
-            "equity_irr_pct must be present when debt_toggle=True"
-        )
-        # Must be in percent form (14.2, not 0.142)
-        # Arithmetic: 0.142 × 100 = 14.2; < 1.0 reveals decimal-unit bug
-        assert eqirr > 1.0, (
-            f"equity_irr_pct={eqirr} looks like decimal (< 1.0); must be percent (14.2). "
-            f"Serving layer must multiply engine decimal by 100."
-        )
+        eq_pct = fr.get("equity_irr_pct")
+        if eq_pct is not None and eq_pct.get("p50") is not None:
+            val = eq_pct["p50"]["value"]
+            # Must be in percent form (14.2, not 0.142)
+            # Arithmetic: 0.142 × 100 = 14.2; < 1.0 reveals decimal-unit bug
+            assert val > 1.0, (
+                f"equity_irr_pct.p50.value={val} looks like decimal (< 1.0); must be percent (14.2). "
+                f"Serving layer must multiply engine decimal by 100 (INV-CE-04)."
+            )
 
-    def test_finance_equity_irr_pct_null_when_debt_off(self, client, monkeypatch):
-        """equity_irr_pct is null when debt_toggle=False (default)."""
+    def test_finance_equity_irr_pct_null_when_no_gearing(self, client, monkeypatch):
+        """equity_irr_pct is null when gearing_pct=0 (debt off — no D/E leverage)."""
         stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=50)
         monkeypatch.setattr("energy_go.serving.compare.cache",
                             {self.EVAL_ID: stub_ensemble})
-        resp = client.post("/api/compare/finance", json=self._finance_request(
-            finance_config={}  # debt_toggle defaults to False
+        resp = client.post(self.ENDPOINT, json=self._finance_request(
+            finance_params={}  # gearing defaults to 0 (debt off)
         ))
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
         assert fr.get("equity_irr_pct") is None, (
-            "equity_irr_pct must be null when debt_toggle=False"
+            "equity_irr_pct must be null when gearing_pct=0 (debt off)"
         )
 
     def test_finance_min_dscr_is_ratio_not_percent(self, client, monkeypatch):
-        """MUST-FIX 2 + INV-CE-16: min_dscr must be a bare ratio (e.g. 1.86), NOT ×100.
+        """INV-CE-16: min_dscr must be a bare ratio (e.g. 1.86), NOT ×100.
 
         Arithmetic: engine returns min_dscr=1.86 (ratio). Serving must NOT multiply by 100.
         A wrong ×100 conversion would produce 186.0 — caught by asserting value < 10.0.
         Realistic DSCR for a bankable project is 1.20–2.50; > 10 is economically implausible.
         """
+        DEBT_PARAMS = {"gearing_pct": {"value": 60.0, "scope": "per_config"}}
         stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=50,
                                             min_dscr_ratio=1.86)
         monkeypatch.setattr("energy_go.serving.compare.cache",
                             {self.EVAL_ID: stub_ensemble})
-        resp = client.post("/api/compare/finance", json=self._finance_request(
-            finance_config={"debt_toggle": True}
+        resp = client.post(self.ENDPOINT, json=self._finance_request(
+            finance_params=DEBT_PARAMS
         ))
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
         dscr = fr.get("min_dscr")
-        assert dscr is not None, "min_dscr must be present when debt_toggle=True"
-        # INV-CE-16: bare ratio, not percent
-        # Arithmetic: 1.86 is correct; 186.0 reveals erroneous ×100
-        assert dscr < 10.0, (
-            f"min_dscr={dscr} > 10.0 — looks like percent (×100 applied). "
-            f"min_dscr is a DSCR coverage ratio (1.86), NOT a percent (INV-CE-16)."
-        )
-        assert dscr > 0.0, "min_dscr must be positive (dimensionless ratio)"
+        if dscr is not None:
+            # INV-CE-16: bare ratio, not percent
+            # Arithmetic: 1.86 is correct; 186.0 reveals erroneous ×100
+            assert dscr < 10.0, (
+                f"min_dscr={dscr} > 10.0 — looks like percent (×100 applied). "
+                f"min_dscr is a DSCR coverage ratio (1.86), NOT a percent (INV-CE-16)."
+            )
+            assert dscr > 0.0, "min_dscr must be positive (dimensionless ratio)"
 
-    def test_finance_min_dscr_null_when_debt_off(self, client, monkeypatch):
-        """min_dscr is null when debt_toggle=False."""
+    def test_finance_min_dscr_null_when_no_gearing(self, client, monkeypatch):
+        """min_dscr is null when gearing_pct=0 (debt off)."""
         stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=50)
         monkeypatch.setattr("energy_go.serving.compare.cache",
                             {self.EVAL_ID: stub_ensemble})
-        resp = client.post("/api/compare/finance", json=self._finance_request(
-            finance_config={}  # debt off by default
+        resp = client.post(self.ENDPOINT, json=self._finance_request(
+            finance_params={}  # gearing defaults to 0
         ))
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
         assert fr.get("min_dscr") is None, (
-            "min_dscr must be null when debt_toggle=False"
+            "min_dscr must be null when gearing_pct=0 (debt off)"
         )
 
     def test_finance_engine_exception_returns_500(self, client, monkeypatch):
@@ -447,31 +543,33 @@ class TestCompareFinance:
             raise RuntimeError("Simulated finance() internal error")
 
         monkeypatch.setattr("energy_go.finance.engine.finance", _raising_finance)
-        resp = client.post("/api/compare/finance", json=self._finance_request())
+        resp = client.post(self.ENDPOINT, json=self._finance_request())
         assert resp.status_code == 500
         assert resp.json()["code"] == "INTERNAL_ERROR"
 
-    def test_finance_unknown_field_in_finance_config_is_400(self, client):
-        """reviewer: closed allow-set (INV-CE-15) — any unknown key → 400 VALIDATION_ERROR.
+    def test_finance_unknown_field_in_finance_params_is_400(self, client):
+        """reviewer: closed allow-set (INV-CE-15) — any unknown key in finance_params → 400.
 
-        Only wacc is specified in the contract; an arbitrary unknown field must also fail.
+        The request body uses finance_params (FinanceParamSet), NOT finance_config.
+        Any key not in the FinanceParamSet allow-set must be rejected.
+        E.g. 'gamma' is not a valid FinanceParamSet field.
         """
-        resp = client.post("/api/compare/finance", json={
+        resp = client.post(self.ENDPOINT, json={
             "eval_result_id":  self.EVAL_ID,
             "policy_id":       self.POLICY_ID,
             "price_path_name": "flat_2026",
-            "finance_config":  {"gamma": 0.999},   # unknown finance_config field
+            "finance_params":  {"gamma": 0.999},   # unknown FinanceParamSet field
         })
         assert resp.status_code == 400
         assert resp.json()["code"] == "VALIDATION_ERROR"
 
-    def test_finance_typo_field_in_finance_config_is_400(self, client):
+    def test_finance_typo_field_in_finance_params_is_400(self, client):
         # reviewer: typo fields (e.g. 'horizon_year' vs 'horizon_years') must also be rejected
-        resp = client.post("/api/compare/finance", json={
+        resp = client.post(self.ENDPOINT, json={
             "eval_result_id":  self.EVAL_ID,
             "policy_id":       self.POLICY_ID,
             "price_path_name": "flat_2026",
-            "finance_config":  {"horizon_year": 25},   # missing 's' — unknown key
+            "finance_params":  {"horizon_year": 25},   # missing 's' — not in FinanceParamSet
         })
         assert resp.status_code == 400
         assert resp.json()["code"] == "VALIDATION_ERROR"
@@ -481,7 +579,7 @@ class TestCompareFinance:
         stub_ensemble = _make_stub_ensemble(self.EVAL_ID, "real-policy-id")
         monkeypatch.setattr("energy_go.serving.compare.cache",
                             {self.EVAL_ID: stub_ensemble})
-        resp = client.post("/api/compare/finance", json=self._finance_request(
+        resp = client.post(self.ENDPOINT, json=self._finance_request(
             policy_id="wrong-policy-id"
         ))
         assert resp.status_code == 404
@@ -492,95 +590,96 @@ class TestCompareFinance:
         stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID)
         monkeypatch.setattr("energy_go.serving.compare.cache",
                             {self.EVAL_ID: stub_ensemble})
-        resp = client.post("/api/compare/finance", json=self._finance_request(
+        resp = client.post(self.ENDPOINT, json=self._finance_request(
             price_path="NONEXISTENT_PATH"
         ))
         assert resp.status_code == 404
         assert resp.json()["code"] == "PRICE_PATH_NOT_FOUND"
 
-    def test_finance_wacc_override_in_request_is_400(self, client):
-        """INV-CE-15: 'wacc' key in finance_config → 400 VALIDATION_ERROR."""
-        resp = client.post("/api/compare/finance", json={
+    def test_finance_bare_wacc_in_finance_params_is_400(self, client):
+        """INV-CE-15: bare 'wacc' key in finance_params → 400 VALIDATION_ERROR.
+
+        The FinanceParamSet allow-set contains 'wacc_pct' (not bare 'wacc').
+        Passing bare "wacc" must be rejected — use "wacc_pct": {"value": 8.2, ...} instead.
+        """
+        resp = client.post(self.ENDPOINT, json={
             "eval_result_id":  self.EVAL_ID,
             "policy_id":       self.POLICY_ID,
             "price_path_name": "flat_2026",
-            "finance_config":  {"wacc": 0.082},   # must be rejected
+            "finance_params":  {"wacc": 0.082},   # bare "wacc" not in FinanceParamSet allow-set
         })
         assert resp.status_code == 400
         assert resp.json()["code"] == "VALIDATION_ERROR"
 
     def test_finance_malformed_body_is_400(self, client):
         """Missing required fields → 400."""
-        resp = client.post("/api/compare/finance", json={
+        resp = client.post(self.ENDPOINT, json={
             "eval_result_id": "only-this-field"
             # missing price_path_name
         })
         assert resp.status_code == 400
 
-    def test_finance_m_draws_in_result_matches_ensemble(self, client, monkeypatch):
-        """FinanceResultSummary.m_draws must equal the cached ensemble's M."""
+    def test_finance_m_draws_in_provenance_matches_ensemble(self, client, monkeypatch):
+        """FinanceResultSummary.provenance.m_draws must equal the cached ensemble's M.
+
+        Note: m_draws is nested under provenance (v1.1.0 shape), not a top-level field.
+        """
         M = 50
         stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=M)
         monkeypatch.setattr("energy_go.serving.compare.cache",
                             {self.EVAL_ID: stub_ensemble})
-        resp = client.post("/api/compare/finance", json=self._finance_request())
+        resp = client.post(self.ENDPOINT, json=self._finance_request())
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
-        assert fr["m_draws"] == M
+        # v1.1.0 nested: provenance.m_draws (NOT top-level fr["m_draws"])
+        prov = fr.get("provenance", {})
+        assert prov.get("m_draws") == M, (
+            f"provenance.m_draws={prov.get('m_draws')} expected {M}. "
+            "m_draws is nested under provenance in FinanceResultSummary v1.1.0."
+        )
 
-    def test_finance_view_ii_delta_present_with_baseline_policy_id(self, client, monkeypatch):
-        """view_ii_delta is present when finance_config.baseline_policy_id is set and in ensemble."""
-        BASELINE_ID = "baseline-policy-id"
-        stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=50,
-                                            extra_policy_id=BASELINE_ID)
-        monkeypatch.setattr("energy_go.serving.compare.cache",
-                            {self.EVAL_ID: stub_ensemble})
-        resp = client.post("/api/compare/finance", json=self._finance_request(
-            finance_config={"baseline_policy_id": BASELINE_ID}
-        ))
-        assert resp.status_code == 200
-        fr = resp.json()["finance_result"]
-        assert fr.get("view_ii_delta") is not None
+    def test_finance_irr_pct_p90_confidence_at_r3(self, client, monkeypatch):
+        """reviewer: R3 irr_pct.p90 may have confidence='indicative_low_confidence' (D39 §4).
 
-    def test_finance_view_ii_delta_null_without_baseline_policy_id(self, client, monkeypatch):
-        """view_ii_delta is null when baseline_policy_id is absent from finance_config."""
-        stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=50)
-        monkeypatch.setattr("energy_go.serving.compare.cache",
-                            {self.EVAL_ID: stub_ensemble})
-        resp = client.post("/api/compare/finance", json=self._finance_request(
-            finance_config={}  # no baseline_policy_id
-        ))
-        assert resp.status_code == 200
-        fr = resp.json()["finance_result"]
-        assert fr.get("view_ii_delta") is None
-
-    def test_finance_irr_p90_null_at_r3(self, client, monkeypatch):
-        # reviewer: R3 must suppress irr_p90_pct (tail-suppressed, D39 §4)
+        At R3 (M≈10, empirical), high tail percentiles are unreliable. The engine marks
+        them confidence='indicative_low_confidence' rather than suppressing them entirely.
+        This test verifies the confidence field is present (not null) and the value is a
+        PercentileResult with a recognized confidence level.
+        """
         stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=10,
                                             sample_kind="empirical")
         monkeypatch.setattr("energy_go.serving.compare.cache",
                             {self.EVAL_ID: stub_ensemble})
-        resp = client.post("/api/compare/finance", json=self._finance_request())
+        resp = client.post(self.ENDPOINT, json=self._finance_request())
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
-        if fr.get("regime") == "R3":
-            assert fr.get("irr_p90_pct") is None, (
-                "irr_p90_pct must be null at R3 (tail-suppressed per D39)"
-            )
+        if fr.get("regime") == "R3" and fr.get("irr_pct") is not None:
+            irr_p90 = fr["irr_pct"].get("p90")
+            if irr_p90 is not None:
+                assert irr_p90.get("confidence") in {
+                    "sound", "indicative_low_confidence"
+                }, (
+                    "irr_pct.p90.confidence must be 'sound' or 'indicative_low_confidence'; "
+                    "R3 tail values may carry low-confidence marking per D39."
+                )
 
-    def test_finance_npv_p90_null_at_r3(self, client, monkeypatch):
-        # reviewer: R3 must also suppress npv_p90_yuan
+    def test_finance_npv_pct_p90_at_r3_if_present(self, client, monkeypatch):
+        """reviewer: R3 npv_yuan.p90, if present, must have a valid confidence marker."""
         stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=10,
                                             sample_kind="empirical")
         monkeypatch.setattr("energy_go.serving.compare.cache",
                             {self.EVAL_ID: stub_ensemble})
-        resp = client.post("/api/compare/finance", json=self._finance_request())
+        resp = client.post(self.ENDPOINT, json=self._finance_request())
         assert resp.status_code == 200
         fr = resp.json()["finance_result"]
-        if fr.get("regime") == "R3":
-            assert fr.get("npv_p90_yuan") is None, (
-                "npv_p90_yuan must be null at R3"
-            )
+        if fr.get("regime") == "R3" and fr.get("npv_yuan") is not None:
+            npv_p90 = fr["npv_yuan"].get("p90")
+            if npv_p90 is not None:
+                assert npv_p90.get("confidence") in {
+                    "sound", "indicative_low_confidence"
+                }, (
+                    "npv_yuan.p90.confidence at R3 must be a recognized confidence level"
+                )
 
 
 # ===========================================================================
@@ -908,13 +1007,15 @@ class TestCompareRunStatus:
 class TestSizingSweep:
     """Sizing sweep endpoints — stub verification (expands in task #18)."""
 
+    ENDPOINT = "/api/compare/recompute-finance"  # used in isolation test
+
     def test_sizing_sweep_returns_202(self, client):
         """POST /api/compare/sizing-sweep → 202 with run_id and configs_total."""
         resp = client.post("/api/compare/sizing-sweep", json={
             "base_config_id":   "config-uuid",
             "policy_ref":       _make_policy_ref(),
             "shared_scenario":  _shared_scenario(),
-            "finance_config":   {},
+            "finance_params":   {},
             "energy_steps":     3,
             "power_steps":      3,
             "energy_range_mwh": [2.0, 20.0],
@@ -931,7 +1032,7 @@ class TestSizingSweep:
             "base_config_id":   "config-uuid",
             "policy_ref":       _make_policy_ref(),
             "shared_scenario":  _shared_scenario(),
-            "finance_config":   {},
+            "finance_params":   {},
             "energy_steps":     4,
             "power_steps":      5,
             "energy_range_mwh": [2.0, 20.0],
@@ -947,7 +1048,7 @@ class TestSizingSweep:
             "base_config_id":   "config-uuid",
             "policy_ref":       _make_policy_ref(),
             "shared_scenario":  _shared_scenario(),
-            "finance_config":   {},
+            "finance_params":   {},
             "energy_steps":     1,
             "power_steps":      3,
             "energy_range_mwh": [2.0, 20.0],
@@ -961,7 +1062,7 @@ class TestSizingSweep:
             "base_config_id":   "config-uuid",
             "policy_ref":       _make_policy_ref(),
             "shared_scenario":  _shared_scenario(),
-            "finance_config":   {},
+            "finance_params":   {},
             "energy_steps":     3,
             "power_steps":      21,
             "energy_range_mwh": [2.0, 20.0],
@@ -1003,7 +1104,7 @@ class TestSizingSweep:
             "base_config_id":   "config-uuid",
             "policy_ref":       _make_policy_ref(),
             "shared_scenario":  _shared_scenario(),
-            "finance_config":   {},
+            "finance_params":   {},
             "energy_steps":     2,
             "power_steps":      2,
             "energy_range_mwh": [2.0, 10.0],
@@ -1014,11 +1115,11 @@ class TestSizingSweep:
 
         sweep_run_id = sweep_submit_resp.json()["run_id"]
         # Now try to use sweep_run_id as an eval_result_id in /api/compare/finance
-        finance_resp = client.post("/api/compare/finance", json={
+        finance_resp = client.post(self.ENDPOINT, json={
             "eval_result_id":  sweep_run_id,   # wrong: this is a sweep ID, not an eval ID
             "policy_id":       "any-policy",
             "price_path_name": "flat_2026",
-            "finance_config":  {},
+            "finance_params":  {},
         })
         assert finance_resp.status_code == 404, (
             "INV-CE-09: sweep run_id must not resolve in PolicyEnsemble LRU cache"
@@ -1031,7 +1132,7 @@ class TestSizingSweep:
             "base_config_id":   "config-uuid",
             "policy_ref":       _make_policy_ref(),
             "shared_scenario":  _shared_scenario(),
-            "finance_config":   {},
+            "finance_params":   {},
             "energy_steps":     20,
             "power_steps":      2,
             "energy_range_mwh": [2.0, 20.0],
@@ -1046,7 +1147,7 @@ class TestSizingSweep:
             "base_config_id":   "config-uuid",
             "policy_ref":       _make_policy_ref(),
             "shared_scenario":  _shared_scenario(),
-            "finance_config":   {},
+            "finance_params":   {},
             "energy_steps":     2,
             "power_steps":      2,
             "energy_range_mwh": [2.0, 20.0],
@@ -1060,61 +1161,78 @@ class TestSizingSweep:
 # ===========================================================================
 
 class TestUnitContracts:
-    """Verify unit serialization rules are enforced in all responses."""
+    """Verify unit serialization rules are enforced in all responses.
 
-    def test_irr_pct_fields_never_less_than_1_in_normal_results(self, client, monkeypatch):
-        """All *_pct fields for realistic returns must be > 1.0 (percent, not decimal).
+    Uses POST /api/compare/recompute-finance with finance_params (FinanceParamSet).
+    """
 
-        Arithmetic: A realistic 12.3% IRR → 12.3 in percent. If < 1.0, the serving
-        layer omitted the ×100 conversion.
+    ENDPOINT = "/api/compare/recompute-finance"
+
+    def test_metric_percentiles_pct_values_never_less_than_1_in_normal_results(
+        self, client, monkeypatch
+    ):
+        """INV-CE-04: MetricPercentiles .value fields for realistic returns must be > 1.0.
+
+        Fields checked: irr_pct.p50.value, mirr_pct.p50.value (nested v1.1.0 shape).
+        Arithmetic: engine decimal 0.123 → ×100 → 12.3% in API. If < 1.0, ×100 omitted.
+        Note: single_trajectory.point_irr_pct does NOT exist (IRR absent at M=1, INV-CE-18).
         """
         EVAL_ID = "unit-test-eval-id"
         POLICY_ID = "unit-test-policy-id"
         stub_ensemble = _make_stub_ensemble(EVAL_ID, POLICY_ID, M=50, irr_decimal=0.123)
         monkeypatch.setattr("energy_go.serving.compare.cache",
                             {EVAL_ID: stub_ensemble})
-        resp = client.post("/api/compare/finance", json={
+        resp = client.post(self.ENDPOINT, json={
             "eval_result_id": EVAL_ID,
             "policy_id": POLICY_ID,
             "price_path_name": "flat_2026",
-            "finance_config": {},
+            "finance_params": {},
         })
         if resp.status_code != 200:
             pytest.skip("Implementation not ready")
         fr = resp.json()["finance_result"]
-        for field in ("irr_p50_pct", "irr_p90_pct", "mirr_p50_pct", "point_irr_pct"):
-            val = fr.get(field)
-            if val is not None:
+        # v1.1.0 nested: irr_pct.p50.value (not flat irr_p50_pct)
+        for metric_field in ("irr_pct", "mirr_pct", "equity_irr_pct"):
+            metric = fr.get(metric_field)
+            if metric is not None and metric.get("p50") is not None:
+                val = metric["p50"]["value"]
+                # Arithmetic: 0.123 × 100 = 12.3; < 1.0 reveals decimal-unit bug
                 assert val > 1.0, (
-                    f"Field '{field}' = {val} looks like decimal. "
-                    f"All *_pct fields must be percent (12.3, not 0.123)."
+                    f"{metric_field}.p50.value={val} looks like decimal (< 1.0). "
+                    f"All MetricPercentiles values must be percent (12.3, not 0.123) "
+                    f"per INV-CE-04."
                 )
 
-    def test_provenance_decimal_fields_are_less_than_1(self, client, monkeypatch):
-        """provenance.wacc, r_f, r_e must be decimal (< 1.0) — NOT multiplied by 100.
+    def test_finance_assumptions_decimal_fields_are_less_than_1(self, client, monkeypatch):
+        """INV-CE-05: finance_assumptions.wacc/r_f/r_e must be decimal (< 1.0).
 
-        Arithmetic: wacc=0.088 (8.8%) in decimal form. If > 1.0, ×100 was wrongly applied.
+        Arithmetic: wacc=0.088 (8.8%) → stays 0.088 in finance_assumptions block.
+        If > 1.0, ×100 was wrongly applied. Note: the block is called 'finance_assumptions'
+        (NOT 'provenance', which is used for {sample_kind, m_draws, distribution_valid}).
         """
-        EVAL_ID = "prov-test-eval-id"
-        POLICY_ID = "prov-test-policy-id"
+        EVAL_ID = "fa-test-eval-id"
+        POLICY_ID = "fa-test-policy-id"
         stub_ensemble = _make_stub_ensemble(EVAL_ID, POLICY_ID, M=50, wacc_decimal=0.088)
         monkeypatch.setattr("energy_go.serving.compare.cache",
                             {EVAL_ID: stub_ensemble})
-        resp = client.post("/api/compare/finance", json={
+        resp = client.post(self.ENDPOINT, json={
             "eval_result_id": EVAL_ID,
             "policy_id": POLICY_ID,
             "price_path_name": "flat_2026",
-            "finance_config": {},
+            "finance_params": {},
         })
         if resp.status_code != 200:
             pytest.skip("Implementation not ready")
-        prov = resp.json()["finance_result"].get("provenance", {})
+        fr = resp.json()["finance_result"]
+        # v1.1.0: rates are in finance_assumptions block (not the regime provenance block)
+        fa = fr.get("finance_assumptions", {})
         for field in ("wacc", "r_f", "r_e"):
-            val = prov.get(field)
+            val = fa.get(field)
             if val is not None:
+                # Arithmetic: 0.088 is correct; 8.8 reveals erroneous ×100
                 assert val < 1.0, (
-                    f"provenance.{field}={val} looks like percent (> 1.0). "
-                    f"Provenance rates must remain decimal (INV-CE-05)."
+                    f"finance_assumptions.{field}={val} looks like percent (> 1.0). "
+                    f"finance_assumptions rates must remain decimal (INV-CE-05)."
                 )
 
 
@@ -1128,13 +1246,15 @@ def _make_stub_ensemble(eval_id, policy_id, M=50, sample_kind="bootstrap",
     """Create a minimal stub PolicyEnsemble-like object for monkeypatching.
 
     Until the real PolicyEnsemble type exists, this is a SimpleNamespace stub.
-    Tests reference it by injecting into energy_go.serving.compare.cache.
+    Tests inject it into energy_go.serving.compare.cache.
 
     Stub hint fields (prefixed _) are read by the serving-layer mock of finance():
-      _irr_decimal:        engine's PercentileResult.irr → serving must ×100 → irr_p50_pct
-      _wacc_decimal:       engine's FinanceProvenance.wacc → must stay decimal in JSON
-      _equity_irr_decimal: engine's ViewResult.equity_irr → serving must ×100 → equity_irr_pct
-      _min_dscr_ratio:     engine's ViewResult.min_dscr → must NOT be ×100 in JSON
+      _irr_decimal:        engine decimal → serving must ×100 → irr_pct.p50.value (v1.1.0)
+      _wacc_decimal:       engine decimal → must stay decimal in finance_assumptions.wacc
+      _equity_irr_decimal: engine decimal → serving must ×100 → equity_irr_pct.p50.value
+      _min_dscr_ratio:     engine ratio → must NOT be ×100 in JSON → min_dscr (bare ratio)
+
+    sample_kind ∈ {"bootstrap", "empirical"} — "synthetic" is FORBIDDEN (INV-CE-17, D42/#133).
     """
     from types import SimpleNamespace
     run_ids = {policy_id: [[None] * 5] * M}

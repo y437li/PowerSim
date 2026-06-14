@@ -39,17 +39,24 @@ This contract covers all six endpoints under `/api/compare/`:
 | Endpoint | Tier | Sync/Async |
 |----------|------|------------|
 | `POST /api/compare/plan` | any (tier estimation) | synchronous |
-| `POST /api/compare/finance` | instant (a)0 | synchronous |
+| `POST /api/compare/recompute-finance` | instant (a)0 | synchronous |
 | `POST /api/compare/run` | fast (a)1 + eval_needed (b)2 | async (returns run_id) |
 | `GET /api/compare/run/{run_id}/status` | — | synchronous poll |
 | `POST /api/compare/sizing-sweep` | sweep | async (returns run_id) |
 | `GET /api/compare/sizing-sweep/{run_id}/status` | — | synchronous poll |
+
+> **SC5 note:** `POST /api/compare/recompute-finance` was listed as SC5 in #132 v1.1.0
+> `useFinanceRecompute` hook. This contract serves as both SC2 (full endpoint surface) and
+> the SC5 definition — serving-engineer owns it.
 
 **Not in scope here:**
 - `GET /api/configs`, `POST /api/configs`, `POST /api/configs/{id}/fork` → SC1
   (`contracts/serving/config_library.md`)
 - `GET /api/finance/compare` → separate serving contract (§13.12 / D39)
 - WebSocket / live telemetry — workbench is batch-only (D42)
+- `FinanceParamSet` → defined in `contracts/frontend/comparison_workbench.md §2.3`;
+  this contract references it as the request body for `POST /api/compare/recompute-finance`
+  and specifies the serving-layer mapping to `FinanceConfig`
 
 ---
 
@@ -81,135 +88,174 @@ decimals; the serving layer MUST multiply by 100 before serializing.
 }
 ```
 
-### 2.3 `FinanceConfigRequest` (user-adjustable FinanceConfig fields)
+### 2.3 `FinanceParamSet` → `FinanceConfig` mapping (serving-layer responsibility)
 
-All fields are optional; absent fields inherit the server default (matching `FinanceConfig`
-dataclass defaults in `contracts/finance/finance_engine.md §2.2`).
+`POST /api/compare/recompute-finance` accepts `FinanceParamSet` (defined in
+`contracts/frontend/comparison_workbench.md §2.3`). The serving layer maps each field to
+the `FinanceConfig` dataclass (`contracts/finance/finance_engine.md §2.2`).
 
-```json
-{
-  // CAPM inputs (§13.5b) — unit: decimal (e.g. 0.060 = 6.0% equity risk premium)
-  "beta_unlevered":          0.60,
-  "equity_risk_premium":     0.060,
-  "country_risk_premium":    0.0,
-  "r_f_override":            null,    // decimal | null — bypasses CGB curve; for testing only
+All `_pct` fields in `FinanceParamSet` are **percent** (e.g. 7.0 = 7.0%). The mapping
+converts to decimal where `FinanceConfig` expects decimal.
 
-  // Tax toggle (§13.9)
-  "tax_toggle":              false,
-  "tax_rate":                0.25,    // decimal (0.25 = 25%)
-  "depreciation_years":      20,      // unit: years; int ≥ 1
+| `FinanceParamSet` field | → `FinanceConfig` field | Notes |
+|---|---|---|
+| `risk_free_rate_pct.value` | `r_f_override = value / 100` | percent → decimal |
+| `equity_risk_premium_pct.value` | `equity_risk_premium = value / 100` | percent → decimal |
+| `beta.value` | `beta_unlevered = value` | dimensionless |
+| `wacc_pct.value` | back-solve `r_f_override` so CAPM yields target WACC | See §2.3.1 |
+| `hurdle_rate_pct.value` | `hurdle_rate_override = value / 100` | percent → decimal |
+| `inflation_pct.value` | not in `FinanceConfig` v1 — reserved for price-path scaling | ignore in v1 |
+| `gearing_pct.value` | `debt_toggle=True`; `target_de_ratio = g/(1-g)` where `g = value/100` | 60% → D/E 1.5 |
+| `cost_of_debt_pct.value` | `r_d_override = value / 100` | percent → decimal |
+| `loan_term_years.value` | `loan_term_years = value` | int |
+| `horizon_years.value` | `horizon_years = value` | int |
+| `tax_enabled.value` | `tax_toggle = value` | bool |
+| `corporate_tax_rate_pct.value` | `tax_rate = value / 100` | percent → decimal |
 
-  // Debt toggle (§13.9)
-  "debt_toggle":             false,
-  "target_de_ratio":         1.5,
-  "credit_spread":           0.0125,  // decimal (0.0125 = 125 bps over 5yr LPR)
-  "loan_term_years":         20,      // unit: years; int ≥ 1
-  "r_d_override":            null,    // decimal | null — bypasses LPR + credit_spread; testing
+Absent `FinanceParamSet` fields (not sent by the client) inherit `FinanceConfig` defaults.
 
-  // Horizon / project
-  "horizon_years":           20,      // unit: years; int ≥ 1
-  "valuation_date":          "2026-01-01",   // ISO 8601 date string
+#### 2.3.1 `wacc_pct` direct override rule
 
-  // Bootstrap CI (§13.10a)
-  "bootstrap_seed":          42,
-  "bootstrap_n_resamples":   2000,
-  "bootstrap_ci_level":      0.90,    // decimal (0.90 = 90% CI)
+When `finance_params.wacc_pct.value` is sent AND differs from the CAPM-computed WACC
+(given `risk_free_rate_pct`, `equity_risk_premium_pct`, `beta`), the serving layer
+back-solves for `r_f_override` to make CAPM yield the target WACC:
 
-  // Downside
-  "hurdle_rate_override":    null,    // decimal | null — None → r_e (CAPM base)
-
-  // View II (present = opt-in to View II delta)
-  "baseline_policy_id":      null    // string | null — key in PolicyEnsemble.runs
-}
+```
+r_f_target = wacc_target − (beta × ERP)   # where ERP = equity_risk_premium_pct/100
 ```
 
-> **CAPM vs WACC:** the frontend `FinanceSnapshot.wacc_pct` is a display-side computation;
-> it is NOT an input field here. The serving layer computes WACC from CAPM inputs + CGB
-> curve in `finance.discount`. Never accept a raw `wacc` override from the client.
+`r_f_override` is then set to `r_f_target` (decimal). This preserves CAPM structural
+consistency without adding a `wacc_override` field to `FinanceConfig` (which is LOCKED).
+
+If `wacc_pct` is at its default (not slider-dragged), the serving layer uses the CGB
+curve interpolation path normally (no `r_f_override`).
 
 > **CGB curve:** not sent by the client. The serving layer loads the configured CGB snapshot
-> from the server-side config store (or uses the finance-engine default). This is server-managed
-> state, not a per-request override. If no curve is configured, `r_f_override` can be used by
-> tests to bypass curve interpolation.
+> from the server-side config store (or uses the finance-engine default). This is
+> server-managed state, not a per-request override.
 
 ### 2.4 `FinanceResultSummary` (response — canonical JSON schema for SC2)
 
 This is the authoritative JSON schema; the frontend TypeScript type in
-`contracts/frontend/comparison_workbench.md §2.3` must match it exactly.
+`contracts/frontend/comparison_workbench.md §2.4` must match it field-for-field.
+The schema below matches #132 v1.1.0 (commit 0a47d24) exactly, plus two optional
+debt-gated fields (`equity_irr_pct`, `min_dscr`) not yet in #132 (to be added when
+debt metrics land in the frontend contract).
 
-Units: `_pct` fields = percent (e.g. 12.3 means 12.3%); `_yuan` fields = ¥;
-`_yuan_per_mwh` fields = ¥/MWh; `_yr` fields = years.
+Units: `*_pct` fields inside `MetricPercentiles.value` = percent; `*_yuan` fields = ¥;
+`*_yr` fields = years; `*_yuan_per_mwh` = ¥/MWh.
 
+**`PercentileResult` object** (used in every `MetricPercentiles` entry):
 ```json
 {
-  // Regime (derived by serving layer from FinanceResult)
-  "regime": "R2",                   // "R1" | "R2" | "R3"
-  "sample_kind": "synthetic",       // "synthetic" | "empirical" — from PolicyEnsemble.sample_kind
-  "m_draws": 50,                    // int ≥ 1 — from FinanceResult.M
-
-  // Upside metrics — P50 always present (even at M=1, from single_trajectory); P90 null at R1/R3
-  "irr_p50_pct":        12.3,       // unit: % — null when regime=R1 and no distribution
-  "irr_p90_pct":        8.1,        // unit: % — null when regime=R1 or R3 (tail-suppressed)
-  "npv_p50_yuan":       1500000.0,  // unit: ¥ — null only at M=1 (R1 point estimate below)
-  "npv_p90_yuan":       800000.0,   // unit: ¥ — null when regime=R1 or R3
-  "mirr_p50_pct":       9.5,        // unit: % — null when not computable
-  "lcoe_yuan_per_mwh":  48.3,       // unit: ¥/MWh — single-scenario (P50 at M≥2; point at M=1)
-  "payback_p50_yr":     7.2,        // unit: years — null when no distribution
-
-  // R1 point estimates (present at all M; display-only at R2/R3 where P50 is preferred)
-  "point_npv_yuan":     1500000.0,  // unit: ¥ — always present (single-scenario NPV)
-  "point_irr_pct":      12.3,       // unit: % — always present when computable, else null
-
-  // Downside risk — null when regime=R1 (distribution_valid=False)
-  "downside_risk": {
-    "worst_case_npv_yuan":    300000.0,  // unit: ¥ — min(NPV_m); labelled "worst of N years" in R3
-    "best_of_n_npv_yuan":     null,      // unit: ¥ — max(NPV_m) in R3 only; null in R1/R2
-    "p_npv_neg":              0.04,      // probability ∈ [0,1]; #{NPV_m < 0} / M (strict <)
-    "p_irr_below_hurdle":     0.10,      // probability ∈ [0,1]; POPULATED AT R3 — this is an
-                                         //   empirical frequency (#{IRR_m < hurdle}/M), not a tail
-                                         //   percentile; it does not collapse at M≈10. null only at
-                                         //   R1 (distribution_valid=False). PR #120/#121 confirmed.
-    "cvar5_yuan":             null,      // unit: ¥ — null in R3 (k=ceil(0.05·M) relabels to worst-of-N)
-    "max_drawdown_yuan":      -150000.0, // unit: ¥ ≤ 0; min(0, min_y cumCF_excl_CAPEX)
-    "max_drawdown_year":      3,         // unit: years (1-indexed)
-    "worst_year_cf_yuan":     -50000.0   // unit: ¥ — min annual net CF over all y and draws
-  },                                     //   null when regime=R1
-
-  // Debt-toggle-gated metrics (absent = null when debt_toggle=False in finance_config)
-  // equity_irr_pct: percent (×100 of Python decimal), same ×100 rule as irr_p50_pct (INV-CE-04)
-  // min_dscr: bare RATIO (e.g. 1.86) — NOT ×100. A value of 1.86 means DSCR 1.86× (INV-CE-16).
-  //   An implementation that ×100-s "all finance numbers" would produce 186 and corrupt the display.
-  "equity_irr_pct":  11.2,             // unit: % — null when debt_toggle=False; decimal×100
-  "min_dscr":        1.86,             // unit: bare ratio — null when debt_toggle=False; NOT ×100
-
-  // View II delta (present only when baseline_policy_id was set and baseline in ensemble)
-  "view_ii_delta": {
-    "npv_p50_delta_yuan": 250000.0,     // unit: ¥ — NPV(π) − NPV(baseline) at P50
-    "irr_p50_delta_pct":  1.8           // unit: pp (percentage points)
-  },                                     // null when View II not computed
-
-  // Provenance (for display + cross-variant consistency checks)
-  "provenance": {
-    "seed":          42,
-    "valuation_date": "2026-01-01",
-    "r_f":           0.026,             // decimal — interpolated or overridden
-    "r_e":           0.088,             // decimal — CAPM cost of equity
-    "wacc":          0.088,             // decimal — WACC (= r_e when debt off)
-    "price_path_ids": ["flat_2026"],
-    "code_version":  "0.3.1"
+  "value":      12.3,         // numeric metric value (units depend on parent field)
+  "confidence": "sound",      // "sound" | "indicative_low_confidence"
+  "bootstrap_ci": {           // present ONLY at R2 (bootstrap M≥50); absent elsewhere
+    "lo": 11.1,
+    "hi": 13.5
   }
 }
 ```
 
-**Serving-layer mapping rules (IRR/MIRR to percent):**
-- Python `PercentileResult.irr` (decimal, e.g. `0.123`) → JSON `irr_p50_pct` (percent, `12.3`)
-- Python `PercentileResult.mirr` (decimal) → JSON `mirr_p50_pct` (percent)
-- Python `ViewResult.equity_irr` (decimal) → JSON `equity_irr_pct` (percent, ×100) — null when debt off
-- Python `ViewResult.min_dscr` (bare ratio, e.g. `1.86`) → JSON `min_dscr` (bare ratio, `1.86`, **NOT ×100**)
-- Python `FinanceProvenance.wacc` (decimal) → JSON `provenance.wacc` (decimal, unchanged;
-  not multiplied — the provenance block retains decimal form for precision)
-- NPV and ¥ fields: pass through unchanged (no unit conversion)
-- `p_irr_below_hurdle` (float ∈ [0,1]) → JSON `p_irr_below_hurdle` (float, unchanged; NOT ×100)
+**`MetricPercentiles` object** (null at R1; fields absent at R3 except p50):
+```json
+{
+  "p50": { /* PercentileResult */ },
+  "p75": { /* PercentileResult */ },   // R2 only; absent at R3
+  "p90": { /* PercentileResult */ },   // R2 only; absent at R3
+  "p95": { /* PercentileResult */ },   // R2 only; absent at R3
+  "p99": { /* PercentileResult — confidence always "indicative_low_confidence" */ }
+                                        // R2 only; absent at R3
+}
+```
+
+**`SingleTrajectoryResult` object** (non-null ONLY at R1; null at R2/R3):
+```json
+{
+  "point_npv_yuan":     1500000.0,   // unit: ¥ — display label "NPV (single scenario)"
+  "max_drawdown_yuan":  -150000.0,   // unit: ¥ — min(0, min_y cumCF_excl_CAPEX)
+  "max_drawdown_year":  3,           // unit: years (1-indexed)
+  "worst_year_cf_yuan": -50000.0     // unit: ¥ — min annual net CF
+}
+```
+Note: **`point_irr_pct` is absent** — IRR is not computable at M=1 (single trajectory
+does not produce a distribution; the finance engine does not emit a point IRR).
+
+**`DownsideRiskResult` object** (null at R1; non-null at R2 and R3):
+```json
+{
+  "worst_case_npv_yuan":  300000.0,  // unit: ¥ — min(NPV_m); R3 label: "worst of N years"
+  "best_of_n_npv_yuan":   null,      // unit: ¥ — max(NPV_m); R3 ONLY; null at R1/R2 (absent field)
+  "p_npv_neg":            0.04,      // probability ∈ [0,1]; #{NPV_m < 0}/M; NOT ×100
+  "p_irr_below_hurdle":   0.10,      // probability ∈ [0,1]; POPULATED AT R3 — empirical frequency
+                                     //   (#{IRR_m < hurdle}/M), NOT a tail percentile; does not
+                                     //   collapse at M≈10. null ONLY at R1. PR #120/#121 confirmed.
+  "cvar5_yuan":           null,       // unit: ¥ — null at R3 (k=ceil(0.05·10)=1 relabels worst-of-N)
+  "max_drawdown_yuan":    -150000.0,  // unit: ¥
+  "max_drawdown_year":    3,          // unit: years (1-indexed)
+  "worst_year_cf_yuan":   -50000.0    // unit: ¥
+}
+```
+
+**Top-level `FinanceResultSummary`:**
+```json
+{
+  "regime": "R2",            // "R1" | "R2" | "R3" — derived by serving layer
+
+  "provenance": {
+    "sample_kind":        "bootstrap",  // "bootstrap" | "empirical" — NOT "synthetic" (D42/#133 LOCK)
+    "m_draws":            50,           // int ≥ 1
+    "distribution_valid": true          // false at R1
+  },
+
+  // Single-trajectory block — non-null ONLY at R1; null at R2/R3
+  "single_trajectory":   null,          // SingleTrajectoryResult | null
+
+  // Per-metric percentile distributions — null at R1 (IRR/MIRR/LCOE/payback absent at M=1)
+  "irr_pct":             { /* MetricPercentiles */ },   // null at R1
+  "npv_yuan":            { /* MetricPercentiles */ },   // null at R1
+  "mirr_pct":            { /* MetricPercentiles */ },   // null at R1
+  "lcoe_yuan_per_mwh":   { /* MetricPercentiles */ },   // null at R1; values in ¥/MWh
+  "payback_yr":          { /* MetricPercentiles */ },   // null at R1; values in years
+
+  // Downside risk — null at R1
+  "downside_risk": { /* DownsideRiskResult */ },        // null at R1
+
+  // Cash-flow series for client-side NPV fan re-discounting (R2 only; optional)
+  "cash_flow_series_yuan": [[1000000.0, 950000.0]],    // [m][year]; present at R2 m_draws≥2
+                                                         // absent at R1/R3
+
+  // Debt-toggle-gated (absent = null when gearing_pct not set / debt off)
+  // equity_irr_pct: percent form (×100 of engine decimal), same rule as irr_pct values (INV-CE-04)
+  // min_dscr: bare ratio (e.g. 1.86 = DSCR 1.86×) — NOT ×100 (INV-CE-16)
+  "equity_irr_pct": null,              // MetricPercentiles | null — null when debt off
+  "min_dscr":       null,              // number | null (bare ratio) — null when debt off
+
+  // Finance assumptions for display + cross-variant provenance
+  // (renamed from 'provenance' to avoid clash with regime provenance block above)
+  "finance_assumptions": {
+    "seed":           42,
+    "valuation_date": "2026-01-01",
+    "r_f":            0.026,           // decimal — interpolated or overridden
+    "r_e":            0.088,           // decimal — CAPM cost of equity
+    "wacc":           0.088,           // decimal — WACC (= r_e when debt off)
+    "price_path_ids": ["flat_2026"],
+    "code_version":   "0.3.1"
+  }
+}
+```
+
+**Serving-layer unit mapping rules:**
+- Python `PercentileResult.irr` (decimal, e.g. `0.123`) → JSON `irr_pct.p50.value` (percent, `12.3`)
+- Python `PercentileResult.mirr` (decimal) → JSON `mirr_pct.p50.value` (percent)
+- Python `ViewResult.equity_irr` (decimal) → JSON `equity_irr_pct.p50.value` (percent, ×100)
+- Python `ViewResult.min_dscr` (bare ratio, e.g. `1.86`) → JSON `min_dscr` (`1.86`, **NOT ×100**)
+- Python `FinanceProvenance.wacc/r_f/r_e` (decimal) → `finance_assumptions.wacc/r_f/r_e` (decimal, unchanged)
+- NPV, ¥, drawdown fields: pass through unchanged
+- `p_npv_neg`, `p_irr_below_hurdle` (float ∈ [0,1]): pass through unchanged (NOT ×100)
+- `PercentileResult.confidence` string passes through unchanged
+- `sample_kind`: Python `"bootstrap"` → JSON `"bootstrap"`; Python `"empirical"` → JSON `"empirical"`.
+  The string `"synthetic"` is NEVER emitted (forbidden by D42/#133 LOCK)
 
 ### 2.5 `ExecutionPlanVariant` (response)
 
@@ -302,10 +348,11 @@ was evicted between the plan call and the run call).
 
 ---
 
-## 4. `POST /api/compare/finance`
+## 4. `POST /api/compare/recompute-finance`
 
 Instant-tier (a)0 finance recompute: reuses a cached `PolicyEnsemble` (no dispatch),
-applies new `finance_config`, returns `FinanceResultSummary` synchronously.
+maps `FinanceParamSet` → `FinanceConfig` (§2.3), returns `FinanceResultSummary` synchronously.
+This is both SC2 and SC5 (see §1 scope note).
 
 ### 4.1 Request body
 
@@ -314,14 +361,26 @@ applies new `finance_config`, returns `FinanceResultSummary` synchronously.
   "eval_result_id":  "eval-uuid",    // string — key into PolicyEnsemble LRU cache
   "policy_id":       "policy-uuid",  // string — which policy in the ensemble to return results for
   "price_path_name": "flat_2026",    // string — must match a known PricePath.id
-  "finance_config":  {}              // FinanceConfigRequest (all fields optional)
+  "finance_params":  {               // FinanceParamSet (defined in comparison_workbench.md §2.3)
+    "risk_free_rate_pct":      { "value": 2.6,  "scope": "common" },
+    "equity_risk_premium_pct": { "value": 6.0,  "scope": "common" },
+    "beta":                    { "value": 0.60, "scope": "common" },
+    "wacc_pct":                { "value": 8.8,  "scope": "common" },
+    "hurdle_rate_pct":         { "value": 8.0,  "scope": "common" },
+    "horizon_years":           { "value": 20,   "scope": "common" },
+    "tax_enabled":             { "value": false, "scope": "common" },
+    "corporate_tax_rate_pct":  { "value": 25.0, "scope": "common" },
+    "gearing_pct":             { "value": 0.0,  "scope": "per_config" },
+    "cost_of_debt_pct":        { "value": 4.5,  "scope": "per_config" },
+    "loan_term_years":         { "value": 20,   "scope": "per_config" }
+  }
 }
 ```
 
-`policy_id` selects which entry in `FinanceResult.per_policy` to serialize. If
-`policy_id` is absent, the serving layer returns results for ALL policies as a dict
-(field `"results_by_policy_id": { "policy_uuid": FinanceResultSummary }`). For the
-comparison workbench single-variant case, `policy_id` MUST be present.
+All `finance_params` fields are optional (absent = use server default). Unknown keys →
+400 `VALIDATION_ERROR` (closed allow-set; see INV-CE-15).
+
+`policy_id` selects which entry in `FinanceResult.per_policy` to serialize.
 
 ### 4.2 Response — 200 OK
 
@@ -333,10 +392,11 @@ comparison workbench single-variant case, `policy_id` MUST be present.
 
 Processing order (serving layer):
 1. Look up `eval_result_id` in PolicyEnsemble LRU cache → 404 on miss.
-2. Merge `finance_config` overrides with server defaults to produce a `FinanceConfig`.
+2. Map `finance_params` → `FinanceConfig` per §2.3 mapping table (including `wacc_pct`
+   back-solve per §2.3.1 if provided).
 3. Call `finance(ensemble, price_paths=[loaded_price_path], econ=loaded_econ, finance_config)`.
-4. Serialize `FinanceResult.per_policy[policy_id]` → `FinanceResultSummary` (apply %
-   conversions from §2.4 rules).
+4. Serialize `FinanceResult.per_policy[policy_id]` → `FinanceResultSummary` (apply unit
+   conversions from §2.4 rules; nested MetricPercentiles shape).
 5. Return 200.
 
 Steps 3–5 are synchronous. Expected wall time < 500 ms at M=50 (pure Python; no JAX JIT).
@@ -536,27 +596,34 @@ Total configs = `energy_steps × power_steps` ≤ 400.
 
 ### 9.1 Response — 200 OK
 
+Shape matches `SizingSweepResult` in `contracts/frontend/comparison_workbench.md §2.7`
+(#132 v1.1.0). `surface` is a scalar 2D array (metric values only); axes are explicit
+separate arrays. This expands in the task #18 contract.
+
 ```json
 {
+  "run_id":                   "sweep-run-uuid",
   "status":                   "complete",    // "running" | "complete" | "error"
   "configs_done":             25,
   "configs_total":            25,
+
+  // Explicit axis arrays (needed by the frontend to label surface cells)
+  "energy_axis_mwh": [2.0, 6.0, 10.0, 14.0, 18.0],   // unit: MWh; length = energy_steps
+  "power_axis_mw":   [1.0, 3.0, 5.0, 7.0, 9.0],       // unit: MW;  length = power_steps
+
+  // Scalar surface — [energy_idx][power_idx]; null while running (INV-CE-13)
   "surface": [
-    [
-      { "energy_mwh": 2.0,  "power_mw": 1.0, "npv_p50_yuan": 800000.0,  "irr_p50_pct": 9.1 },
-      { "energy_mwh": 2.0,  "power_mw": 3.0, "npv_p50_yuan": 1100000.0, "irr_p50_pct": 10.8 }
-    ],
-    [
-      { "energy_mwh": 10.0, "power_mw": 1.0, "npv_p50_yuan": 1400000.0, "irr_p50_pct": 11.5 },
-      { "energy_mwh": 10.0, "power_mw": 3.0, "npv_p50_yuan": 1800000.0, "irr_p50_pct": 13.2 }
-    ]
-  ],                                          // null while running; present on complete
-  // surface[i][j] = point at energy_range[i], power_range[j]
-  "recommended_energy_idx":   1,              // 0-indexed row in surface
-  "recommended_power_idx":    1,              // 0-indexed column in surface
-  "recommended_distribution_yuan": [          // R2 only (M≥50): NPV draw array for histogram
+    [800000.0, 900000.0, 1100000.0, 1200000.0, 1300000.0],
+    [900000.0, 1050000.0, 1250000.0, 1350000.0, 1450000.0]
+  ],
+  "surface_metric": "npv_p50",               // "npv_p50" | "irr_p50" | "lcoe" (display label)
+  "regime": "R2",                            // "R1" | "R2" | "R3" — from the sweep's M
+
+  "recommended_energy_idx":   1,             // 0-indexed row in surface
+  "recommended_power_idx":    2,             // 0-indexed column in surface
+  "recommended_distribution_yuan": [         // R2 only (M≥50): NPV draw array for hover histogram
     1750000.0, 1820000.0, 1680000.0
-  ],                                          // null at R1/R3 or while running
+  ],                                         // absent at R1/R3 or while running
   "error":                    null
 }
 ```
@@ -574,19 +641,21 @@ Total configs = `energy_steps × power_steps` ≤ 400.
 
 | Field pattern | Unit | Notes |
 |---|---|---|
-| `*_pct` | % (percent) | e.g. `irr_p50_pct=12.3` means 12.3%; applies to IRR, MIRR, equity_irr |
-| `*_yuan` | ¥ (yuan) | no conversion from engine (already in ¥) |
-| `*_yuan_per_mwh` | ¥/MWh | LCOE, LCOS |
-| `*_yr` | years | payback, horizon |
+| `MetricPercentiles.value` in `irr_pct`, `mirr_pct`, `equity_irr_pct` | % (percent) | e.g. 12.3 means 12.3%; engine decimal ×100 (INV-CE-04) |
+| `MetricPercentiles.value` in `npv_yuan` | ¥ (yuan) | no conversion |
+| `MetricPercentiles.value` in `lcoe_yuan_per_mwh` | ¥/MWh | no conversion |
+| `MetricPercentiles.value` in `payback_yr` | years | no conversion |
+| `*_yuan` (scalar fields) | ¥ (yuan) | no conversion |
 | `*_mwh` | MWh | battery energy |
 | `*_mw` | MW | battery power |
 | `step` in PolicyRef | gradient steps | int |
-| `m_draws`, `M` | count (dimensionless) | |
-| `r_f`, `r_e`, `wacc` in provenance | decimal (0.026 = 2.6%) | NOT converted to % |
-| `equity_risk_premium`, `credit_spread` in FinanceConfigRequest | decimal | match Python dataclass |
+| `m_draws` | count (dimensionless) | |
+| `r_f`, `r_e`, `wacc` in `finance_assumptions` | decimal (0.026 = 2.6%) | NOT converted to % (INV-CE-05) |
+| `risk_free_rate_pct`, `equity_risk_premium_pct`, `wacc_pct`, etc. in `FinanceParamSet` | % (percent) | serving layer /100 before passing to FinanceConfig |
 | `tier_duration_estimate_s` | seconds | |
-| `min_dscr` | bare ratio (e.g. 1.86) | **NOT ×100** — DSCR is a coverage multiple, not a percent |
-| `p_npv_neg`, `p_irr_below_hurdle` | probability ∈ [0,1] | NOT ×100 — frequencies, not percentiles |
+| `min_dscr` | bare ratio (e.g. 1.86) | **NOT ×100** — DSCR coverage multiple (INV-CE-16) |
+| `p_npv_neg`, `p_irr_below_hurdle` | probability ∈ [0,1] | NOT ×100; empirical frequencies |
+| `bootstrap_ci.lo`, `bootstrap_ci.hi` | same unit as parent `MetricPercentiles.value` | present at R2 only |
 
 ---
 
@@ -608,8 +677,12 @@ Total configs = `energy_steps × power_steps` ≤ 400.
 | INV-CE-12 | `GET /api/compare/run/{run_id}/status` partial results include only variants that have finished; variants still running MUST NOT appear in `results_by_variant_id`. |
 | INV-CE-13 | `surface` in sizing-sweep status is `null` while `status="running"` (no partial surface). |
 | INV-CE-14 | `finance_config` fields `r_f_override` and `r_d_override` are test-only bypasses; the implementation MAY log a warning when they are set in non-test mode (but MUST NOT reject them). |
-| INV-CE-15 | `FinanceConfigRequest` uses a **closed allow-set**: the serving layer MUST reject any request body key that is not in the explicit allow-list of §2.3 field names with 400 `VALIDATION_ERROR`. `"wacc"` is the archetypal forbidden key (must be caught); any other unknown key (e.g. `"gamma"`, `"discount_rate"`, a typo) must also be rejected. |
+| INV-CE-15 | `finance_params` in `POST /api/compare/recompute-finance` uses a **closed allow-set**: the serving layer MUST reject any key not in the explicit `FinanceParamSet` field list (§2.3 mapping table) with 400 `VALIDATION_ERROR`. Examples of forbidden keys: `"wacc"` (must send `"wacc_pct"`), `"gamma"`, `"discount_rate"`, `"horizon_year"` (typo of `"horizon_years"`). |
 | INV-CE-16 | `min_dscr` in `FinanceResultSummary` is a **bare ratio** (e.g. `1.86`), NOT percent. A serving test MUST assert `min_dscr < 10.0` for realistic projects (DSCR > 10 is economically implausible; any value > 100 reveals an erroneous ×100 conversion). |
+| INV-CE-17 | `provenance.sample_kind` in `FinanceResultSummary` MUST be `"bootstrap"` or `"empirical"`. The string `"synthetic"` is FORBIDDEN (D42/#133 LOCK). A test MUST assert the emitted value is one of the two allowed strings. |
+| INV-CE-18 | `single_trajectory` is non-null ONLY at R1 (`distribution_valid=false`). At R2 and R3 it MUST be `null`. `single_trajectory` does NOT contain `point_irr_pct` — IRR is absent at M=1. |
+| INV-CE-19 | `irr_pct`, `npv_yuan`, `mirr_pct`, `lcoe_yuan_per_mwh`, `payback_yr` are ALL `null` at R1. Emitting non-null `MetricPercentiles` at R1 is a producer bug. |
+| INV-CE-20 | `cash_flow_series_yuan` is present ONLY at R2 (`m_draws ≥ 2`, `sample_kind="bootstrap"`). It MUST be absent (or `null`) at R1 and R3. |
 
 ---
 
