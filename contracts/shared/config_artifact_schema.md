@@ -176,7 +176,7 @@ Results are **referenced, never embedded** (results are large + versioned separa
 2. **Required fields:** missing `id`/`version`/`schema_version`/`design` → validation error with the field named.
 3. **Compose — device IDs:** `fleet[*].model_id` not in `device_model_schema` → reject; an **INERT/pending** id (electrolyzer, `pcc-sst-stub`) → reject per D38 `is_surfaceable`.
 4. **Compose — no resolved EnvParams:** an artifact carrying a resolved `EnvParams`/physics field → reject (anti-drift, D37/D18); physics is derived, not stored.
-5. **Finance scoping:** `effective = common ⊕ overrides` — a per-config `gearing` override wins over `common_finance.gearing`; an absent override inherits common (hand-checked: common gearing 0.0, override 0.6 → effective 0.6; no override → 0.0).
+5. **Finance scoping:** `effective = common ⊕ overrides` — a per-config `target_de_ratio` override wins over `common_finance.target_de_ratio`; an absent override inherits common (hand-checked: common `target_de_ratio` 0.0, override 1.5 → effective 1.5; no override → 0.0).
 6. **D32 secret-safety (reviewer-grade):** artifact with `api_key`/`secret`/`token`/`*_key`/`authorization` anywhere → reject; `endpoint` with inline `user:pass@` → reject; valid `agent_config` (provider/model/endpoint/params, no key) → accept.
 7. **Comment thread:** `author` ∉ {human, agent} → reject; valid entries ordered + append-only; `action_ref` optional.
 8. **Provenance:** fork → `forked_from="<id>@<v>"` + `param_delta` equals the actual diff (hand example: parent battery 300→child 400 → delta `{ "design.battery.energy_mwh": {old:300, new:400} }`); root → `forked_from=null`, empty delta. A fork gets a NEW `id`; an edit bumps `version` on the SAME `id`.
