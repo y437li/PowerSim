@@ -1518,12 +1518,14 @@ def test_fin48_r3_no_labeled_p75_p90_p95():
 def test_fin49_r3_empirical_p50_present():
     """FIN-49: R3 → empirical P50 = ¥60,000 per the LOCKED estimator (§A.1 literal).
 
-    10 sorted draws: [-80k, -20k, 10k, 30k, 60k, 90k, 120k, 150k, 200k, 260k]
+    10 sorted draws: [-80k, -30k, 10k, 40k, 60k, 90k, 120k, 150k, 200k, 260k]
     P50 = np.quantile(sorted, 1-0.50, method='lower')
         = np.quantile(sorted, 0.50, method='lower')
         → index floor(0.50 * 9) = 4 → x[4] = 60,000
 
-    P50 is kept in R3 because it is still meaningful as a median at M=10 (§A.0).
+    P50 is kept in R3 because it is still meaningful as a median at M=10 (§A.0), but
+    the bootstrap-CI width >> 20%·|P50| threshold → MUST be tagged
+    confidence="indicative_low_confidence" by regime rule (§A.1 PR #121, §13.10a).
     Source: §A.1 worked vector, §A.0 table.
     """
     result = _m10_r3_result()
@@ -1532,6 +1534,10 @@ def test_fin49_r3_empirical_p50_present():
     assert view.P50.npv_yuan == pytest.approx(60_000.0, abs=TOL_NPV_YUAN), (
         "R3 P50 NPV must be ¥60,000: "
         "10 draws sorted -> x[floor(0.50*9)]=x[4]=60,000 (LOCKED 'lower' estimator, §A.1)"
+    )
+    assert view.P50.confidence == "indicative_low_confidence", (
+        "R3 P50 MUST be tagged indicative_low_confidence — the kept median is meaningful "
+        "at M≈10 (§A.0) but NOT headline-safe; CI width >> threshold (§A.1 PR #121, §13.10a)"
     )
 
 

@@ -481,7 +481,7 @@ shown in comments** (engineering rule). The tolerance table (from PR #107 §C cr
 | FIN-60 | **Lifecycle throughput arm beats calendar:** `build_cash_flow_series([yr_heavy, yr_light, yr_light, yr_light], econ=econ)` with `lifetime_years=3, cycle_life_full_equiv=2.0, bat_capacity_mwh=100.0` (threshold=200 MWh) and bat_throughput=[120,100,100,100] → cycle fires at yr2 (cum=220≥200) before calendar yr3; CF[2]=EBITDA−replacement, CF[1]=CF[3]=CF[4]=EBITDA; degradation NOT subtracted | finance-expert PR #114 §B (INV-DEG throughput arm) |
 | FIN-47 | **R3 distribution_valid=True:** `finance(empirical_M10_ensemble)` → `result.distribution_valid=True`, `result.M=10` | §A.1 (PR #113); team-lead GO |
 | FIN-48 | **R3 no labeled tail/CVaR — ALL FIVE absent:** `view.P75=None`, `view.P90=None`, `view.P95=None`, `view.P99=None`, `view.downside_risk.cvar5_yuan=None` (k=1=worst-of-N relabel); downside_risk IS present (distribution_valid=True); FIN-48 asserts ALL FIVE absent per backend-reviewer forward-note (PR #111 re-audit) | §A.0/§A.1; D39 §4 |
-| FIN-49 | **R3 empirical P50 = ¥60,000:** `view.P50.npv_yuan = 60,000`; sorted 10 draws x[floor(0.50·9)]=x[4]=60k (LOCKED 'lower' estimator) | §A.1 worked vector |
+| FIN-49 | **R3 empirical P50 = ¥60,000, tagged `indicative_low_confidence`:** `view.P50.npv_yuan = 60,000`; sorted 10 draws x[floor(0.50·9)]=x[4]=60k (LOCKED 'lower' estimator); `view.P50.confidence = "indicative_low_confidence"` by regime rule (§A.1 PR #121, §13.10a — CI width >> threshold at M≈10; "meaningful median" ≠ "sound") | §A.1 worked vector; §A.1 PR #121 |
 | FIN-50 | **R3 worst/best-of-N range:** `downside_risk.worst_case_npv_yuan = −80,000` (= min, "worst of 10 observed years"); `downside_risk.best_of_n_npv_yuan = +260,000` (= max, new field `float\|None`, None in R1/R2; "best of 10 observed years"); NOT labeled as P90/P95 | §A.1; §13.10c naming discipline |
 | FIN-51 | **R3 P(NPV<0) = 0.20:** `downside_risk.p_npv_neg = 0.20` (2 draws < 0 of 10; strict less-than) | §A.1 |
 | FIN-52 | **R3 same locked estimator as R2:** `exceedance_percentile(R3_targets, 0.50)=60,000` AND `engine_P50.npv_yuan=60,000` (one function, same result — a second estimator is a review-fail) | §A.0 "ONE estimator" rule; D39 |
@@ -495,7 +495,7 @@ best_of_n_npv_yuan: float | None = None  # new field — max(NPV_m) in R3, None 
 ```
 `FinanceResult` top-level shape: **unchanged** (M, distribution_valid, per_policy identical).
 `distribution_valid` rule: `True` when `(M≥50 and sample_kind=="bootstrap") or (sample_kind=="empirical" and M>1)`.
-`_build_view_result()` R3 branch: set P50 (locked estimator); leave P75/P90/P95/P99=None; populate downside_risk with cvar5_yuan=None, best_of_n_npv_yuan=max(npv_arr).
+`_build_view_result()` R3 branch: set P50 (locked estimator) with `confidence="indicative_low_confidence"` (regime rule — §A.1 PR #121, §13.10a: CI width >> 20%·|P50| at M≈10; "meaningful median" does NOT imply "sound"); leave P75/P90/P95/P99=None; populate downside_risk with cvar5_yuan=None, best_of_n_npv_yuan=max(npv_arr).
 
 ---
 

@@ -466,9 +466,13 @@ def _make_view(
         ci_lvl = config.bootstrap_ci_level
 
         def _prow_r3(q):
+            # R3 empirical P50: "meaningful median at M≈10" (§A.0) but CI is wide
+            # → tag is ALWAYS indicative_low_confidence by regime rule (§A.1 PR #121).
+            # Never "sound" for empirical M≈10: bootstrap-CI width >> 20%·|P50| threshold.
             return _compute_percentile_row(
                 q, npv_arr, irr_arr, mirr_arr, lcoe_arr, lcos_arr,
-                pb_simple_arr, pb_disc_arr, seed, n_res, ci_lvl, "sound",
+                pb_simple_arr, pb_disc_arr, seed, n_res, ci_lvl,
+                "indicative_low_confidence",
             )
 
         dr_r3 = DownsideRisk(
