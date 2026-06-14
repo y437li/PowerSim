@@ -3,7 +3,7 @@
 Contract: contracts/shared/device_model_schema.md
          contracts/shared/tariff_model_schema.md (§4.2 — tariff_region integration)
 Spec: §2.1 (obs), §2.2 (action), §3.1–§3.4 (physics/costs), §7 (JAX purity), §8
-Decisions: D2, D3, D5, D12, D19, D22c, D23
+Decisions: D2, D3, D5, D12, D19, D22c, D23, D38
 
 Pure Python — never called inside jit.  The returned EnvParams is passed directly
 to jax.jit(step) as the `params` argument.
@@ -41,11 +41,27 @@ class DeviceModelError(ValueError):
 # Non-overridable physics constants per device type (§3.1 composition rule)
 # ---------------------------------------------------------------------------
 _NON_OVERRIDABLE: dict[str, frozenset[str]] = {
-    "wind_turbine":   frozenset({"v_cutin_mps", "v_rated_mps", "v_cutout_mps"}),
-    "pv_panel":       frozenset({"k_T_per_c", "eta_inverter"}),
-    "battery":        frozenset({"eta_ch", "eta_dis", "soc_min", "soc_max"}),
+    "wind_turbine":    frozenset({"v_cutin_mps", "v_rated_mps", "v_cutout_mps"}),
+    "pv_panel":        frozenset({"k_T_per_c", "eta_inverter"}),
+    "battery":         frozenset({"eta_ch", "eta_dis", "soc_min", "soc_max"}),
     "grid_connection": frozenset(),
 }
+
+# ---------------------------------------------------------------------------
+# Active device types — resolver-live categories (D38)
+# ---------------------------------------------------------------------------
+# Defined HERE (the layer that owns the composition rule and knows which types
+# are physics-complete + parity-verified) so serving and other consumers import
+# this set rather than defining a local copy (D18 anti-drift).
+#
+# Derived from _NON_OVERRIDABLE so the two are always in sync: every type that
+# has a composition-rule entry is resolver-live.
+#
+# A future scenario-activation PR adds to _NON_OVERRIDABLE AND this set together
+# atomically (single commit, single review gate).
+#
+# CONSUMERS: import this name; do NOT define a local equivalent.
+ACTIVE_DEVICE_TYPES: frozenset[str] = frozenset(_NON_OVERRIDABLE.keys())
 
 # Keys in the site YAML assets section that are internal resolver state
 _SITE_RESERVED_KEYS = frozenset({"model", "fleet_rated_mw", "fleet_capacity_mw",

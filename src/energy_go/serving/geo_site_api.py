@@ -14,9 +14,9 @@ Endpoints:
   POST /api/site/weather/fetch         — start weather fetch job
   GET  /api/site/weather/jobs/{id}     — poll job status
   GET  /api/site/weather-coverage      — lat/lon coverage indicator
-  GET  /api/devices/models             — full device catalogue
-  GET  /api/devices/models/{id}        — single device model
-  GET  /api/devices/search?q=          — autocomplete search
+  GET  /api/devices/models             — active device catalogue (ACTIVE_DEVICE_TYPES only)
+  GET  /api/devices/models/{id}        — single active device model
+  GET  /api/devices/search?q=          — autocomplete search (active types only)
 
 Units: MW (generator power), MWh (battery energy), ¥/MWh (prices),
        ¥/MW·month (demand rate), ¥/kW / ¥/kWh (economics), m/s (wind), m (height),
@@ -24,6 +24,9 @@ Units: MW (generator power), MWh (battery energy), ¥/MWh (prices),
 
 D32(i) / D18 single-source rule: validate() is called directly from
 energy_go.env.config_validation — no rule re-implementation here.
+
+D38: device-feed endpoints surface ACTIVE_DEVICE_TYPES only (resolver-live categories).
+ACTIVE_DEVICE_TYPES is imported from energy_go.env.resolver — NOT redefined here (D18).
 """
 from __future__ import annotations
 
@@ -37,6 +40,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from energy_go.env.resolver import ACTIVE_DEVICE_TYPES  # D38 — single-source (D18)
 from energy_go.serving.tariff_bands import derive_bands
 
 router = APIRouter()
@@ -757,11 +761,17 @@ def _model_entry(model_id: str, model_data: dict) -> dict:
 
 @router.get("/api/devices/models")
 def list_device_models() -> JSONResponse:
-    """Return all device models from config/device_models.yaml."""
+    """Return active device models from config/device_models.yaml.
+
+    D38: only models whose type is in ACTIVE_DEVICE_TYPES are returned.
+    INERT/gated catalog entries (electrolyzer, future gated families per D35)
+    are excluded until their env-logic activates.
+    """
     raw = _get_device_models()
     models = {
         mid: _model_entry(mid, mdata)
         for mid, mdata in raw.get("models", {}).items()
+        if mdata.get("type") in ACTIVE_DEVICE_TYPES  # D38 filter
     }
     return JSONResponse(content={
         "schema_version": raw.get("schema_version", ""),
@@ -775,10 +785,15 @@ def list_device_models() -> JSONResponse:
 
 @router.get("/api/devices/models/{model_id}")
 def get_device_model(model_id: str) -> JSONResponse:
-    """Single device model detail."""
+    """Single active device model detail.
+
+    D38: returns 400 DEVICE_MODEL_NOT_FOUND for INERT/gated types even when
+    the model_id exists in device_models.yaml, treating them as absent from
+    the feed (consistent with the list endpoint).
+    """
     raw = _get_device_models()
     mdata = raw.get("models", {}).get(model_id)
-    if mdata is None:
+    if mdata is None or mdata.get("type") not in ACTIVE_DEVICE_TYPES:  # D38 filter
         return JSONResponse(
             status_code=400,
             content={"detail": f"device model '{model_id}' not found",
@@ -845,6 +860,8 @@ def search_device_models(
     substring: list[tuple[str, dict]] = []
 
     for mid, mdata in all_models.items():
+        if mdata.get("type") not in ACTIVE_DEVICE_TYPES:  # D38 filter
+            continue
         if q_lower == "" or q_lower in mid.lower():
             if mid.lower().startswith(q_lower):
                 prefix.append((mid, mdata))

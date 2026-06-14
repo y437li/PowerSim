@@ -1152,3 +1152,140 @@ class TestDeviceSearch:
         """limit=50 is the maximum — must return 200."""
         resp = client.get("/api/devices/search?q=&limit=50")
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# D38 — ACTIVE_DEVICE_TYPES filter regression (inert-exclusion guard)
+# ---------------------------------------------------------------------------
+
+class TestActiveDeviceFilter:
+    """D38 regression: INERT/gated catalog entries must be ABSENT from the
+    device-feed endpoints even when present in device_models.yaml.
+
+    This is a no-op on current main (no electrolyzer in config/device_models.yaml yet)
+    but guards the exclusion contract and MUST remain green when PR #104 lands.
+
+    Technique: monkeypatch the module-level _device_models_cache to inject a synthetic
+    device_models dict containing one ACTIVE model and one INERT electrolyzer model.
+    _get_device_models() returns the cache directly when not None, so the patch is seen
+    by all three device endpoints during the test.  monkeypatch restores the original
+    cache value after the test (function-scoped restore, module-scoped client unaffected).
+    """
+
+    _FAKE_MODELS = {
+        "schema_version": "2.2.0",   # D35 schema version (electrolyzer schema)
+        "models": {
+            "vestas-v150-4.2": {     # ACTIVE — wind_turbine
+                "type": "wind_turbine",
+                "physics": {
+                    "v_cutin_mps": 3.0, "v_rated_mps": 12.0, "v_cutout_mps": 25.0,
+                    "hub_height_m": 105.0, "rated_mw_per_unit": 4.2,
+                },
+                "economics": {"capex_per_kw_yuan": 5800.0},
+            },
+            "h-tec-pem-1mw": {       # INERT — electrolyzer_pem (D35/D38 excluded)
+                "type": "electrolyzer_pem",
+                "physics": {
+                    "stack_efficiency_kwh_per_kg": 55.0,
+                    "max_power_mw_per_unit": 1.0,
+                },
+                "economics": {"capex_per_kw_yuan": 1200.0},
+            },
+        },
+    }
+
+    def test_inert_model_absent_from_models_list(self, client, monkeypatch):
+        """INERT electrolyzer must NOT appear in GET /api/devices/models.
+
+        Injects a fake device_models dict with one active (vestas wind turbine) and
+        one INERT (h-tec-pem-1mw electrolyzer_pem) entry.  The list endpoint must
+        return the active model and exclude the INERT one.  (D38 regression guard.)
+        """
+        import energy_go.serving.geo_site_api as geo_api
+        monkeypatch.setattr(geo_api, "_device_models_cache", self._FAKE_MODELS)
+
+        resp = client.get("/api/devices/models")
+        assert resp.status_code == 200
+        models = resp.json()["models"]
+
+        # Active model must be present
+        assert "vestas-v150-4.2" in models, (
+            "Active wind_turbine model must be in device feed"
+        )
+        # INERT electrolyzer must be absent (D38)
+        assert "h-tec-pem-1mw" not in models, (
+            "INERT electrolyzer_pem model must be excluded from device feed (D38)"
+        )
+
+    def test_inert_model_absent_from_search(self, client, monkeypatch):
+        """INERT electrolyzer must NOT appear in GET /api/devices/search.
+
+        Same injection technique as test_inert_model_absent_from_models_list.
+        Search for the INERT model's prefix ('h-tec') must return no results. (D38.)
+        """
+        import energy_go.serving.geo_site_api as geo_api
+        monkeypatch.setattr(geo_api, "_device_models_cache", self._FAKE_MODELS)
+
+        # Search for the INERT model by its prefix
+        resp = client.get("/api/devices/search?q=h-tec")
+        assert resp.status_code == 200
+        ids = [r["model_id"] for r in resp.json()["results"]]
+        assert "h-tec-pem-1mw" not in ids, (
+            "INERT electrolyzer_pem must be excluded from device search (D38)"
+        )
+
+        # Active model searchable (vestas prefix)
+        resp2 = client.get("/api/devices/search?q=vestas")
+        ids2 = [r["model_id"] for r in resp2.json()["results"]]
+        assert "vestas-v150-4.2" in ids2, (
+            "Active wind_turbine must still appear in search after D38 filter"
+        )
+
+    def test_inert_model_detail_returns_400(self, client, monkeypatch):
+        """Requesting an INERT model by ID must return 400 DEVICE_MODEL_NOT_FOUND.
+
+        The detail endpoint treats INERT models as absent from the feed — the same
+        code path as requesting a model_id that doesn't exist at all. (D38.)
+        """
+        import energy_go.serving.geo_site_api as geo_api
+        monkeypatch.setattr(geo_api, "_device_models_cache", self._FAKE_MODELS)
+
+        resp = client.get("/api/devices/models/h-tec-pem-1mw")
+        assert resp.status_code == 400, (
+            f"INERT electrolyzer model must return 400 from detail endpoint, "
+            f"got {resp.status_code}"
+        )
+        assert resp.json()["code"] == "DEVICE_MODEL_NOT_FOUND", (
+            "DEVICE_MODEL_NOT_FOUND code expected for INERT model detail (D38)"
+        )
+
+    def test_active_device_types_imported_from_resolver(self, client):
+        """ACTIVE_DEVICE_TYPES must be imported from energy_go.env.resolver (D18/D38).
+
+        Verifies the single-source invariant: the set used by the feed is NOT a
+        local serving literal but the canonical resolver export.  Fails if the
+        serving module defines its own copy instead of importing.
+        """
+        # Import from both locations — they MUST be the exact same object
+        from energy_go.env.resolver import ACTIVE_DEVICE_TYPES as resolver_set
+        import energy_go.serving.geo_site_api as geo_api
+
+        # The module-level name in geo_site_api must resolve to the resolver's object
+        assert geo_api.ACTIVE_DEVICE_TYPES is resolver_set, (
+            "geo_site_api.ACTIVE_DEVICE_TYPES must be the exact same object as "
+            "energy_go.env.resolver.ACTIVE_DEVICE_TYPES — no local serving copy (D18)"
+        )
+
+    def test_active_device_types_contains_4_gansu_types(self, client):
+        """ACTIVE_DEVICE_TYPES must contain exactly the 4 Gansu resolver-live categories.
+
+        Arithmetic: the Gansu parity set = {wind_turbine, pv_panel, battery, grid_connection}.
+        These are the 4 types with a composition-rule entry in _NON_OVERRIDABLE (resolver.py).
+        Any deviation is a contract violation (D38).
+        """
+        from energy_go.env.resolver import ACTIVE_DEVICE_TYPES
+        expected = {"wind_turbine", "pv_panel", "battery", "grid_connection"}
+        assert ACTIVE_DEVICE_TYPES == expected, (
+            f"ACTIVE_DEVICE_TYPES must equal the 4 Gansu resolver-live types; "
+            f"got {ACTIVE_DEVICE_TYPES}"
+        )

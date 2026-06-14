@@ -428,8 +428,11 @@ the coordinates are outside the valid range. `year_range` defaults to `[2014, 20
 
 ### 3.8 `GET /api/devices/models`
 
-**Purpose:** list all device models — physics summary + economics summary for the
+**Purpose:** list all **active** device models — physics summary + economics summary for the
 brand picker (stage_1_config §5.1). No resolver call; reads `device_models.yaml` directly.
+
+**D38 filter:** feed lists `ACTIVE_DEVICE_TYPES` categories only; INERT/gated catalog entries
+(e.g. electrolyzers per D35) are excluded until their env-logic activates.
 
 **Query parameters:** none.
 
@@ -521,6 +524,9 @@ omitted (full catalogue is returned).
 
 **Purpose:** autocomplete search for the Device ID field in the fleet table
 (stage_1_config §5.1 autocomplete dropdown).
+
+**D38 filter:** feed lists `ACTIVE_DEVICE_TYPES` categories only; INERT/gated catalog entries
+(e.g. electrolyzers per D35) are excluded until their env-logic activates.
 
 **Query parameters:**
 
