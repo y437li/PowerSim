@@ -1,50 +1,80 @@
 # Frontend Contract — Comparison Workbench
 
 > **Area:** frontend
-> **Contract version:** v1.0.0-draft
+> **Contract version:** v1.1.0-draft (Round 2 — finance-expert corrections + D43 + diff highlighting + instant finance tier)
 > **Status:** DRAFT — awaiting frontend-reviewer gate
 > **Branch:** `feat/frontend-comparison-workbench`
 > **Owner:** frontend-engineer
-> **Realizes:** docs/design/ux/comparison_workbench.md v0.6; LINEAGE D42; D41 (battery config-level compare); D39 (regime display)
-> **Pending inputs:** finance-expert regime-tag → display mapping confirmation; dashboard-engineer SurfaceChart + NpvFanChart prop-interface confirmation (marked `[PENDING]` in §5 and §6)
+> **Realizes:** docs/design/ux/comparison_workbench.md v0.7; LINEAGE D42; D43; D41; D39
+> **Finance-expert corrections applied:**
+>   - `sample_kind="bootstrap"` for R2 (not "synthetic")
+>   - per-percentile `PercentileResult.confidence` field (cross-cutting)
+>   - R1 = `single_trajectory` only; IRR/MIRR/LCOE/payback ABSENT at M=1
+>   - R3 `p_irr_below_hurdle` IS populated (frequency count, honest at M≈10)
+>   - R3 field names: `worst_case_npv_yuan` / `best_of_n_npv_yuan`; `cvar5_yuan = null`
+>   - R3 P50 always `indicative_low_confidence`
+>   - `deriveRegime` reads `FinanceResult.provenance.sample_kind` (nested path)
+> **D43 applied:** config carries a comment THREAD (`ConfigComment[]`); `parent_param_delta` for fork provenance
+> **Pending:** SC3 (dashboard-engineer chart interfaces); SC5 (serving recompute-finance endpoint)
 > **Reviewer:** frontend-reviewer
 > **REBUILD_SPEC refs:** §3 (env), §5 (training), §13 (finance)
 > **Depends on:**
-> - `contracts/shared/telemetry_schema.md` v1.0.0 (D39 regime fields: `distribution_valid`, `sample_kind`)
-> - `contracts/frontend/design_system.md` (TOKEN color system — no hex literals in this contract's components)
-> - `contracts/frontend/stage_config.md` (StageOneConfig → config-library save flow)
-> - Serving contracts (design-level only in §6; serving-engineer owns `contracts/serving/compare_*.md`)
+> - `contracts/shared/telemetry_schema.md` v1.0.0 (D39 regime fields)
+> - `contracts/frontend/design_system.md` (TOKEN system — no hex literals)
+> - `contracts/frontend/stage_config.md` (Stage ① → config-library save flow)
+> - Serving contracts (design-level; serving-engineer owns `contracts/serving/compare_*.md`)
 
 ---
 
 ## 1. Scope
 
 This contract covers:
-1. **Config Library** (`/configs` route) — the savable/forkable config catalog
-2. **Comparison Workbench** (`/compare` route) — multi-config comparison in two modes
-3. **Sizing Sweep sub-mode** — 2D battery sizing surface/heatmap inside the workbench
-4. **Shared state** — the workbench Zustand store + REST client hooks
-5. **Chart interfaces** — the props contracts between workbench and dashboard-engineer's charts
+1. **Config Library** (`/configs`) — savable/forkable config catalog with comment threads (D43)
+2. **Comparison Workbench** (`/compare`) — multi-config comparison in two modes (D42)
+3. **Input-diff highlighting** — auto-detect which params differ; mute identical ones; winner-per-metric highlight; sortable table
+4. **Finance params as instant tier** — live-scrubbable sliders; no re-sim; debounced recompute POST
+5. **Sizing Sweep sub-mode** — 2D battery sizing surface/heatmap
+6. **Shared state** — Zustand store + REST client hooks
+7. **Chart interfaces** — props contract between workbench and dashboard-engineer
 
-Out of scope:
-- Implementation of `SurfaceChart` and `NpvFanChart` (dashboard-engineer)
-- Serving-layer orchestration (serving-engineer)
-- Delta-accounting correctness (finance-expert)
-- 3D scene / live telemetry (workbench is batch-only, no WebSocket, no telemetry store — D42)
+Out of scope: `SurfaceChart` and `NpvFanChart` implementation (dashboard-engineer); serving orchestration (serving-engineer); delta-accounting correctness (finance-expert); 3D / live telemetry (batch-only; D42).
 
 ---
 
 ## 2. Type definitions
 
-### 2.1 Config library types
+### 2.1 Config annotation types (D43)
+
+```typescript
+/** A comment in the config's collaborative human+agent annotation thread (D43) */
+export interface ConfigComment {
+  id: string;               // server UUID
+  author: "agent" | "human";
+  timestamp: string;        // ISO 8601 UTC
+  text: string;
+}
+
+/**
+ * Structured param delta for forked configs — shows exactly what changed
+ * relative to the parent config. Populated server-side on fork.
+ */
+export type ParamDelta = Record<
+  string,
+  { from: unknown; to: unknown; label: string; unit?: string }
+>;
+```
+
+### 2.2 Config library types
 
 ```typescript
 /** A saved site configuration — first-class artifact per D42 */
 export interface SavedConfig {
   id: string;               // server UUID
   config_hash: string;      // deterministic SHA-256 of config content
-  label: string;            // user-given name (editable)
-  parent_id?: string;       // set when forked from another config
+  label: string;
+  parent_id?: string;
+  /** Structured param delta vs parent — populated when forked (D43) */
+  parent_param_delta?: ParamDelta;
   created_at: string;       // ISO 8601 UTC
   site_summary: {
     site_id: string;
@@ -55,109 +85,201 @@ export interface SavedConfig {
     pcc_device_id: string;
     tariff_region: string;
   };
-  policy_count: number;     // number of trained policies using this config
-  eval_count: number;       // number of eval results using this config
+  /** Finance params embedded in the config (used as defaults; can be overridden in workbench) */
+  finance_params: FinanceParamSet;
+  policy_count: number;
+  eval_count: number;
+  /** Collaborative annotation thread (D43) — ordered chronologically, oldest first */
+  comment_thread: ConfigComment[];
 }
 
 export type ConfigSortKey = "created_at" | "label" | "battery_energy_mwh";
 ```
 
-### 2.2 Workbench variant types
+### 2.3 Finance parameter types (instant tier ⚡)
+
+Finance parameters are the **instant tier** — changing them triggers `POST /api/compare/recompute-finance`
+on cached dispatch data with NO env re-run. Physical params (battery sizing, fleet counts) are NOT here.
 
 ```typescript
-/** Policy reference — either a trained policy or a named baseline agent */
-export type PolicyRef =
-  | { kind: "trained"; run_id: string; step: number }
-  | { kind: "baseline"; agent_name: string };
+/**
+ * Scope determines whether a param applies uniformly across all configs
+ * (for fair apples-to-apples comparison) or is independently set per config.
+ *
+ * D42 fairness defaults:
+ *   market-rate params (r_f, ERP, beta → WACC, tax) → "common"
+ *     (comparing configs with different market rates is misleading)
+ *   financing-structure params (gearing, debt term) → "per_config"
+ *     (each config may reflect a different financing plan)
+ */
+export type FinanceParamScope = "common" | "per_config";
 
-/** Finance assumptions snapshot for a variant */
-export interface FinanceSnapshot {
-  wacc_pct: number;       // e.g. 7.0 (percent, not fraction); unit: %
-  horizon_years: number;  // e.g. 20; unit: years
-  price_path_name: string;
-  /** Any per-variant overrides beyond the shared path */
-  overrides?: Record<string, unknown>;
+export interface FinanceParamEntry<T = number> {
+  value: T;
+  scope: FinanceParamScope;
+  unit?: string;        // display unit: "%" | "years" | "¥/MWh" | etc.
+  min?: T;              // slider range
+  max?: T;
+  step?: T;
 }
 
-/** Workbench execution tier (rl-architect v1.1 spine ruling) */
-export type ExecutionTier =
-  | "instant"          // Tier (a)0: finance assumptions only, same eval
-  | "fast"             // Tier (a)1: CAPEX/OPEX change, server-side finance recalc
-  | "eval_needed"      // Tier (b)2: dispatch-relevant diff; vmapped batch eval
-  | "retrain_required" // Tier (c)3: no compatible policy
-  | "running"          // Tier (b)2 in progress
-  | "unknown";         // execution plan not yet fetched
+/** All finance params that are live-scrubbable without re-running the env (instant tier ⚡) */
+export interface FinanceParamSet {
+  // CAPM / market-rate params — default scope: "common"
+  risk_free_rate_pct: FinanceParamEntry;        // r_f; unit: "%"
+  equity_risk_premium_pct: FinanceParamEntry;   // ERP; unit: "%"
+  beta: FinanceParamEntry;
+  // cost_of_equity = r_f + β × ERP (CAPM-derived, shown read-only; can be overridden by wacc_pct)
+  wacc_pct: FinanceParamEntry;                  // WACC override (can set directly); unit: "%"
+  hurdle_rate_pct: FinanceParamEntry;           // for P(IRR<hurdle); unit: "%"
+  inflation_pct: FinanceParamEntry;             // unit: "%"
 
-/** A single variant in the workbench */
-export interface WorkbenchVariant {
-  id: string;                          // workbench-local UUID
-  label: string;                       // e.g. "Baseline", "A (SST)"
-  is_baseline: boolean;                // exactly one per workbench
-  config_id: string;                   // from config library
-  config_hash: string;                 // for verification
-  policy: PolicyRef | null;
-  eval_result_id: string | null;
-  finance: FinanceSnapshot | null;     // null = use shared assumptions
-  price_path_name: string | null;      // null = use shared path
-  tier: ExecutionTier;
-  tier_duration_estimate_s: number | null; // from /api/compare/plan
-  run_id: string | null;               // if Tier (b) eval running
-  finance_result: FinanceResultSummary | null;
+  // Financing structure — default scope: "per_config"
+  gearing_pct: FinanceParamEntry;               // D/(D+E); unit: "%"
+  cost_of_debt_pct: FinanceParamEntry;          // LPR + spread; unit: "%"
+  loan_term_years: FinanceParamEntry<number>;   // unit: "years"
+  horizon_years: FinanceParamEntry<number>;     // unit: "years"
+
+  // Tax — default scope: "common"
+  tax_enabled: FinanceParamEntry<boolean>;
+  corporate_tax_rate_pct: FinanceParamEntry;    // unit: "%"
 }
 
-/** Finance result as the workbench sees it (read from the backend) */
+/** Which tier a parameter change belongs to */
+export type FinanceParamTier = "instant" | "re_sim";
+```
+
+### 2.4 Finance result types (corrected per finance-expert)
+
+```typescript
+/**
+ * Per-percentile result — EVERY percentile carries a confidence tag.
+ * Cross-cutting rule: the UI must read EACH percentile's confidence, not just the regime.
+ *
+ * "sound"                   → display normally; can be a bold headline
+ * "indicative_low_confidence" → MUST be rendered muted + caveat "(indicative)";
+ *                              MUST NOT appear as a bold headline;
+ *                              MUST NOT be the primary focus of the cell
+ */
+export interface PercentileResult {
+  value: number;
+  confidence: "sound" | "indicative_low_confidence";
+  /** Present only at R2 (bootstrap, M≥50) */
+  bootstrap_ci?: { lo: number; hi: number };
+}
+
+/** Percentiles for a single metric */
+export interface MetricPercentiles {
+  p50?: PercentileResult;
+  p75?: PercentileResult;   // R2 only
+  p90?: PercentileResult;   // R2 only
+  p95?: PercentileResult;   // R2 only
+  p99?: PercentileResult;   // R2 only; ALWAYS indicative_low_confidence at any M
+}
+
+/**
+ * Single-trajectory result — ONLY present at R1 (M=1, distribution_valid=false).
+ * Contains exactly 4 fields. IRR/MIRR/LCOE/payback are ABSENT at R1.
+ * Display label for point_npv_yuan: "NPV (single scenario)" — NOT "P50".
+ */
+export interface SingleTrajectoryResult {
+  point_npv_yuan: number;       // labeled "NPV (single scenario)"
+  max_drawdown_yuan: number;    // unit: ¥
+  max_drawdown_year: number;    // 1-indexed year of peak drawdown
+  worst_year_cf_yuan: number;   // unit: ¥
+}
+
+/**
+ * Downside risk block — present at R2 and R3 (null at R1).
+ * R3 is a partial subset: worst_case / best_of_n / p_npv_neg / p_irr_below_hurdle present;
+ * cvar5_yuan = null (collapses to worst-of-N at M≈10).
+ */
+export interface DownsideRiskResult {
+  worst_case_npv_yuan: number;      // min NPV across M runs; unit: ¥
+  best_of_n_npv_yuan?: number;      // max NPV across M runs (R3 only); unit: ¥
+  p_npv_neg: number;                // #{NPV<0}/M; fraction 0–1 (display as %)
+  /** Present at R2 AND R3 (frequency count is honest at M≈10) */
+  p_irr_below_hurdle: number;       // #{IRR<hurdle}/M; fraction 0–1
+  cvar5_yuan: number | null;        // null at R3 (M≈10 too small for CVaR)
+  max_drawdown_yuan: number;
+  max_drawdown_year: number;
+  worst_year_cf_yuan: number;
+}
+
+/** Finance result as the workbench reads it from the backend */
 export interface FinanceResultSummary {
-  regime: FinanceRegime;               // "R1" | "R2" | "R3" — from distribution_valid + sample_kind
-  sample_kind: "synthetic" | "empirical"; // D39 — NOT labelled R1/R2/R3; data source provenance
-  m_draws: number;
-  // Upside metrics (unit: % for IRR/MIRR; ¥ for NPV; ¥/MWh for LCOE; years for payback)
-  irr_p50_pct: number | null;
-  irr_p90_pct: number | null;         // null when regime = R1 or R3
-  npv_p50_yuan: number | null;
-  npv_p90_yuan: number | null;        // null when regime = R1 or R3
-  mirr_p50_pct: number | null;
-  lcoe_yuan_per_mwh: number | null;
-  payback_p50_yr: number | null;
-  // Worst single-year (always available when m_draws >= 1)
-  worst_year_cashflow_yuan: number | null;
-  max_drawdown_yuan: number | null;   // peak-to-trough capital drawdown; unit: ¥
-  // Downside risk (null when regime = R1; partial at R3 per §8.3)
-  worst_npv_yuan: number | null;      // min NPV across M draws
-  best_npv_yuan: number | null;       // max NPV across M draws (R3 only label)
-  p_npv_negative_pct: number | null;  // P(NPV<0) as percentage 0–100
-  p_irr_below_hurdle_pct: number | null; // null at R1 and R3
-  cvar_5pct_yuan: number | null;      // null at R1 and R3
-  // Cash flow series for client-side NPV fan re-discounting
-  cash_flow_series_yuan?: number[][];  // [m][year] — present when M > 1 and regime = R2
+  regime: FinanceRegime;
+  provenance: {
+    /**
+     * Data-source provenance. D42/D43 naming discipline:
+     * "bootstrap" = M≥50 block-bootstrap synthetic draws (R2)
+     * "empirical" = M≈10 real ERA5 years (R3)
+     * R1 has distribution_valid=false regardless of sample_kind.
+     */
+    sample_kind: "bootstrap" | "empirical";
+    m_draws: number;
+    distribution_valid: boolean;
+  };
+  /**
+   * Single-trajectory fields — ONLY present at R1 (distribution_valid=false).
+   * 4 fields: point_npv_yuan, max_drawdown_yuan, max_drawdown_year, worst_year_cf_yuan.
+   * null at R2 and R3.
+   */
+  single_trajectory: SingleTrajectoryResult | null;
+  /**
+   * Percentile distributions per metric.
+   * null at R1 (IRR/MIRR/LCOE/payback NOT AVAILABLE at M=1).
+   * Present at R2 (p50/p75/p90/p95 all "sound"; p99 always "indicative_low_confidence").
+   * Present at R3 (p50 only; p50.confidence always "indicative_low_confidence").
+   */
+  irr_pct: MetricPercentiles | null;
+  npv_yuan: MetricPercentiles | null;
+  mirr_pct: MetricPercentiles | null;
+  lcoe_yuan_per_mwh: MetricPercentiles | null;
+  payback_yr: MetricPercentiles | null;
+  /**
+   * Downside risk block. null at R1.
+   * At R3: p_irr_below_hurdle IS present; cvar5_yuan = null.
+   */
+  downside_risk: DownsideRiskResult | null;
+  /** For client-side NPV fan re-discounting (present when regime = R2, m_draws ≥ 2) */
+  cash_flow_series_yuan?: number[][];  // [m][year]
 }
 ```
 
-### 2.3 Finance regime type (D39 binding)
+### 2.5 Finance regime (D39 binding — corrected)
 
 ```typescript
 /**
  * Finance regime — D39 M-regime labels ONLY.
- * NAMING: "R1/R2/R3" are reserved for M-regime; data-source provenance
- * uses sample_kind ("synthetic" | "empirical"). Never conflate these two axes.
  *
- * R1 = M=1 (distribution_valid=false)      → point estimates only
- * R2 = M≥50 bootstrap (sample_kind="synthetic") → full distribution
- * R3 = M≈10 empirical (sample_kind="empirical") → partial; no tail percentiles
+ * NAMING DISCIPLINE (D42):
+ *   "R1/R2/R3" = M-regime labels ONLY.
+ *   Data-source provenance = provenance.sample_kind ("bootstrap" | "empirical").
+ *   NEVER conflate these two axes in UI text or variable names.
+ *
+ * R1 = M=1 (distribution_valid=false)
+ * R2 = M≥50 bootstrap (provenance.sample_kind="bootstrap")
+ * R3 = M≈10 empirical (provenance.sample_kind="empirical")
  */
 export type FinanceRegime = "R1" | "R2" | "R3";
 
-/** Derive regime from backend fields (single source of truth = backend) */
+/**
+ * Derive regime from backend fields.
+ * Read from FinanceResult.provenance (NOT from top-level or flat fields).
+ * Never infer from M count alone.
+ */
 export function deriveRegime(
   distribution_valid: boolean,
-  sample_kind: "synthetic" | "empirical"
+  sample_kind: "bootstrap" | "empirical"
 ): FinanceRegime {
   if (!distribution_valid) return "R1";
-  if (sample_kind === "empirical") return "R3";
-  return "R2";
+  if (sample_kind === "bootstrap") return "R2";
+  return "R3";  // empirical
 }
 ```
 
-### 2.4 Workbench mode types (D42)
+### 2.6 Workbench mode types (D42)
 
 ```typescript
 /**
@@ -169,40 +291,98 @@ export type WorkbenchMode = "compare_designs" | "press_test";
 /** Shared scenario — locked in compare_designs mode */
 export interface SharedScenario {
   price_path_name: string;
-  m_draws: number;          // ensemble size
-  sample_kind: "synthetic" | "empirical"; // data source (NOT regime label)
+  m_draws: number;
+  sample_kind: "bootstrap" | "empirical"; // data-source provenance (NOT a regime label)
   wacc_pct: number;         // unit: %
   horizon_years: number;    // unit: years
 }
 ```
 
-### 2.5 Sizing sweep types (D42 §7)
+### 2.7 Workbench variant types
+
+```typescript
+/** Policy reference — trained policy or named baseline agent */
+export type PolicyRef =
+  | { kind: "trained"; run_id: string; step: number }
+  | { kind: "baseline"; agent_name: string };
+
+/** Workbench execution tier (rl-architect v1.1 spine ruling) */
+export type ExecutionTier =
+  | "instant"          // ⚡ finance param only (no re-sim)
+  | "fast"             // ⚡ CAPEX/OPEX — server-side finance recalc
+  | "eval_needed"      // ▶ dispatch-relevant diff; vmapped batch eval
+  | "retrain_required" // ⚠ no compatible policy
+  | "running"          // ⏳ eval in progress
+  | "unknown";         // plan not yet fetched
+
+/** A single variant in the workbench */
+export interface WorkbenchVariant {
+  id: string;
+  label: string;
+  is_baseline: boolean;     // exactly one per workbench
+  config_id: string;
+  config_hash: string;
+  policy: PolicyRef | null;
+  eval_result_id: string | null;
+  /**
+   * Per-variant finance param overrides on top of the config's defaults.
+   * null = use shared common params from useWorkbenchStore.sharedFinanceParams.
+   * Partial = only override the specified keys; others fall back to shared params.
+   */
+  finance_params: Partial<FinanceParamSet> | null;
+  /** Per-variant price path override — null in compare_designs mode (invariant) */
+  price_path_name: string | null;
+  tier: ExecutionTier;
+  tier_duration_estimate_s: number | null;
+  run_id: string | null;
+  finance_result: FinanceResultSummary | null;
+}
+```
+
+### 2.8 Input-diff types
+
+```typescript
+/** A single parameter comparison across all configs in the workbench */
+export interface ConfigParamDiff {
+  param_path: string;           // dot-notation, e.g. "site_summary.battery_energy_mwh"
+  param_label: string;          // human-readable label
+  param_tier: FinanceParamTier; // "instant" (finance param) or "re_sim" (physical param)
+  unit?: string;
+  /** Values keyed by config_id */
+  values: Record<string, unknown>;
+  /** true if at least two configs have different values for this param */
+  differs: boolean;
+}
+
+/** Config diff summary — computed client-side from loaded configs whenever variants change */
+export interface WorkbenchDiffSummary {
+  differing_params: ConfigParamDiff[];     // params that differ (shown prominently)
+  common_params: ConfigParamDiff[];        // params that are identical (collapsed/muted)
+  finance_param_diffs: ConfigParamDiff[];  // subset of differing_params with tier="instant"
+  physical_param_diffs: ConfigParamDiff[]; // subset with tier="re_sim"
+}
+```
+
+### 2.9 Sizing sweep types
 
 ```typescript
 export interface SizingSweepConfig {
   base_config_id: string;
-  energy_mwh_min: number;   // unit: MWh
-  energy_mwh_max: number;
-  energy_steps: number;     // number of grid points on energy axis
-  power_mw_min: number;     // unit: MW
-  power_mw_max: number;
-  power_steps: number;
+  energy_mwh_min: number; energy_mwh_max: number; energy_steps: number;
+  power_mw_min: number;   power_mw_max: number;   power_steps: number;
   metric: "npv_p50" | "irr_p50" | "lcoe";
 }
 
 export interface SizingSweepResult {
   run_id: string;
   status: "running" | "complete" | "error";
-  configs_total: number;
-  configs_done: number;
-  energy_axis_mwh: number[];      // ordered grid; unit: MWh
-  power_axis_mw: number[];        // ordered grid; unit: MW
-  surface: number[][];            // [energy_idx][power_idx] — metric value
+  configs_total: number; configs_done: number;
+  energy_axis_mwh: number[]; power_axis_mw: number[];
+  surface: number[][];        // [energy_idx][power_idx]
   surface_metric: "npv_p50" | "irr_p50" | "lcoe";
-  regime: FinanceRegime;          // applies uniformly to all grid points
-  recommended_energy_idx: number; // index into energy_axis_mwh
-  recommended_power_idx: number;  // index into power_axis_mw
-  // M-draw values at the recommended point for hover distribution (R2 only)
+  regime: FinanceRegime;
+  recommended_energy_idx: number; recommended_power_idx: number;
+  /** M-draw NPV values at recommended point for hover histogram (R2 only) */
   recommended_distribution_yuan?: number[];
 }
 ```
@@ -211,53 +391,73 @@ export interface SizingSweepResult {
 
 ## 3. Store — `useWorkbenchStore` (Zustand)
 
-Single Zustand store for the entire workbench. No local state in child components for domain data.
+Single Zustand store. No domain state in child components.
 
 ```typescript
 interface WorkbenchStoreState {
   // Mode
   mode: WorkbenchMode;
 
-  // Scenario (locked in compare_designs mode)
+  // Shared scenario (locked in compare_designs mode)
   sharedScenario: SharedScenario;
+
+  /**
+   * Shared finance params (market-rate; scope="common" by default).
+   * Propagated to all variants where the matching param has scope="common".
+   */
+  sharedFinanceParams: FinanceParamSet;
 
   // Variants
   variants: WorkbenchVariant[];
-  baselineId: string | null;        // id of the variant marked is_baseline
+  baselineId: string | null;
+
+  /** Recomputed synchronously on every addVariant / removeVariant */
+  diffSummary: WorkbenchDiffSummary | null;
 
   // Execution
-  planLoading: boolean;
-  planError: string | null;
-  runLoading: boolean;
-  runError: string | null;
+  planLoading: boolean; planError: string | null;
+  runLoading: boolean;  runError: string | null;
+  /** Finance recompute loading state per variant_id (⚡ instant tier) */
+  financeRecomputeLoading: Record<string, boolean>;
 
   // Sizing sweep
   sweepConfig: SizingSweepConfig | null;
   sweepResult: SizingSweepResult | null;
-  sweepLoading: boolean;
-  sweepError: string | null;
-  sweepRunId: string | null;
-  sweepPollActive: boolean;
+  sweepLoading: boolean; sweepError: string | null;
+  sweepRunId: string | null; sweepPollActive: boolean;
 
   // UI state
   activeTab: "table" | "npv_fan" | "per_config" | "sizing_surface";
-  showBands: boolean;               // NpvFanChart band toggle; sticky per session
-  selectedVariantId: string | null; // for per-config detail tab
+  showBands: boolean;               // sticky within session
+  selectedVariantId: string | null;
+  tableSortMetric: string | null;   // null = default order
+  tableSortDir: "asc" | "desc";
+  diffPanelShowAllParams: boolean;  // false = differing params only
 
   // Actions
   setMode(mode: WorkbenchMode): void;
-  setSharedScenario(scenario: Partial<SharedScenario>): void;
-  addVariant(variant: Omit<WorkbenchVariant, "id" | "tier" | "tier_duration_estimate_s" | "run_id" | "finance_result">): void;
+  setSharedScenario(s: Partial<SharedScenario>): void;
+  /** Update a shared (common-scope) finance param; triggers recompute on all variants */
+  setSharedFinanceParam<K extends keyof FinanceParamSet>(
+    key: K, value: FinanceParamSet[K]["value"]
+  ): void;
+  /** Update a per-variant finance param override */
+  setVariantFinanceParam<K extends keyof FinanceParamSet>(
+    variantId: string, key: K, value: FinanceParamSet[K]["value"], scope: FinanceParamScope
+  ): void;
+  addVariant(v: Omit<WorkbenchVariant, "id" | "tier" | "tier_duration_estimate_s" | "run_id" | "finance_result">): void;
   removeVariant(id: string): void;
   updateVariant(id: string, update: Partial<WorkbenchVariant>): void;
-  designateBaseline(id: string): void;  // re-designate baseline; flips all deltas
+  designateBaseline(id: string): void;
   reorderVariants(orderedIds: string[]): void;
   clearAll(): void;
 
-  // Async actions
+  // Async
   fetchExecutionPlan(): Promise<void>;
   runMissingEvals(): Promise<void>;
   pollRunStatus(runId: string): Promise<void>;
+  /** ⚡ Instant tier — POST /api/compare/recompute-finance; no env re-run */
+  recomputeFinance(variantId: string): Promise<void>;
   submitSizingSweep(config: SizingSweepConfig): Promise<void>;
   pollSweepStatus(runId: string): Promise<void>;
   addSweepPointAsVariant(energy_idx: number, power_idx: number): void;
@@ -265,36 +465,27 @@ interface WorkbenchStoreState {
 ```
 
 **State invariants:**
-- `variants.filter(v => v.is_baseline).length === 1` when `variants.length > 0` (exactly one baseline at all times)
-- `baselineId` references a valid `variant.id` when `variants.length > 0`
-- In `compare_designs` mode: `variants.every(v => v.price_path_name === null || v.price_path_name === sharedScenario.price_path_name)` — per-variant price path overrides are disallowed in this mode
-- `showBands` persists for the browser session (not reset on tab switch)
-
-**Baseline re-designation** (`designateBaseline`):
-- Sets `is_baseline = true` on the new baseline, `false` on all others
-- Updates `baselineId`
-- All delta values in `ComparisonTable` recalculate automatically because they derive from store state
-- No API call — pure client-side state change (finance results already cached)
+1. `variants.filter(v => v.is_baseline).length === 1` when `variants.length > 0`
+2. `baselineId` references a valid `variant.id` when `variants.length > 0`
+3. In `compare_designs` mode: `updateVariant(id, {price_path_name: X})` is a no-op — price_path_name stays null
+4. `diffSummary` is recomputed synchronously on every `addVariant` / `removeVariant` call
+5. `sharedFinanceParams` only propagates to variants where the matching param has `scope: "common"`
+6. `financeRecomputeLoading[id] = true` during recompute; key deleted/false on complete or error
 
 ---
 
 ## 4. Component interfaces
 
-### 4.1 Route-level components
-
+### 4.1 Route-level
 ```typescript
-/** /configs route */
 export function ConfigLibraryPage(): JSX.Element;
-
-/** /compare route */
 export function ComparisonWorkbenchPage(): JSX.Element;
 ```
 
-### 4.2 Config Library components
-
+### 4.2 Config library
 ```typescript
 export function ConfigLibrary(props: {
-  onSelectForCompare: (configIds: string[]) => void; // navigates to /compare
+  onSelectForCompare: (configIds: string[]) => void;
 }): JSX.Element;
 
 export function ConfigCard(props: {
@@ -304,30 +495,45 @@ export function ConfigCard(props: {
   onFork: () => void;
   onEdit: () => void;
   onDelete: () => void;
-  onPressTest: () => void;  // → /compare in press_test mode with this config
+  onPressTest: () => void;
 }): JSX.Element;
+// Shows: label, site_summary (battery MWh/MW, fleet), policy_count, eval_count
+// If parent_id set: shows "Forked from [parent_label]" + param delta summary from parent_param_delta
+// Shows latest comment from comment_thread + "[N comments]" expander
+
+/** D43 — collaborative annotation thread (human + agent) */
+export function ConfigCommentThread(props: {
+  config_id: string;
+  comments: ConfigComment[];
+  onAddComment: (text: string) => void;
+  loading: boolean;
+}): JSX.Element;
+// data-testid="comment-thread"
+// Each entry: data-testid="comment-{id}", data-author="agent"|"human"
+// Agent entries: "AI" badge (TOKEN.accentAmber)
+// Human entries: inline textarea at bottom + [Post] button
 ```
 
-### 4.3 Workbench shell components
-
+### 4.3 Workbench shell
 ```typescript
-/** Mode toggle: "Compare designs" vs "Press-test" (D42 — always visible) */
+/** Mode toggle — D42: always visible, never hidden */
 export function WorkbenchModeSelector(props: {
   mode: WorkbenchMode;
   onChange: (mode: WorkbenchMode) => void;
 }): JSX.Element;
-// data-testid="mode-compare-designs" and data-testid="mode-press-test"
-// Active: aria-pressed="true"; Inactive: aria-pressed="false"
+// data-testid="mode-compare-designs", "mode-press-test"
+// aria-pressed="true" on active; "false" on inactive
+// Clicking active mode = no-op (does NOT call onChange)
 
-/** Scenario lock bar (compare_designs mode only) */
+/** Scenario lock bar (compare_designs mode) */
 export function ScenarioLockBar(props: {
   scenario: SharedScenario;
-  onUnlock: () => void; // switches to press_test mode
+  onUnlock: () => void;
 }): JSX.Element;
 // data-testid="scenario-lock-bar"
-// Shows lock icon + scenario summary + [Unlock → Press-test] button
+// Shows: 🔒, price_path_name, "M={m_draws}", "{wacc_pct}%"
+// [Unlock → Press-test] button calls onUnlock
 
-/** Variant/config list panel */
 export function VariantList(props: {
   variants: WorkbenchVariant[];
   baselineId: string | null;
@@ -335,57 +541,106 @@ export function VariantList(props: {
   onAddFromLibrary: () => void;
   onRunMissing: () => void;
   onOpenSizingSweep: () => void;
-  runLoading: boolean;
-  planLoading: boolean;
-  planError: string | null;
+  runLoading: boolean; planLoading: boolean; planError: string | null;
 }): JSX.Element;
 
-/** Single variant row */
 export function VariantRow(props: {
   variant: WorkbenchVariant;
   isBaseline: boolean;
   onEdit: () => void;
   onDuplicate: () => void;
   onRemove: () => void;
-  onDesignateBaseline: () => void;  // context-menu action
+  onDesignateBaseline: () => void;
 }): JSX.Element;
 
-/** Variant editor (inline expansion or side panel — frontend contract v1 = inline) */
 export function VariantEditor(props: {
-  variant: WorkbenchVariant | null; // null = new variant
+  variant: WorkbenchVariant | null;
   mode: WorkbenchMode;
   sharedScenario: SharedScenario;
-  onSave: (variant: WorkbenchVariant) => void;
+  onSave: (v: WorkbenchVariant) => void;
   onCancel: () => void;
 }): JSX.Element;
 
-/** Tier status chip */
 export function ExecutionPlanBadge(props: {
   tier: ExecutionTier;
   estimatedSeconds?: number;
 }): JSX.Element;
-// "instant"          → "⚡ Instant" (blue token)
-// "fast"             → "⚡ Fast (~Xs)" (blue)
-// "eval_needed"      → "▶ Eval needed (~Xmin)" (amber)
-// "retrain_required" → "⚠ Retrain required" (red)
-// "running"          → "⏳ Running…" (violet pulse)
-// "unknown"          → "?" (textMuted)
+// instant/fast   → "⚡ Instant"/"⚡ Fast (~Xs)" (blue TOKEN)
+// eval_needed    → "▶ Eval needed (~Xmin)" (amber)
+// retrain_required → "⚠ Retrain required" (red)
+// running        → "⏳ Running…" (violet pulse)
+// unknown        → "?" (textMuted)
 
-/** Lightweight modal for wizard → workbench entry points */
 export function AddToComparisonModal(props: {
   config_id: string;
   policy?: PolicyRef;
   eval_result_id?: string;
-  finance_snapshot?: FinanceSnapshot;
+  finance_snapshot?: FinanceParamSet;
   onAdd: (label: string, asBaseline: boolean) => void;
   onCancel: () => void;
 }): JSX.Element;
 ```
 
-### 4.4 Results components
-
+### 4.4 Input-diff highlighting (new)
 ```typescript
-/** Tab bar: Table | NPV vs Rate | Per-config detail | Sizing Surface */
+/**
+ * Shows which INPUT params differ across compared configs.
+ * "Delta-first": differing params at top (prominent); identical params collapsed below.
+ * Winner-per-metric highlight in ComparisonTable (best value per result column).
+ */
+export function ConfigDiffPanel(props: {
+  diffSummary: WorkbenchDiffSummary;
+  showAllParams: boolean;
+  onToggleShowAll: () => void;
+}): JSX.Element;
+// data-testid="config-diff-panel"
+// data-testid="diff-param-{param_path}" for each differing param (with value per config)
+// data-testid="common-param-count" shows "N params identical" + "[show all]" toggle
+// Finance param diffs (tier="instant") labeled with "⚡" icon
+// Physical param diffs (tier="re_sim") labeled with "▶ will re-sim"
+```
+
+### 4.5 Finance param editing (instant tier ⚡)
+```typescript
+/**
+ * Live-scrubbable finance param panel.
+ * Sliders debounced at 300ms → POST /api/compare/recompute-finance.
+ * scope="common" params → update ALL variants simultaneously.
+ * scope="per_config" params → update named variant only.
+ */
+export function FinanceParamPanel(props: {
+  params: FinanceParamSet;
+  mode: "shared" | "per_config";
+  variantId?: string;
+  onParamChange: (
+    key: keyof FinanceParamSet,
+    value: number | boolean,
+    scope: FinanceParamScope
+  ) => void;
+  recomputeLoading: boolean;
+}): JSX.Element;
+// data-testid="finance-param-panel"
+// Shows "⚡ INSTANT — updates live off cached dispatch" label
+// Each slider: data-testid="finance-param-{key}", data-scope="common"|"per_config"
+
+export function FinanceParamSlider(props: {
+  paramKey: string;
+  value: number;
+  min: number; max: number; step: number;
+  unit: string;
+  scope: FinanceParamScope;
+  label: string;
+  recomputeLoading: boolean;
+  onScopeToggle: () => void;
+  onChange: (value: number) => void;
+}): JSX.Element;
+// data-testid="finance-param-slider-{paramKey}"
+// data-testid="scope-toggle-{paramKey}" — toggles common ↔ per_config
+// While recomputeLoading: shimmer on the value display
+```
+
+### 4.6 Results components
+```typescript
 export function ComparisonResultsTabs(props: {
   activeTab: WorkbenchStoreState["activeTab"];
   hasSizingSweepResult: boolean;
@@ -393,123 +648,80 @@ export function ComparisonResultsTabs(props: {
 }): JSX.Element;
 
 /**
- * Three-section comparison table (Upside / Downside Risk / Operational).
- * Regime-aware: suppresses metrics per §8 — suppressed cells show the exact
- * string `"— (M > 1 required)"` (R1) or `"— (tail-suppressed)"` (R3) with tooltip.
+ * Three-section table (Upside / Downside Risk / Operational).
+ * Regime-aware suppression AND per-percentile confidence-aware styling.
+ * Delta-first: baseline column absolute; variant columns show delta + (absolute) subscript.
+ * Winner highlight: ★ or subtle green on best value per row.
+ * Sortable: clicking column header cycles asc→desc→default.
  */
 export function ComparisonTable(props: {
   variants: WorkbenchVariant[];
   baselineId: string | null;
   regime: FinanceRegime;
-  hurdle_rate_pct: number; // for P(IRR<hurdle) label; unit: %
+  hurdle_rate_pct: number;     // unit: %
+  sortMetric: string | null;
+  sortDir: "asc" | "desc";
+  onSort: (metric: string) => void;
 }): JSX.Element;
 
-/**
- * Single-config drill-down.
- * Shows DownsideRiskPanel FIRST (regime-aware suppression).
- * Includes "Press-test this config ▶" button at the bottom.
- */
 export function PerConfigDetail(props: {
   variant: WorkbenchVariant;
   regime: FinanceRegime;
   onPressTest: () => void;
-  onNext: () => void;
-  onPrev: () => void;
-  hasPrev: boolean;
-  hasNext: boolean;
+  onNext: () => void; onPrev: () => void;
+  hasPrev: boolean; hasNext: boolean;
 }): JSX.Element;
-```
 
-### 4.5 Sizing sweep components
-
-```typescript
-/** Sizing sweep config form + progress + SurfaceChart mount point */
 export function SizingSweepPanel(props: {
   sweepConfig: SizingSweepConfig | null;
   sweepResult: SizingSweepResult | null;
-  sweepLoading: boolean;
-  sweepError: string | null;
+  sweepLoading: boolean; sweepError: string | null;
   onConfigChange: (config: SizingSweepConfig) => void;
   onSubmit: () => void;
   onAddPointAsVariant: (energy_idx: number, power_idx: number) => void;
 }): JSX.Element;
-// data-testid="sizing-sweep-panel"
-// data-testid="sweep-run-button"
-// data-testid="sweep-progress" (shows "Running… X/N configs")
-// data-testid="sweep-regime-banner" (when regime != R2)
+// data-testid="sizing-sweep-panel", "sweep-run-button", "sweep-progress", "sweep-regime-banner"
 ```
 
 ---
 
-## 5. Chart prop interfaces (locked with dashboard-engineer)
-
-*[PENDING dashboard-engineer confirmation — marked below. These interfaces will be finalized and the `[PENDING]` annotations removed before the reviewer gate closes, or in a follow-up commit to this branch.]*
-
-### 5.1 SurfaceChart
-
-Rendered by dashboard-engineer inside `SizingSweepPanel`:
+## 5. Chart prop interfaces (pending dashboard-engineer confirmation — SC3)
 
 ```typescript
-// [PENDING: dashboard-engineer to confirm shape]
+// [PENDING SC3: dashboard-engineer to confirm]
 export interface SurfaceChartProps {
-  /** Energy axis values; unit: MWh */
   energyAxis_mwh: number[];
-  /** Power axis values; unit: MW */
   powerAxis_mw: number[];
-  /**
-   * Metric values at each grid point: surface[energy_idx][power_idx].
-   * Unit: ¥M for npv_p50; % for irr_p50; ¥/MWh for lcoe.
-   */
   surface: number[][];
   metric: "npv_p50" | "irr_p50" | "lcoe";
   metric_unit: "¥M" | "%" | "¥/MWh";
   regime: FinanceRegime;
   recommendedPoint?: {
-    energy_idx: number;
-    power_idx: number;
-    /** M-draw NPV values for hover histogram — only when regime = R2 */
-    distribution_yuan?: number[];
+    energy_idx: number; power_idx: number;
+    distribution_yuan?: number[];  // R2 hover histogram only
   };
   onPointHover?: (energy_idx: number, power_idx: number) => void;
   onPointSelect?: (energy_idx: number, power_idx: number) => void;
 }
-```
 
-### 5.2 NpvFanChart
-
-Rendered by dashboard-engineer inside `ComparisonResultsTabs`:
-
-```typescript
-// [PENDING: dashboard-engineer to confirm shape; especially cash-flow vs pre-computed NPV series]
+// [PENDING SC3: dashboard-engineer to confirm]
 export interface NpvVariantSeries {
-  id: string;
-  label: string;
-  is_baseline: boolean;
-  /** Hex color from TOKEN system */
-  color: string;
-  /**
-   * Pre-computed NPV at each discount rate (client re-discounted from
-   * cash_flow_series_yuan if available; else server-computed).
-   * All arrays must have length === rates_pct.length.
-   */
-  rates_pct: number[];                 // e.g. [3,4,5,...,15]; unit: %
-  p50_npv_yuan: number[];             // unit: ¥
-  p25_npv_yuan?: number[];            // absent when regime = R1 or R3
+  id: string; label: string; is_baseline: boolean; color: string;
+  rates_pct: number[];
+  p50_npv_yuan: number[];
+  p25_npv_yuan?: number[];
   p75_npv_yuan?: number[];
   p10_npv_yuan?: number[];
   p90_npv_yuan?: number[];
-  /** IRR x-intercept markers (NPV=0 crossing) */
   irr_p50_pct?: number;
-  irr_p90_pct?: number;               // absent when regime = R1 or R3
+  irr_p90_pct?: number;  // absent at R1 and R3
 }
 
 export interface NpvFanChartProps {
   variants: NpvVariantSeries[];
   regime: FinanceRegime;
   wacc_ref_pct: number;
-  /** Sticky within session per store.showBands */
   showBands: boolean;
-  /** Default [3, 15]; unit: % */
   xRange?: [number, number];
   onRateHover?: (rate_pct: number) => void;
 }
@@ -520,68 +732,58 @@ export interface NpvFanChartProps {
 ## 6. REST client hooks
 
 ```typescript
-/**
- * Config library operations
- */
 export function useConfigLibrary(): {
-  configs: SavedConfig[];
-  loading: boolean;
-  error: string | null;
-  refetch: () => void;
+  configs: SavedConfig[]; loading: boolean; error: string | null; refetch: () => void;
 };
-
 export function useSaveConfig(): {
   save: (config: SiteConfigPayload) => Promise<SavedConfig>;
-  loading: boolean;
-  error: string | null;
+  loading: boolean; error: string | null;
 };
-
 export function useForkConfig(): {
   fork: (config_id: string, label: string) => Promise<SavedConfig>;
-  loading: boolean;
-  error: string | null;
+  loading: boolean; error: string | null;
 };
 
-/**
- * Workbench execution plan
- * POST /api/compare/plan → ExecutionPlanResponse
- */
+/** POST /api/configs/:id/comments — human-authored comment (D43) */
+export function useAddComment(): {
+  add: (config_id: string, text: string) => Promise<ConfigComment>;
+  loading: boolean; error: string | null;
+};
+
 export function useExecutionPlan(): {
   fetchPlan: (variants: WorkbenchVariant[]) => Promise<ExecutionPlanResponse>;
-  loading: boolean;
-  error: string | null;
+  loading: boolean; error: string | null;
 };
-
-/**
- * Batch eval submission and polling
- * POST /api/compare/run → {run_id}
- * GET /api/compare/run/:run_id/status → {status, results_by_variant_id}
- */
 export function useCompareRun(): {
   submit: (variantIds: string[], sharedScenario: SharedScenario) => Promise<string>;
   poll: (runId: string, onComplete: (results: Record<string, FinanceResultSummary>) => void) => void;
   stopPolling: () => void;
-  loading: boolean;
-  error: string | null;
+  loading: boolean; error: string | null;
 };
 
 /**
- * Sizing sweep
- * POST /api/compare/sizing-sweep → {run_id}
- * GET /api/compare/sizing-sweep/:run_id/status → SizingSweepResult
+ * Finance recompute — ⚡ INSTANT tier.
+ * POST /api/compare/recompute-finance → FinanceResultSummary.
+ * No env re-run. finance() called on cached PolicyEnsemble with new FinanceConfig.
+ * Single POST (synchronous-style); no polling needed (< 1 s typical).
+ * [SC5: serving-engineer must confirm endpoint path and request/response shape]
  */
+export function useFinanceRecompute(): {
+  recompute: (variantId: string, financeParams: FinanceParamSet) => Promise<FinanceResultSummary>;
+  loading: boolean; error: string | null;
+};
+
 export function useSizingSweep(): {
   submit: (config: SizingSweepConfig) => Promise<string>;
   poll: (runId: string, onUpdate: (result: SizingSweepResult) => void) => void;
   stopPolling: () => void;
-  loading: boolean;
-  error: string | null;
+  loading: boolean; error: string | null;
 };
 ```
 
-**Polling interval:** 5000 ms (5 s) for both `useCompareRun` and `useSizingSweep`.
-**Poll stop condition:** `status === "complete"` or `status === "error"`.
-**No WebSocket** — the workbench is batch-only (D42; no live telemetry store accessed).
+**Polling interval:** 5000 ms for `useCompareRun` and `useSizingSweep`.
+**Finance recompute:** single POST (no polling); debounced at 300 ms on slider drag.
+**No WebSocket** — workbench is batch-only (D42).
 
 ---
 
@@ -590,71 +792,96 @@ export function useSizingSweep(): {
 ### 7.1 Mode switching (D42)
 
 **Compare-designs → Press-test:**
-- If `variants.length > 1`: prompt "Press-test which config?" — user picks one; other variants are moved to an "archived" list (accessible via "Restore for comparison") so they can be re-added.
-- If `variants.length === 1`: switch directly.
-- `sharedScenario` is preserved; scenario controls become editable.
+- If `variants.length > 1`: prompt "Press-test which config?" — user picks one; others archived.
+- `sharedScenario` preserved; scenario controls become editable.
 
 **Press-test → Compare-designs:**
-- If per-scenario edits exist: warn "Switching back resets scenarios to the shared default. Continue?"
-- On confirm: clear per-variant price_path overrides; re-lock the scenario panel.
+- If per-scenario edits exist: warn + confirm; clear `price_path_name` overrides; re-lock.
 
-**Mode selector visibility:** always visible; never hidden or disabled.
+**Mode selector:** always visible; never hidden.
 
 ### 7.2 Baseline re-designation
 
-- `designateBaseline(id)` can be called at any time (context menu on any variant row).
-- All delta cells in `ComparisonTable` update immediately (pure re-render from new `baselineId`).
-- No API call required — finance results are cached in `variant.finance_result`.
-- The new baseline's column switches from delta display to absolute display.
-- The old baseline's column switches from absolute to delta vs the new baseline.
+`designateBaseline(id)` → sets exactly one `is_baseline`; all delta cells recompute from store state; no API call.
 
-### 7.3 Regime display enforcement
+### 7.3 Regime display (D39 binding — corrected per finance-expert)
 
-The `ComparisonTable` must enforce the following rules exactly (single source of truth = the `regime` prop derived via `deriveRegime()` from `FinanceResultSummary`):
+**Regime detection (read from `FinanceResultSummary.provenance`):**
+```
+distribution_valid=false                       → R1
+distribution_valid=true, sample_kind="bootstrap" → R2
+distribution_valid=true, sample_kind="empirical" → R3
+```
 
-**R1 (M=1):**
-- P90 columns: cells show `"— (M > 1 required)"` (exact string); tooltip: `"Risk distribution metrics require M ≥ 50. Run with a larger ensemble."`
-- Downside Risk section: all four cells (Worst NPV, P(NPV<0), P(IRR<hurdle), CVaR-5%) show `"— (M > 1 required)"`
-- Regime banner shown above table header
-- Deltas on suppressed cells: also suppressed as `"—"`
+**Per-percentile confidence rendering (applies at ALL regimes — cross-cutting rule):**
+- `confidence="sound"` → render normally; can be bold/headline
+- `confidence="indicative_low_confidence"` → MUST be muted; append `"(indicative)"` inline; MUST NOT be bold/headline; MUST NOT be primary cell focus
 
-**R2 (M≥50):**
-- No suppression; all metric columns shown
-- No banner
+**R1 (M=1, `distribution_valid=false`):**
+- Show: `single_trajectory.point_npv_yuan` labeled **"NPV (single scenario)"** (NOT "P50")
+- Show: `single_trajectory.max_drawdown_yuan`, `max_drawdown_year`, `worst_year_cf_yuan`
+- Suppress ALL `MetricPercentiles` fields (IRR, MIRR, LCOE, payback — `null` in schema at R1)
+- Suppress: entire `downside_risk` block (`null` at R1)
+- Suppressed cells: exact string `"— (M > 1 required)"` + tooltip
+- Banner: `"M=1 — single scenario; risk distribution requires an ensemble (M ≥ 50)."`
 
-**R3 (M≈10):**
-- P90 upside columns: cells show `"— (tail-suppressed)"` with tooltip explaining nearest-rank issue at M≈10
-- Downside Risk: Worst NPV (= `worst_npv_yuan`) and Best NPV (= `best_npv_yuan`) and P(NPV<0) shown
-- Downside Risk: P(IRR<hurdle) and CVaR-5%: `"— (tail-suppressed)"`
-- Regime banner shown above table header
-- Deltas on suppressed cells: suppressed
+**R2 (M≥50, `sample_kind="bootstrap"`):**
+- Show: IRR, NPV, MIRR, LCOE, payback at P50/P75/P90/P95 (all `confidence="sound"`)
+- Show: P99 if present → styled `indicative_low_confidence`
+- Show: full `downside_risk` block (all fields present)
+- No suppression banner
 
-**Mixed-regime comparison:** when the workbench compares a variant at R2 against a variant at R1 (e.g., baseline ran M=50, variant A ran M=1), the entire table uses the MINIMUM regime (most conservative suppression). The header shows "⚠ Some variants have M=1 — all risk metrics suppressed. Re-run with M ≥ 50 to unlock."
+**R3 (M≈10, `sample_kind="empirical"`):**
+- Show: P50 of each metric → styled `indicative_low_confidence` (muted + `"(indicative)"`)
+- Suppress: P75/P90/P95/P99 (absent in schema) → cells show `"— (tail-suppressed)"`
+- Show `downside_risk` partial:
+  - `worst_case_npv_yuan` (worst-of-N runs)
+  - `best_of_n_npv_yuan` (best-of-N runs)
+  - `p_npv_neg` (frequency count — honest at M≈10)
+  - `p_irr_below_hurdle` — **PRESENT at R3**; displayed as frequency (e.g. "3/10 runs below hurdle")
+  - `cvar5_yuan = null` → suppressed as `"— (tail-suppressed)"`
+- Banner: `"Empirical ensemble (M≈10 real years) — tail percentiles + CVaR suppressed; worst/best of N + loss frequencies shown."`
 
-### 7.4 Sizing sweep behavior
+**Mixed-regime rule:** table uses MINIMUM regime when variants differ. Warning banner shown.
 
-- Sweep form: energy_steps and power_steps must both be ≥ 2 and ≤ 20 (UI clamps; error shown if invalid).
-- Total configs = energy_steps × power_steps; shown as "X configs" beside the [Run sweep] button.
-- On submit: the sweep run_id is stored in the workbench store; polling begins at 5 s intervals.
-- Progress bar shows: `"Running… {configs_done}/{configs_total} configs (est. Xmin)"`.
-- The surface is rendered as soon as `sweepResult.surface` is non-null (partial results are NOT shown — only complete surface).
-- Recommended-point marker shown as a ◎ symbol at the `recommended_energy_idx × recommended_power_idx` grid cell.
-- Hover over a non-recommended point: shows tooltip with the metric value. No distribution histogram at R1 or R3.
-- Hover over the recommended point at R2: shows distribution histogram from `recommended_distribution_yuan`.
-- "Add to comparison" click on a point: calls `addSweepPointAsVariant(energy_idx, power_idx)` which creates a new workbench variant with auto-label `"Battery {E} MWh × {P} MW"`.
+### 7.4 Input-diff highlighting
 
-### 7.5 Variant editor constraints
+`diffSummary` is computed synchronously on every `addVariant` / `removeVariant`:
+- Walk each param in `SavedConfig.site_summary` + `finance_params` across all loaded configs
+- `differs = true` iff ≥ 2 configs have different values for this param
+- `ConfigDiffPanel`: differing params first (prominent); identical params collapsed
+- **Winner per metric** in `ComparisonTable`: best variant per row gets `★` or subtle green highlight
+  - Highest IRR P50 = winner for IRR row; lowest LCOE P50 = winner for LCOE row
+  - Lowest `p_npv_neg` = winner for downside risk row
+- Table is **sortable** by any metric column: header click cycles asc→desc→default; client-side only (no API)
 
-- In `compare_designs` mode: per-variant price path override is HIDDEN (not disabled — just not shown). Only shared price path applies.
-- In `press_test` mode: per-variant price path override is shown and editable.
-- `POST /api/compare/plan` is called on every meaningful field change in the variant editor to show the updated tier before saving.
+### 7.5 Finance params — instant tier (⚡)
 
-### 7.6 Config library entry point
+Slider `onChange` debounced at 300 ms → `recomputeFinance(variantId)` → `POST /api/compare/recompute-finance`:
+- **No env re-run** — `finance()` called on cached `PolicyEnsemble`; only FinanceConfig changes
+- `financeRecomputeLoading[variantId] = true` during POST; result cells show subtle shimmer
+- **Scope rules (D42 fairness):**
+  - `scope="common"` param: `setSharedFinanceParam` propagates to ALL variants; each triggers individual recompute
+  - `scope="per_config"` param: `setVariantFinanceParam` updates only the named variant
+  - Scope toggle per param in `FinanceParamPanel`; tooltip explains default
 
-- Wizard Stage ① "Save & Continue" auto-saves to config library (serving-engineer gate).
-- A config saved from the wizard is auto-named `"{site_id}-v{N}"` where N increments per site.
-- Multi-select: selecting N ≥ 2 configs → "Compare N configs ▶" button navigates to `/compare` and adds them as variants.
-- Selecting 1 config → "Press-test ▶" is the primary action.
+### 7.6 Config comment thread (D43)
+
+- `comment_thread` rendered chronologically (oldest first)
+- Agent comments (`author: "agent"`): auto-appended by backend when agent proposes/refines a config; tagged "AI" (TOKEN.accentAmber)
+- Human comments (`author: "human"`): inline textarea at thread bottom; `[Post]` → `POST /api/configs/:id/comments`
+- Workbench variant row: latest comment truncated to 1 line + `[N comments]` expander
+- Compare view: `ConfigDiffPanel` shows latest comment per config alongside param diffs
+- `parent_param_delta` shown as structured diff summary (NOT in comment thread): `"Forked from [parent_label]: battery_energy_mwh 300→400 MWh, gearing_pct 60→70%"`
+
+### 7.7 Sizing sweep
+
+- `energy_steps` and `power_steps` ∈ [2, 20]; UI clamps; error shown if invalid
+- Total configs = energy_steps × power_steps; shown before Run button
+- Progress: `"Running… {configs_done}/{configs_total} configs"`
+- Surface rendered on `status=complete` only (no partial renders)
+- Recommended point: ◎ marker; hover at R2 = distribution histogram from `recommended_distribution_yuan`
+- "Add to comparison" → `addSweepPointAsVariant(energy_idx, power_idx)` → auto-label `"Battery {E} MWh × {P} MW"`
 
 ---
 
@@ -662,39 +889,45 @@ The `ComparisonTable` must enforce the following rules exactly (single source of
 
 | Code | What | Why |
 |------|------|-----|
-| DV-1 | `WorkbenchModeSelector` uses `aria-pressed` buttons (not radio inputs) | Mode is a two-state UI control with distinct visual affordances; `role="button"` + `aria-pressed` matches the design better than a `fieldset/input[type=radio]` group and is accessible |
-| DV-2 | Polling uses `setInterval` rather than WebSocket | D42: workbench is batch-only; no live telemetry feed; a 5 s poll interval is sufficient for batch eval progress |
-| DV-3 | `PerConfigDetail` does not show the raw cash-flow series | The `NpvFanChart` client-side re-discount is handled by dashboard-engineer's chart component; this component only passes `cash_flow_series_yuan` to the chart |
-| DV-4 | In compare_designs mode, per-variant price path overrides are HIDDEN not disabled | Hidden = the choice never exists in this mode; disabled would imply it's temporarily unavailable |
-| DV-5 | Chart prop interfaces marked `[PENDING]` | Dashboard-engineer confirmation required before these interfaces are locked; the tests will use stub chart components until confirmed |
+| DV-1 | `WorkbenchModeSelector` uses `aria-pressed` buttons | Two-state toggle; matches design affordance better than `fieldset/radio` |
+| DV-2 | Finance recompute is single POST (no polling) | `finance()` on cached M=50 ensemble < 1 s; no need for async job |
+| DV-3 | Sliders debounced at 300 ms | Prevent API spam on continuous drag |
+| DV-4 | Per-variant price path HIDDEN (not disabled) in compare_designs | Hidden = it doesn't exist; disabled = temporarily unavailable |
+| DV-5 | R3 P50 shown muted (not hidden) | Hiding implies no data; muted + caveat is more informative/honest |
+| DV-6 | Table sort is client-side | Finance results already in store; sort = pure render re-order; no API call |
+| DV-7 | `p_irr_below_hurdle` shown as frequency at R3 | Finance-expert: frequency count is honest at M≈10; CVaR tail not credible but loss-count is |
 
 ---
 
 ## 9. Out of scope (v1)
 
-- Saved/named comparisons (`/compare/:comparison_id`) — v2
-- PDF export — v2 (CSV export only in v1)
-- Per-variant M override — v2 (M is a workbench-level parameter)
-- Cross-variant weather-mode comparison (synthetic vs empirical in the same table) — v2
-- Workbench WebSocket / live results — never (batch-only by D42 design)
-- The `SurfaceChart` and `NpvFanChart` implementation — dashboard-engineer
-- The `DownsideRiskPanel` component reuse details — covered by `contracts/frontend/live_dashboard.md`
+- Saved/named comparisons (`/compare/:id`) — v2
+- PDF export — v2
+- Per-variant M override — v2
+- Cross-variant weather-mode comparison — v2
+- `SurfaceChart` and `NpvFanChart` implementation — dashboard-engineer
+- Agent-authored comments API (serving-engineer owns the comment POST endpoint)
 
 ---
 
-## 10. Open questions (gates)
+## 10. Open gates
 
-**Q1 — Serving contract for config library:** `GET /api/configs`, `POST /api/configs`, `POST /api/configs/:id/fork` are needed before implementation. These are serving-engineer's responsibility. The frontend contract is complete but implementation is BLOCKED until serving files `contracts/serving/config_library.md` (or equivalent). Mark SC1.
+**SC1** — Config library endpoints (`GET /api/configs`, `POST /api/configs`, `POST /api/configs/:id/fork`, `POST /api/configs/:id/comments`) — serving-engineer. **Blocks implementation.**
 
-**Q2 — Serving contract for compare endpoints:** `POST /api/compare/plan`, `POST /api/compare/run`, `GET /api/compare/run/:run_id/status`, `POST /api/compare/finance`, `POST /api/compare/sizing-sweep` — serving-engineer owns these. Mark SC2.
+**SC2** — Compare endpoints (`POST /api/compare/plan`, `POST /api/compare/run`, `GET /api/compare/run/:id/status`) — serving-engineer. **Blocks implementation.**
 
-**Q3 — Chart interface confirmation:** Dashboard-engineer must confirm or revise `SurfaceChartProps` and `NpvFanChartProps` in §5 before these are locked. Mark SC3.
+**SC3** — `SurfaceChartProps` + `NpvFanChartProps` — dashboard-engineer confirmation. **Blocks chart integration.**
 
-**Q4 — Finance-expert regime display confirmation:** Finance-expert must confirm the R1/R2/R3 suppression rules in §7.3 are correct per D39 (specifically: R3 partial downside panel — which fields, and field names in `FinanceResultSummary`). Mark SC4.
+**SC4** — Finance-expert regime display confirmation. **RESOLVED in v1.1.0** — corrections applied; R1 single_trajectory only; R3 p_irr_below_hurdle present; sample_kind="bootstrap" for R2; per-percentile confidence.
 
-**Q5 — Mixed-regime behavior:** when baseline = R2 and a variant = R1 (or vice versa), the table uses minimum regime (most conservative). Is this correct, or should each column use its own regime? Flagged for finance-expert + frontend-reviewer. Proposed: use minimum regime for the shared Downside Risk section; per-column regime for the Upside section. This avoids the "delta on suppressed vs non-suppressed" problem.
+**SC5** — `POST /api/compare/recompute-finance` (instant-tier finance recompute endpoint) — serving-engineer must confirm: (a) endpoint path, (b) request shape (variant_id + FinanceParamSet vs eval_result_id + FinanceConfig), (c) synchronous or async. **Blocks finance-param slider implementation.** Message sent to serving-engineer.
+
+**Q5** — Mixed-regime table: proposed minimum-regime for shared sections (most conservative). Finance-expert to confirm on PR.
+
+**Q6** — R3 `p_irr_below_hurdle` confidence level: assumed NOT tagged `indicative_low_confidence` here (it's a frequency count, which IS honest at M≈10). Finance-expert to confirm.
 
 ---
 
-*contracts/frontend/comparison_workbench.md — v1.0.0-draft — frontend-engineer — 2026-06-14*
-*D42 (comparison workbench model), D41 (battery config-level compare), D39 (regime display)*
+*contracts/frontend/comparison_workbench.md — v1.1.0-draft — frontend-engineer — 2026-06-14*
+*D42 (comparison workbench model), D43 (config comment thread), D41 (battery config-level compare), D39 (regime display)*
+*Finance-expert corrections applied: sample_kind="bootstrap" for R2; PercentileResult.confidence; R1=single_trajectory; R3 p_irr_below_hurdle present; field names corrected; deriveRegime updated.*

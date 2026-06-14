@@ -1,26 +1,44 @@
 /**
  * Test suite: comparison_workbench.test.tsx
- * Contract: contracts/frontend/comparison_workbench.md
+ * Contract: contracts/frontend/comparison_workbench.md v1.1.0-draft
  *
  * Tests must be RED until implementation. Do NOT modify approved tests to make them pass.
  * Reviewer-added cases marked: // reviewer:
+ *
+ * Round 2 amendments (2026-06-14):
+ *   - Fixtures corrected: sample_kind="bootstrap" (not "synthetic") for R2
+ *   - FINANCE_RESULT_R1 restructured: single_trajectory only; irr_pct=null (absent at M=1)
+ *   - FINANCE_RESULT_R3 corrected: worst_case_npv_yuan / best_of_n_npv_yuan;
+ *       p_irr_below_hurdle IS present (not null); cvar5_yuan=null
+ *   - New §15: per-percentile confidence styling
+ *   - New §16: input-diff highlighting (ConfigDiffPanel)
+ *   - New §17: finance param instant tier (FinanceParamPanel)
+ *   - New §18: D43 config comment thread
  */
 
 import React from "react";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
-import { act } from "react-dom/test-utils";
+import { render, screen, fireEvent, waitFor, within, act } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
 
-// Import under test (will fail until implemented)
+// Import under test (will fail until implemented — RED is correct)
 import {
   deriveRegime,
   type FinanceRegime,
   type WorkbenchMode,
   type WorkbenchVariant,
   type FinanceResultSummary,
+  type SingleTrajectoryResult,
+  type DownsideRiskResult,
+  type PercentileResult,
+  type MetricPercentiles,
   type SavedConfig,
+  type ConfigComment,
+  type ConfigParamDiff,
+  type WorkbenchDiffSummary,
   type SizingSweepResult,
   type SharedScenario,
+  type FinanceParamSet,
 } from "../../src/types/workbench";
 import { useWorkbenchStore } from "../../src/stores/workbenchStore";
 import { WorkbenchModeSelector } from "../../src/components/workbench/WorkbenchModeSelector";
@@ -32,75 +50,156 @@ import { SizingSweepPanel } from "../../src/components/workbench/SizingSweepPane
 import { AddToComparisonModal } from "../../src/components/workbench/AddToComparisonModal";
 import { ConfigCard } from "../../src/components/workbench/ConfigCard";
 import { PerConfigDetail } from "../../src/components/workbench/PerConfigDetail";
+import { ConfigCommentThread } from "../../src/components/workbench/ConfigCommentThread";
+import { ConfigDiffPanel } from "../../src/components/workbench/ConfigDiffPanel";
+import { FinanceParamPanel } from "../../src/components/workbench/FinanceParamPanel";
+import { FinanceParamSlider } from "../../src/components/workbench/FinanceParamSlider";
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
+/**
+ * CORRECTED: sample_kind="bootstrap" (not "synthetic") — D42 naming discipline.
+ * "bootstrap" = block-bootstrap M≥50 synthetic draws → R2.
+ * "empirical" = M≈10 real ERA5 years → R3.
+ */
 const SHARED_SCENARIO_R2: SharedScenario = {
   price_path_name: "declining-real",
   m_draws: 50,
-  sample_kind: "synthetic",
+  sample_kind: "bootstrap",  // CORRECTED: was "synthetic" in v1.0.0
   wacc_pct: 7.0,
   horizon_years: 20,
 };
 
+/**
+ * R2 finance result — M≥50 bootstrap (CORRECTED from v1.0.0):
+ * - sample_kind: "bootstrap" (not "synthetic")
+ * - nested PercentileResult shape with .value + .confidence
+ * - downside_risk block uses worst_case_npv_yuan / p_irr_below_hurdle (fraction)
+ */
 const FINANCE_RESULT_R2: FinanceResultSummary = {
   regime: "R2",
-  sample_kind: "synthetic",
-  m_draws: 50,
-  irr_p50_pct: 8.2,
-  irr_p90_pct: 7.6,
-  npv_p50_yuan: 142_000_000,    // ¥142M
-  npv_p90_yuan: 118_000_000,
-  mirr_p50_pct: 7.1,
-  lcoe_yuan_per_mwh: 312,
-  payback_p50_yr: 8.3,
-  worst_year_cashflow_yuan: -12_000_000,
-  max_drawdown_yuan: 842_000_000,
-  worst_npv_yuan: -38_000_000,
-  best_npv_yuan: 200_000_000,
-  p_npv_negative_pct: 18,
-  p_irr_below_hurdle_pct: 24,
-  cvar_5pct_yuan: -76_000_000,
+  provenance: {
+    sample_kind: "bootstrap",    // CORRECTED
+    m_draws: 50,
+    distribution_valid: true,
+  },
+  single_trajectory: null,       // null at R2
+  irr_pct: {
+    p50: { value: 8.2, confidence: "sound" },
+    p75: { value: 7.9, confidence: "sound" },
+    p90: { value: 7.6, confidence: "sound" },
+    p95: { value: 7.2, confidence: "sound" },
+    // p99 would be indicative_low_confidence if present
+  },
+  npv_yuan: {
+    p50: { value: 142_000_000, confidence: "sound" },
+    p90: { value: 118_000_000, confidence: "sound" },
+  },
+  mirr_pct: {
+    p50: { value: 7.1, confidence: "sound" },
+  },
+  lcoe_yuan_per_mwh: {
+    p50: { value: 312, confidence: "sound" },
+  },
+  payback_yr: {
+    p50: { value: 8.3, confidence: "sound" },
+  },
+  downside_risk: {
+    worst_case_npv_yuan: -38_000_000,   // CORRECTED: was "worst_npv_yuan"
+    p_npv_neg: 0.18,                    // fraction 0-1; display as 18%
+    p_irr_below_hurdle: 0.24,           // fraction 0-1; display as 24%
+    cvar5_yuan: -76_000_000,
+    max_drawdown_yuan: 842_000_000,
+    max_drawdown_year: 3,
+    worst_year_cf_yuan: -12_000_000,
+  },
 };
 
+/**
+ * R1 finance result — M=1 single scenario (CORRECTED from v1.0.0):
+ * CRITICAL: single_trajectory ONLY. IRR/MIRR/LCOE/payback are ABSENT at M=1.
+ * irr_pct = null, npv_yuan = null, etc.
+ * point_npv_yuan is labeled "NPV (single scenario)" NOT "P50".
+ * downside_risk = null.
+ */
 const FINANCE_RESULT_R1: FinanceResultSummary = {
   regime: "R1",
-  sample_kind: "synthetic",
-  m_draws: 1,
-  irr_p50_pct: 8.2,
-  irr_p90_pct: null,
-  npv_p50_yuan: 142_000_000,
-  npv_p90_yuan: null,
-  mirr_p50_pct: 7.1,
-  lcoe_yuan_per_mwh: 312,
-  payback_p50_yr: 8.3,
-  worst_year_cashflow_yuan: -12_000_000,
-  max_drawdown_yuan: 842_000_000,
-  worst_npv_yuan: null,
-  best_npv_yuan: null,
-  p_npv_negative_pct: null,
-  p_irr_below_hurdle_pct: null,
-  cvar_5pct_yuan: null,
+  provenance: {
+    sample_kind: "bootstrap",    // doesn't matter at R1 (distribution_valid=false)
+    m_draws: 1,
+    distribution_valid: false,   // KEY: this triggers R1 regime
+  },
+  single_trajectory: {
+    point_npv_yuan: 142_000_000,  // labeled "NPV (single scenario)" — NOT "P50"
+    max_drawdown_yuan: 842_000_000,
+    max_drawdown_year: 3,
+    worst_year_cf_yuan: -12_000_000,
+  },
+  irr_pct: null,             // ABSENT at M=1 — IRR not available
+  npv_yuan: null,            // ABSENT at M=1 — use single_trajectory.point_npv_yuan
+  mirr_pct: null,
+  lcoe_yuan_per_mwh: null,
+  payback_yr: null,
+  downside_risk: null,       // ABSENT at M=1
 };
 
+/**
+ * R3 finance result — M≈10 empirical years (CORRECTED from v1.0.0):
+ * - P50 values are always indicative_low_confidence at R3
+ * - downside_risk: worst_case_npv_yuan / best_of_n_npv_yuan (CORRECTED field names)
+ * - p_irr_below_hurdle IS PRESENT at R3 (finance-expert correction; was null in v1.0.0)
+ * - cvar5_yuan = null (suppressed at M≈10)
+ */
 const FINANCE_RESULT_R3: FinanceResultSummary = {
   regime: "R3",
-  sample_kind: "empirical",
-  m_draws: 10,
-  irr_p50_pct: 7.9,
-  irr_p90_pct: null,          // tail-suppressed at R3
-  npv_p50_yuan: 135_000_000,
-  npv_p90_yuan: null,          // tail-suppressed
-  mirr_p50_pct: 6.8,
-  lcoe_yuan_per_mwh: 318,
-  payback_p50_yr: 8.7,
-  worst_year_cashflow_yuan: -15_000_000,
-  max_drawdown_yuan: 890_000_000,
-  worst_npv_yuan: -45_000_000,  // min of 10 runs
-  best_npv_yuan: 195_000_000,   // max of 10 runs
-  p_npv_negative_pct: 20,       // 2/10 runs = 20%
-  p_irr_below_hurdle_pct: null, // tail-suppressed
-  cvar_5pct_yuan: null,         // tail-suppressed
+  provenance: {
+    sample_kind: "empirical",
+    m_draws: 10,
+    distribution_valid: true,
+  },
+  single_trajectory: null,
+  irr_pct: {
+    p50: { value: 7.9, confidence: "indicative_low_confidence" },  // ALWAYS indicative at R3
+    // p75/p90/p95/p99 absent at R3
+  },
+  npv_yuan: {
+    p50: { value: 135_000_000, confidence: "indicative_low_confidence" },
+  },
+  mirr_pct: {
+    p50: { value: 6.8, confidence: "indicative_low_confidence" },
+  },
+  lcoe_yuan_per_mwh: {
+    p50: { value: 318, confidence: "indicative_low_confidence" },
+  },
+  payback_yr: {
+    p50: { value: 8.7, confidence: "indicative_low_confidence" },
+  },
+  downside_risk: {
+    worst_case_npv_yuan: -45_000_000,   // CORRECTED: was "worst_npv_yuan"
+    best_of_n_npv_yuan: 195_000_000,    // CORRECTED: was "best_npv_yuan"; R3 only
+    p_npv_neg: 0.20,                    // 2/10 runs; display as 20%
+    p_irr_below_hurdle: 0.30,           // CORRECTED: WAS null in v1.0.0; IS present at R3 (3/10 runs)
+    cvar5_yuan: null,                   // null at R3 (M≈10 too small for CVaR)
+    max_drawdown_yuan: 890_000_000,
+    max_drawdown_year: 4,
+    worst_year_cf_yuan: -15_000_000,
+  },
+};
+
+/** Default stub for FinanceParamSet (minimal; real implementation fills in all fields) */
+const STUB_FINANCE_PARAMS: FinanceParamSet = {
+  risk_free_rate_pct: { value: 2.5, scope: "common", unit: "%", min: 0, max: 10, step: 0.1 },
+  equity_risk_premium_pct: { value: 6.0, scope: "common", unit: "%", min: 0, max: 15, step: 0.1 },
+  beta: { value: 1.0, scope: "common", min: 0, max: 3, step: 0.05 },
+  wacc_pct: { value: 7.0, scope: "common", unit: "%", min: 3, max: 20, step: 0.1 },
+  hurdle_rate_pct: { value: 7.0, scope: "common", unit: "%", min: 3, max: 20, step: 0.1 },
+  inflation_pct: { value: 2.5, scope: "common", unit: "%", min: 0, max: 10, step: 0.1 },
+  gearing_pct: { value: 60, scope: "per_config", unit: "%", min: 0, max: 90, step: 1 },
+  cost_of_debt_pct: { value: 4.5, scope: "per_config", unit: "%", min: 0, max: 15, step: 0.1 },
+  loan_term_years: { value: 15, scope: "per_config", unit: "years", min: 5, max: 30, step: 1 },
+  horizon_years: { value: 20, scope: "per_config", unit: "years", min: 10, max: 40, step: 1 },
+  tax_enabled: { value: true, scope: "common" },
+  corporate_tax_rate_pct: { value: 25, scope: "common", unit: "%", min: 0, max: 45, step: 1 },
 };
 
 function makeVariant(overrides: Partial<WorkbenchVariant> = {}): WorkbenchVariant {
@@ -112,7 +211,7 @@ function makeVariant(overrides: Partial<WorkbenchVariant> = {}): WorkbenchVarian
     config_hash: "#a1b2c3",
     policy: { kind: "trained", run_id: "run-001", step: 2_400_000 },
     eval_result_id: "eval-001",
-    finance: null,
+    finance_params: null,     // uses shared params
     price_path_name: null,
     tier: "instant",
     tier_duration_estimate_s: null,
@@ -137,8 +236,20 @@ function makeSavedConfig(overrides: Partial<SavedConfig> = {}): SavedConfig {
       pcc_device_id: "pcc-substation-945mw",
       tariff_region: "cn-gansu",
     },
+    finance_params: STUB_FINANCE_PARAMS,
     policy_count: 2,
     eval_count: 3,
+    comment_thread: [],       // D43: empty thread by default
+    ...overrides,
+  };
+}
+
+function makeComment(overrides: Partial<ConfigComment> = {}): ConfigComment {
+  return {
+    id: "cmt-001",
+    author: "agent",
+    timestamp: "2026-06-10T12:00:00Z",
+    text: "Optimal C-rate at this E/P ratio based on dispatch analysis.",
     ...overrides,
   };
 }
@@ -147,14 +258,16 @@ function makeSavedConfig(overrides: Partial<SavedConfig> = {}): SavedConfig {
 
 describe("§1 deriveRegime — D39 regime derivation", () => {
   it("T-REGIME-1: distribution_valid=false → R1 regardless of sample_kind", () => {
-    // R1 is M=1 (point estimate). Backend sets distribution_valid=false.
-    expect(deriveRegime(false, "synthetic")).toBe("R1");
+    // R1 = M=1 (point estimate). Backend sets distribution_valid=false.
+    // CORRECTED: sample_kind arg is now "bootstrap" | "empirical" (not "synthetic")
+    expect(deriveRegime(false, "bootstrap")).toBe("R1");
     expect(deriveRegime(false, "empirical")).toBe("R1");
   });
 
-  it("T-REGIME-2: distribution_valid=true + sample_kind=synthetic → R2", () => {
-    // R2 = M≥50 bootstrap (synthetic draws)
-    expect(deriveRegime(true, "synthetic")).toBe("R2");
+  it("T-REGIME-2: distribution_valid=true + sample_kind=bootstrap → R2", () => {
+    // R2 = M≥50 block-bootstrap synthetic draws
+    // CORRECTED: was "synthetic" in v1.0.0; correct value is "bootstrap"
+    expect(deriveRegime(true, "bootstrap")).toBe("R2");
   });
 
   it("T-REGIME-3: distribution_valid=true + sample_kind=empirical → R3", () => {
@@ -162,15 +275,12 @@ describe("§1 deriveRegime — D39 regime derivation", () => {
     expect(deriveRegime(true, "empirical")).toBe("R3");
   });
 
-  // reviewer: naming discipline — function must NOT reference the strings "R1/R2/R3"
-  // as data-source labels (only M-regime labels)
-  it("T-REGIME-4: sample_kind is the data-source axis, NOT a regime label", () => {
-    // The return value "R1"/"R2"/"R3" is the M-regime only.
-    // The sample_kind input uses "synthetic"/"empirical" — never "R1"/"r1" etc.
-    const regime = deriveRegime(true, "synthetic");
-    // sample_kind itself is NOT "R2"; regime is
-    expect(regime).not.toBe("synthetic");
+  // reviewer: naming discipline guard
+  it("T-REGIME-4: deriveRegime return is a regime label; sample_kind is NOT a regime label", () => {
+    const regime = deriveRegime(true, "bootstrap");
+    expect(regime).not.toBe("bootstrap");  // "bootstrap" is provenance, not regime
     expect(regime).not.toBe("empirical");
+    expect(["R1", "R2", "R3"]).toContain(regime);
   });
 });
 
@@ -178,20 +288,13 @@ describe("§1 deriveRegime — D39 regime derivation", () => {
 
 describe("§2 WorkbenchModeSelector — D42 two-mode discipline", () => {
   it("T-MODE-1: renders both mode buttons", () => {
-    render(
-      <WorkbenchModeSelector
-        mode="compare_designs"
-        onChange={vi.fn()}
-      />
-    );
+    render(<WorkbenchModeSelector mode="compare_designs" onChange={vi.fn()} />);
     expect(screen.getByTestId("mode-compare-designs")).toBeTruthy();
     expect(screen.getByTestId("mode-press-test")).toBeTruthy();
   });
 
-  it("T-MODE-2: active mode has aria-pressed=true", () => {
-    render(
-      <WorkbenchModeSelector mode="compare_designs" onChange={vi.fn()} />
-    );
+  it("T-MODE-2: active mode has aria-pressed=true; inactive has aria-pressed=false", () => {
+    render(<WorkbenchModeSelector mode="compare_designs" onChange={vi.fn()} />);
     expect(screen.getByTestId("mode-compare-designs")).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByTestId("mode-press-test")).toHaveAttribute("aria-pressed", "false");
   });
@@ -217,31 +320,25 @@ describe("§2 WorkbenchModeSelector — D42 two-mode discipline", () => {
     expect(screen.getByTestId("mode-compare-designs")).toBeTruthy();
     rerender(<WorkbenchModeSelector mode="press_test" onChange={vi.fn()} />);
     expect(screen.getByTestId("mode-press-test")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("mode-compare-designs")).toHaveAttribute("aria-pressed", "false");
   });
 });
 
 // ─── §3. ScenarioLockBar ─────────────────────────────────────────────────────
 
 describe("§3 ScenarioLockBar — compare_designs locked scenario", () => {
-  it("T-LOCKBAR-1: renders lock icon + scenario summary", () => {
-    render(
-      <ScenarioLockBar
-        scenario={SHARED_SCENARIO_R2}
-        onUnlock={vi.fn()}
-      />
-    );
+  it("T-LOCKBAR-1: renders lock icon + scenario summary (price path, M, WACC)", () => {
+    render(<ScenarioLockBar scenario={SHARED_SCENARIO_R2} onUnlock={vi.fn()} />);
     const bar = screen.getByTestId("scenario-lock-bar");
     expect(bar).toBeTruthy();
-    // shows price path, M, WACC
     expect(bar.textContent).toMatch(/declining-real/);
     expect(bar.textContent).toMatch(/M=50/);
     expect(bar.textContent).toMatch(/7\.0%/);
   });
 
-  it("T-LOCKBAR-2: contains lock icon visual marker", () => {
+  it("T-LOCKBAR-2: contains lock icon visual marker (🔒 or text 'locked')", () => {
     render(<ScenarioLockBar scenario={SHARED_SCENARIO_R2} onUnlock={vi.fn()} />);
     const bar = screen.getByTestId("scenario-lock-bar");
-    // 🔒 or text "locked" must be present
     expect(bar.textContent).toMatch(/🔒|locked/i);
   });
 
@@ -277,15 +374,13 @@ describe("§4 ExecutionPlanBadge — tier status chips", () => {
     expect(screen.getByText(/⏳/)).toBeTruthy();
   });
 
-  it("T-TIER-5: eval_needed shows estimate when provided", () => {
-    // 120 s = ~2 min
+  it("T-TIER-5: eval_needed with 120 s shows time estimate (~2 min)", () => {
     render(<ExecutionPlanBadge tier="eval_needed" estimatedSeconds={120} />);
-    // should mention "2 min" or ">1 min" or similar
     expect(screen.getByText(/min/i)).toBeTruthy();
   });
 });
 
-// ─── §5. ComparisonTable — Regime display ────────────────────────────────────
+// ─── §5. ComparisonTable — R1 regime ─────────────────────────────────────────
 
 describe("§5 ComparisonTable — R1 suppression (M=1)", () => {
   const baselineR1 = makeVariant({ finance_result: FINANCE_RESULT_R1 });
@@ -297,6 +392,9 @@ describe("§5 ComparisonTable — R1 suppression (M=1)", () => {
         baselineId="var-baseline"
         regime="R1"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
     expect(screen.getByText(/M > 1 required|M=1|risk.*require/i)).toBeTruthy();
@@ -309,59 +407,98 @@ describe("§5 ComparisonTable — R1 suppression (M=1)", () => {
         baselineId="var-baseline"
         regime="R1"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
-    // At least one cell with the exact suppression string for P90
     const cells = screen.getAllByText("— (M > 1 required)");
     expect(cells.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("T-R1-3: Worst NPV cell suppressed at R1", () => {
+  it("T-R1-3: Worst NPV cell suppressed at R1 (downside_risk is null)", () => {
     render(
       <ComparisonTable
         variants={[baselineR1]}
         baselineId="var-baseline"
         regime="R1"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
-    // Worst NPV row should show suppressed value
-    // The row label "Worst NPV" should exist but its value cell = suppressed
     const worstNpvLabel = screen.queryByText(/Worst NPV/i);
     expect(worstNpvLabel).toBeTruthy();
-    // Value should be suppressed, not a number
+    // Value suppressed — the ¥-38M figure from FINANCE_RESULT_R2 should NOT appear
     expect(screen.queryByText(/-38|38,000/)).toBeNull();
   });
 
-  it("T-R1-4: P50 IRR is shown at R1 (not suppressed)", () => {
-    // IRR P50 = 8.2% should be visible at R1
+  /**
+   * T-R1-4 CORRECTED (v1.1.0): At R1, IRR is NOT available (irr_pct=null).
+   * Only single_trajectory fields are shown:
+   *   point_npv_yuan labeled "NPV (single scenario)"
+   *   max_drawdown_yuan, max_drawdown_year, worst_year_cf_yuan
+   *
+   * WRONG in v1.0.0: tested "IRR P50 = 8.2% should be visible at R1" — IRR is ABSENT at M=1.
+   */
+  it("T-R1-4: NPV single scenario shown at R1 as 'NPV (single scenario)' — NOT P50", () => {
+    // single_trajectory.point_npv_yuan = ¥142M; label must be "NPV (single scenario)"
     render(
       <ComparisonTable
         variants={[baselineR1]}
         baselineId="var-baseline"
         regime="R1"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
-    expect(screen.getByText(/8\.2%/)).toBeTruthy();
+    // The label "NPV (single scenario)" must appear
+    expect(screen.getByText(/NPV.*single scenario|single scenario.*NPV/i)).toBeTruthy();
+    // IRR must NOT appear at R1 (irr_pct is null in schema)
+    expect(screen.queryByText(/IRR.*P50|IRR.*8\.2%/i)).toBeNull();
   });
 
-  it("T-R1-5: worst-year cash flow is shown at R1 (single-trajectory, always available)", () => {
-    // worst_year_cashflow_yuan = -12M — this should appear even at R1
+  // reviewer: IRR P50 must be absent (not just hidden) at R1 — irr_pct=null in schema
+  it("T-R1-4b: IRR P90, MIRR, LCOE, payback are all absent at R1", () => {
+    render(
+      <ComparisonTable
+        variants={[baselineR1]}
+        baselineId="var-baseline"
+        regime="R1"
+        hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
+      />
+    );
+    // MIRR and LCOE should not show values (their MetricPercentiles are null)
+    expect(screen.queryByText(/MIRR.*7\.1|7\.1.*MIRR/i)).toBeNull();
+    expect(screen.queryByText(/312.*MWh/)).toBeNull();
+  });
+
+  it("T-R1-5: worst-year cash flow from single_trajectory IS shown at R1", () => {
+    // single_trajectory.worst_year_cf_yuan = -12M — shown even at R1
     render(
       <ComparisonTable
         variants={[makeVariant({ finance_result: FINANCE_RESULT_R1 })]}
         baselineId="var-baseline"
         regime="R1"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
-    // Should show worst single-year cash flow
     expect(screen.getByText(/−?¥?12|worst.year/i)).toBeTruthy();
   });
 });
 
-describe("§5 ComparisonTable — R2 no suppression (M≥50)", () => {
+// ─── §5 ComparisonTable — R2 ─────────────────────────────────────────────────
+
+describe("§5 ComparisonTable — R2 no suppression (M≥50 bootstrap)", () => {
   const baselineR2 = makeVariant({ finance_result: FINANCE_RESULT_R2 });
 
   it("T-R2-1: no regime banner at R2", () => {
@@ -371,75 +508,91 @@ describe("§5 ComparisonTable — R2 no suppression (M≥50)", () => {
         baselineId="var-baseline"
         regime="R2"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
     expect(screen.queryByText(/M > 1 required/i)).toBeNull();
     expect(screen.queryByText(/tail-suppressed/i)).toBeNull();
   });
 
-  it("T-R2-2: IRR P90 shown at R2", () => {
-    // 7.6%
+  it("T-R2-2: IRR P90 shown at R2 (7.6%, confidence=sound)", () => {
     render(
       <ComparisonTable
         variants={[baselineR2]}
         baselineId="var-baseline"
         regime="R2"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
     expect(screen.getByText(/7\.6%/)).toBeTruthy();
   });
 
-  it("T-R2-3: Worst NPV shown at R2", () => {
-    // -38M
+  it("T-R2-3: Worst NPV shown at R2 (worst_case_npv_yuan = −38M)", () => {
     render(
       <ComparisonTable
         variants={[baselineR2]}
         baselineId="var-baseline"
         regime="R2"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
     expect(screen.getByText(/−?¥?38|38,000/)).toBeTruthy();
   });
 
-  it("T-R2-4: P(NPV<0) shown at R2", () => {
-    // 18%
+  it("T-R2-4: P(NPV<0) shown at R2 (p_npv_neg=0.18 → 18%)", () => {
     render(
       <ComparisonTable
         variants={[baselineR2]}
         baselineId="var-baseline"
         regime="R2"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
     expect(screen.getByText(/18%/)).toBeTruthy();
   });
 
-  it("T-R2-5: CVaR-5% shown at R2", () => {
-    // -76M
+  it("T-R2-5: CVaR-5% shown at R2 (cvar5_yuan = −76M)", () => {
     render(
       <ComparisonTable
         variants={[baselineR2]}
         baselineId="var-baseline"
         regime="R2"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
     expect(screen.getByText(/−?¥?76|76,000/)).toBeTruthy();
   });
 });
 
+// ─── §5 ComparisonTable — R3 ─────────────────────────────────────────────────
+
 describe("§5 ComparisonTable — R3 partial suppression (M≈10 empirical)", () => {
   const baselineR3 = makeVariant({ finance_result: FINANCE_RESULT_R3 });
 
-  it("T-R3-1: regime banner shown at R3", () => {
+  it("T-R3-1: regime banner shown at R3 — references empirical / M≈10", () => {
     render(
       <ComparisonTable
         variants={[baselineR3]}
         baselineId="var-baseline"
         regime="R3"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
     expect(screen.getByText(/empirical|M.*10|tail.*suppressed/i)).toBeTruthy();
@@ -452,33 +605,40 @@ describe("§5 ComparisonTable — R3 partial suppression (M≈10 empirical)", ()
         baselineId="var-baseline"
         regime="R3"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
     const suppressed = screen.getAllByText("— (tail-suppressed)");
     expect(suppressed.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("T-R3-3: Worst NPV shown at R3 (= min of M=10 runs)", () => {
-    // worst_npv_yuan = -45M
+  it("T-R3-3: worst_case_npv_yuan shown at R3 (= min of M=10 runs; −45M)", () => {
     render(
       <ComparisonTable
         variants={[baselineR3]}
         baselineId="var-baseline"
         regime="R3"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
     expect(screen.getByText(/−?¥?45|45,000/)).toBeTruthy();
   });
 
-  it("T-R3-4: Best NPV shown at R3 (= max of M=10 runs)", () => {
-    // best_npv_yuan = 195M
+  it("T-R3-4: best_of_n_npv_yuan shown at R3 (= max of M=10 runs; ¥195M)", () => {
     render(
       <ComparisonTable
         variants={[baselineR3]}
         baselineId="var-baseline"
         regime="R3"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
     expect(screen.getByText(/¥?195|195,000/)).toBeTruthy();
@@ -491,35 +651,51 @@ describe("§5 ComparisonTable — R3 partial suppression (M≈10 empirical)", ()
         baselineId="var-baseline"
         regime="R3"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
     expect(screen.getByText(/20%/)).toBeTruthy();
   });
 
-  it("T-R3-6: CVaR-5% suppressed at R3", () => {
+  it("T-R3-6: CVaR-5% suppressed at R3 (cvar5_yuan=null)", () => {
     render(
       <ComparisonTable
         variants={[baselineR3]}
         baselineId="var-baseline"
         regime="R3"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
-    // CVaR should be suppressed (not showing null value as a number)
+    // CVaR should be suppressed — not showing the value from R2 fixture
     expect(screen.queryByText(/CVaR.*76|−76/i)).toBeNull();
   });
 
-  it("T-R3-7: P(IRR<hurdle) suppressed at R3", () => {
+  /**
+   * T-R3-7 CORRECTED (v1.1.0): P(IRR<hurdle) IS present at R3 as a frequency count.
+   * Finance-expert: frequency count is honest at M≈10; CVaR is not.
+   *
+   * WRONG in v1.0.0: tested "P(IRR<hurdle) suppressed at R3" — it IS present per finance-expert.
+   * FIXTURE: FINANCE_RESULT_R3.downside_risk.p_irr_below_hurdle = 0.30 (30%)
+   */
+  it("T-R3-7: P(IRR<hurdle) IS shown at R3 as frequency count (3/10 = 30%)", () => {
     render(
       <ComparisonTable
         variants={[baselineR3]}
         baselineId="var-baseline"
         regime="R3"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
-    // p_irr_below_hurdle_pct is null at R3; should not show a number
-    expect(screen.queryByText(/IRR.*24%|24%.*IRR/i)).toBeNull();
+    // p_irr_below_hurdle=0.30 → displayed as "30%" or "3/10"
+    expect(screen.getByText(/30%|3\/10|3 of 10/i)).toBeTruthy();
   });
 });
 
@@ -527,31 +703,23 @@ describe("§5 ComparisonTable — R3 partial suppression (M≈10 empirical)", ()
 
 describe("§6 ComparisonTable — mixed-regime (baseline R2, variant R1)", () => {
   it("T-MIXED-1: table uses minimum regime (R1) when any variant is R1", () => {
-    // Baseline = R2, Variant A = R1 → whole table uses R1 suppression
-    const baseline = makeVariant({
-      id: "var-baseline",
-      is_baseline: true,
-      finance_result: FINANCE_RESULT_R2,
-    });
-    const variantA = makeVariant({
-      id: "var-a",
-      label: "A",
-      is_baseline: false,
-      finance_result: FINANCE_RESULT_R1,
-    });
+    const baseline = makeVariant({ id: "var-baseline", is_baseline: true, finance_result: FINANCE_RESULT_R2 });
+    const variantA = makeVariant({ id: "var-a", label: "A", is_baseline: false, finance_result: FINANCE_RESULT_R1 });
     render(
       <ComparisonTable
         variants={[baseline, variantA]}
         baselineId="var-baseline"
-        regime="R1"  // caller resolves minimum regime
+        regime="R1"  // caller resolves minimum regime before passing
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
-    // The "⚠ Some variants have M=1" warning banner
     expect(screen.getByText(/some variants.*M=1|M=1.*all.*suppressed/i)).toBeTruthy();
   });
 
-  it("T-MIXED-2: suppression warning mentions re-running with M≥50", () => {
+  it("T-MIXED-2: mixed-regime warning mentions re-running with M≥50", () => {
     const baseline = makeVariant({ finance_result: FINANCE_RESULT_R1 });
     render(
       <ComparisonTable
@@ -559,6 +727,9 @@ describe("§6 ComparisonTable — mixed-regime (baseline R2, variant R1)", () =>
         baselineId="var-baseline"
         regime="R1"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
     expect(screen.getByText(/M.*50|re.run.*M/i)).toBeTruthy();
@@ -568,8 +739,7 @@ describe("§6 ComparisonTable — mixed-regime (baseline R2, variant R1)", () =>
 // ─── §7. Delta display ────────────────────────────────────────────────────────
 
 describe("§7 ComparisonTable — delta display vs baseline", () => {
-  it("T-DELTA-1: baseline column shows absolute values (no delta)", () => {
-    // IRR P50 = 8.2% for baseline → shown as "8.2%", NOT "+0.0 pp"
+  it("T-DELTA-1: baseline column shows absolute values (no delta prefix)", () => {
     const baseline = makeVariant({ finance_result: FINANCE_RESULT_R2 });
     render(
       <ComparisonTable
@@ -577,26 +747,30 @@ describe("§7 ComparisonTable — delta display vs baseline", () => {
         baselineId="var-baseline"
         regime="R2"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
-    // absolute value present
+    // irr_pct.p50.value = 8.2 → rendered as "8.2%"; no "+0.0 pp" delta prefix
     expect(screen.getByText(/8\.2%/)).toBeTruthy();
-    // no delta prefix on baseline
     expect(screen.queryByText(/\+0\.0 pp/)).toBeNull();
   });
 
-  it("T-DELTA-2: variant column shows delta + absolute for IRR", () => {
-    // Baseline IRR P50 = 8.2%; Variant IRR P50 = 8.7% → delta = +0.5 pp
-    const baseline = makeVariant({
-      id: "var-baseline",
-      is_baseline: true,
-      finance_result: FINANCE_RESULT_R2,
-    });
+  it("T-DELTA-2: variant column shows delta for IRR — Baseline 8.2% vs Variant 8.7% → +0.5 pp", () => {
+    // arithmetic: 8.7 - 8.2 = +0.5 pp
+    const baseline = makeVariant({ id: "var-baseline", is_baseline: true, finance_result: FINANCE_RESULT_R2 });
     const variantA = makeVariant({
       id: "var-a",
       label: "A (SST)",
       is_baseline: false,
-      finance_result: { ...FINANCE_RESULT_R2, irr_p50_pct: 8.7, irr_p90_pct: 8.1 },
+      finance_result: {
+        ...FINANCE_RESULT_R2,
+        irr_pct: {
+          p50: { value: 8.7, confidence: "sound" },
+          p90: { value: 8.1, confidence: "sound" },
+        },
+      },
     });
     render(
       <ComparisonTable
@@ -604,25 +778,28 @@ describe("§7 ComparisonTable — delta display vs baseline", () => {
         baselineId="var-baseline"
         regime="R2"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
-    // Variant A column: should show +0.5 pp delta
     expect(screen.getByText(/\+0\.5 pp|\+0\.5pp/)).toBeTruthy();
   });
 
-  it("T-DELTA-3: downside delta — better = positive (less loss is better)", () => {
-    // Baseline Worst NPV = -38M; Variant A Worst NPV = -22M
-    // Delta = -22 - (-38) = +16M (variant is LESS exposed → positive = green)
-    const baseline = makeVariant({
-      id: "var-baseline",
-      is_baseline: true,
-      finance_result: FINANCE_RESULT_R2,
-    });
+  it("T-DELTA-3: downside delta — Worst NPV −38M vs −22M → +16M (less exposed = positive)", () => {
+    // arithmetic: -22_000_000 - (-38_000_000) = +16_000_000
+    const baseline = makeVariant({ id: "var-baseline", is_baseline: true, finance_result: FINANCE_RESULT_R2 });
     const variantA = makeVariant({
       id: "var-a",
       label: "A (SST)",
       is_baseline: false,
-      finance_result: { ...FINANCE_RESULT_R2, worst_npv_yuan: -22_000_000 },
+      finance_result: {
+        ...FINANCE_RESULT_R2,
+        downside_risk: {
+          ...FINANCE_RESULT_R2.downside_risk!,
+          worst_case_npv_yuan: -22_000_000,  // CORRECTED field name from v1.0.0
+        },
+      },
     });
     render(
       <ComparisonTable
@@ -630,37 +807,42 @@ describe("§7 ComparisonTable — delta display vs baseline", () => {
         baselineId="var-baseline"
         regime="R2"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
-    // +¥16M (less exposed) should appear for the Worst NPV row
     expect(screen.getByText(/\+¥?16M|\+16M|\+16,000/)).toBeTruthy();
   });
 
-  it("T-DELTA-4: re-designation of baseline flips all deltas", () => {
-    // After re-designating baseline from "var-baseline" to "var-a",
-    // "var-a" column should show absolute values and "var-baseline" should show delta.
+  it("T-DELTA-4: re-designating baseline flips all deltas", () => {
+    // After re-designation: var-a (8.7%) is baseline; var-baseline (8.2%) shows -0.5 pp
     const v1 = makeVariant({
       id: "var-baseline",
-      is_baseline: false,  // no longer baseline
-      finance_result: { ...FINANCE_RESULT_R2, irr_p50_pct: 8.2 },
+      label: "Original",
+      is_baseline: false,
+      finance_result: { ...FINANCE_RESULT_R2, irr_pct: { p50: { value: 8.2, confidence: "sound" } } },
     });
     const v2 = makeVariant({
       id: "var-a",
       label: "A (SST)",
-      is_baseline: true,   // now the baseline
-      finance_result: { ...FINANCE_RESULT_R2, irr_p50_pct: 8.7 },
+      is_baseline: true,
+      finance_result: { ...FINANCE_RESULT_R2, irr_pct: { p50: { value: 8.7, confidence: "sound" } } },
     });
     render(
       <ComparisonTable
         variants={[v1, v2]}
-        baselineId="var-a"  // var-a is now the baseline
+        baselineId="var-a"
         regime="R2"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
-    // var-a column shows absolute 8.7%
+    // var-a (baseline) shows absolute 8.7%
     expect(screen.getByText(/8\.7%/)).toBeTruthy();
-    // var-baseline column shows delta: 8.2 - 8.7 = -0.5 pp
+    // var-baseline shows delta: 8.2 - 8.7 = -0.5 pp
     expect(screen.getByText(/−0\.5 pp|-0\.5 pp/)).toBeTruthy();
   });
 });
@@ -677,14 +859,13 @@ describe("§8 useWorkbenchStore — state invariants", () => {
   });
 
   it("T-STORE-2: after adding first variant, it is the baseline", () => {
-    // First added = baseline by default (D42 §7.2)
     useWorkbenchStore.getState().addVariant({
       label: "Baseline",
       config_id: "cfg-1",
       config_hash: "#abc",
       policy: null,
       eval_result_id: null,
-      finance: null,
+      finance_params: null,
       price_path_name: null,
     });
     const state = useWorkbenchStore.getState();
@@ -695,10 +876,9 @@ describe("§8 useWorkbenchStore — state invariants", () => {
 
   it("T-STORE-3: exactly one baseline at all times after designateBaseline", () => {
     const store = useWorkbenchStore.getState();
-    store.addVariant({ label: "A", config_id: "c1", config_hash: "#a", policy: null, eval_result_id: null, finance: null, price_path_name: null });
-    store.addVariant({ label: "B", config_id: "c2", config_hash: "#b", policy: null, eval_result_id: null, finance: null, price_path_name: null });
-    const state = useWorkbenchStore.getState();
-    const [varA, varB] = state.variants;
+    store.addVariant({ label: "A", config_id: "c1", config_hash: "#a", policy: null, eval_result_id: null, finance_params: null, price_path_name: null });
+    store.addVariant({ label: "B", config_id: "c2", config_hash: "#b", policy: null, eval_result_id: null, finance_params: null, price_path_name: null });
+    const [, varB] = useWorkbenchStore.getState().variants;
 
     store.designateBaseline(varB.id);
     const after = useWorkbenchStore.getState();
@@ -714,13 +894,12 @@ describe("§8 useWorkbenchStore — state invariants", () => {
   });
 
   it("T-STORE-5: showBands defaults to true", () => {
-    // NpvFanChart bands shown by default
     expect(useWorkbenchStore.getState().showBands).toBe(true);
   });
 
   it("T-STORE-6: removeVariant with the only variant resets baselineId to null", () => {
     const store = useWorkbenchStore.getState();
-    store.addVariant({ label: "A", config_id: "c1", config_hash: "#a", policy: null, eval_result_id: null, finance: null, price_path_name: null });
+    store.addVariant({ label: "A", config_id: "c1", config_hash: "#a", policy: null, eval_result_id: null, finance_params: null, price_path_name: null });
     const varId = useWorkbenchStore.getState().variants[0].id;
     store.removeVariant(varId);
     const after = useWorkbenchStore.getState();
@@ -730,27 +909,45 @@ describe("§8 useWorkbenchStore — state invariants", () => {
 
   it("T-STORE-7: removeVariant on baseline promotes next variant as baseline", () => {
     const store = useWorkbenchStore.getState();
-    store.addVariant({ label: "A", config_id: "c1", config_hash: "#a", policy: null, eval_result_id: null, finance: null, price_path_name: null });
-    store.addVariant({ label: "B", config_id: "c2", config_hash: "#b", policy: null, eval_result_id: null, finance: null, price_path_name: null });
+    store.addVariant({ label: "A", config_id: "c1", config_hash: "#a", policy: null, eval_result_id: null, finance_params: null, price_path_name: null });
+    store.addVariant({ label: "B", config_id: "c2", config_hash: "#b", policy: null, eval_result_id: null, finance_params: null, price_path_name: null });
     const [varA] = useWorkbenchStore.getState().variants;
-    expect(varA.is_baseline).toBe(true); // A is baseline
+    expect(varA.is_baseline).toBe(true);
     store.removeVariant(varA.id);
     const after = useWorkbenchStore.getState();
     expect(after.variants.length).toBe(1);
-    expect(after.variants[0].is_baseline).toBe(true); // B promoted
+    expect(after.variants[0].is_baseline).toBe(true);
     expect(after.baselineId).toBe(after.variants[0].id);
   });
 
   // reviewer: compare_designs mode must not allow per-variant price path overrides
-  it("T-STORE-8: in compare_designs mode, updateVariant price_path_name is blocked", () => {
+  it("T-STORE-8: in compare_designs mode, updateVariant price_path_name is blocked (no-op)", () => {
     const store = useWorkbenchStore.getState();
     store.setMode("compare_designs");
-    store.addVariant({ label: "A", config_id: "c1", config_hash: "#a", policy: null, eval_result_id: null, finance: null, price_path_name: null });
+    store.addVariant({ label: "A", config_id: "c1", config_hash: "#a", policy: null, eval_result_id: null, finance_params: null, price_path_name: null });
     const varId = useWorkbenchStore.getState().variants[0].id;
-    // Attempting to set a per-variant price path in compare_designs mode should have no effect
     store.updateVariant(varId, { price_path_name: "stress" });
     const after = useWorkbenchStore.getState();
-    expect(after.variants[0].price_path_name).toBeNull(); // unchanged
+    expect(after.variants[0].price_path_name).toBeNull();
+  });
+
+  it("T-STORE-9: financeRecomputeLoading tracks per-variant loading state", () => {
+    const store = useWorkbenchStore.getState();
+    // Initially empty
+    expect(store.financeRecomputeLoading).toEqual({});
+    // After triggering recompute, the key should be set to true (mocked)
+    // This is a structural test — implementation will manage this in recomputeFinance()
+    expect(typeof store.recomputeFinance).toBe("function");
+  });
+
+  it("T-STORE-10: diffSummary is recomputed on addVariant", () => {
+    const store = useWorkbenchStore.getState();
+    expect(store.diffSummary).toBeNull();
+    store.addVariant({ label: "A", config_id: "c1", config_hash: "#a", policy: null, eval_result_id: null, finance_params: null, price_path_name: null });
+    // After adding a variant, diffSummary should be computed (not null)
+    // With only 1 variant there can be no "differs" params but the summary exists
+    const after = useWorkbenchStore.getState();
+    expect(after.diffSummary).not.toBeNull();
   });
 });
 
@@ -759,12 +956,8 @@ describe("§8 useWorkbenchStore — state invariants", () => {
 describe("§9 SizingSweepPanel — 2D battery sizing", () => {
   const defaultConfig = {
     base_config_id: "cfg-gansu-v1",
-    energy_mwh_min: 100,
-    energy_mwh_max: 600,
-    energy_steps: 6,
-    power_mw_min: 50,
-    power_mw_max: 300,
-    power_steps: 6,
+    energy_mwh_min: 100, energy_mwh_max: 600, energy_steps: 6,
+    power_mw_min: 50,   power_mw_max: 300,   power_steps: 6,
     metric: "npv_p50" as const,
   };
 
@@ -784,7 +977,7 @@ describe("§9 SizingSweepPanel — 2D battery sizing", () => {
     expect(screen.getByTestId("sweep-run-button")).toBeTruthy();
   });
 
-  it("T-SWEEP-2: shows config count: 6×6=36 configs", () => {
+  it("T-SWEEP-2: shows total config count: 6×6 = 36 configs", () => {
     render(
       <SizingSweepPanel
         sweepConfig={defaultConfig}
@@ -799,16 +992,17 @@ describe("§9 SizingSweepPanel — 2D battery sizing", () => {
     expect(screen.getByText(/36 configs/)).toBeTruthy();
   });
 
-  it("T-SWEEP-3: while running, shows progress bar", () => {
-    const partialResult: Partial<SizingSweepResult> = {
-      status: "running",
+  it("T-SWEEP-3: while running, shows progress bar with X/N", () => {
+    const partialResult = {
+      run_id: "sweep-001",
+      status: "running" as const,
       configs_total: 36,
       configs_done: 12,
-    };
+    } as SizingSweepResult;
     render(
       <SizingSweepPanel
         sweepConfig={defaultConfig}
-        sweepResult={partialResult as SizingSweepResult}
+        sweepResult={partialResult}
         sweepLoading={true}
         sweepError={null}
         onConfigChange={vi.fn()}
@@ -854,8 +1048,7 @@ describe("§9 SizingSweepPanel — 2D battery sizing", () => {
     const r1Result: SizingSweepResult = {
       run_id: "sweep-001",
       status: "complete",
-      configs_total: 36,
-      configs_done: 36,
+      configs_total: 36, configs_done: 36,
       energy_axis_mwh: [100, 200, 300, 400, 500, 600],
       power_axis_mw: [50, 110, 170, 230, 300, 360],
       surface: Array(6).fill(Array(6).fill(100_000_000)),
@@ -878,15 +1071,12 @@ describe("§9 SizingSweepPanel — 2D battery sizing", () => {
     expect(screen.getByTestId("sweep-regime-banner")).toBeTruthy();
   });
 
-  it("T-SWEEP-7: clicking a point calls onAddPointAsVariant with correct indices", () => {
-    // This test is structural — the actual click on SurfaceChart is tested via
-    // the chart component's onPointSelect callback being forwarded correctly.
+  it("T-SWEEP-7: clicking recommended point calls onAddPointAsVariant with correct indices", () => {
     const onAdd = vi.fn();
     const completeResult: SizingSweepResult = {
       run_id: "sweep-001",
       status: "complete",
-      configs_total: 4,
-      configs_done: 4,
+      configs_total: 4, configs_done: 4,
       energy_axis_mwh: [100, 300],
       power_axis_mw: [50, 150],
       surface: [[90_000_000, 120_000_000], [100_000_000, 142_000_000]],
@@ -906,24 +1096,17 @@ describe("§9 SizingSweepPanel — 2D battery sizing", () => {
         onAddPointAsVariant={onAdd}
       />
     );
-    // The SurfaceChart stub should render with a data-testid for the recommended point
     const recPoint = screen.getByTestId("surface-recommended-point");
     fireEvent.click(recPoint);
-    expect(onAdd).toHaveBeenCalledWith(1, 1); // recommended_energy_idx, recommended_power_idx
+    expect(onAdd).toHaveBeenCalledWith(1, 1);
   });
 });
 
 // ─── §10. AddToComparisonModal ────────────────────────────────────────────────
 
 describe("§10 AddToComparisonModal — wizard entry points", () => {
-  it("T-MODAL-1: renders with label input and Add button", () => {
-    render(
-      <AddToComparisonModal
-        config_id="cfg-1"
-        onAdd={vi.fn()}
-        onCancel={vi.fn()}
-      />
-    );
+  it("T-MODAL-1: renders dialog with label input and Add button", () => {
+    render(<AddToComparisonModal config_id="cfg-1" onAdd={vi.fn()} onCancel={vi.fn()} />);
     expect(screen.getByRole("dialog")).toBeTruthy();
     expect(screen.getByLabelText(/label/i)).toBeTruthy();
     expect(screen.getByRole("button", { name: /add/i })).toBeTruthy();
@@ -931,18 +1114,14 @@ describe("§10 AddToComparisonModal — wizard entry points", () => {
 
   it("T-MODAL-2: onCancel called on Cancel button", () => {
     const onCancel = vi.fn();
-    render(
-      <AddToComparisonModal config_id="cfg-1" onAdd={vi.fn()} onCancel={onCancel} />
-    );
+    render(<AddToComparisonModal config_id="cfg-1" onAdd={vi.fn()} onCancel={onCancel} />);
     fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
   it("T-MODAL-3: onAdd called with label and asBaseline=false by default", () => {
     const onAdd = vi.fn();
-    render(
-      <AddToComparisonModal config_id="cfg-1" onAdd={onAdd} onCancel={vi.fn()} />
-    );
+    render(<AddToComparisonModal config_id="cfg-1" onAdd={onAdd} onCancel={vi.fn()} />);
     const labelInput = screen.getByLabelText(/label/i) as HTMLInputElement;
     fireEvent.change(labelInput, { target: { value: "My variant" } });
     fireEvent.click(screen.getByRole("button", { name: /add/i }));
@@ -957,107 +1136,93 @@ describe("§11 ConfigCard — config library card", () => {
 
   it("T-CARD-1: shows config label", () => {
     render(
-      <ConfigCard
-        config={config}
-        selected={false}
-        onToggleSelect={vi.fn()}
-        onFork={vi.fn()}
-        onEdit={vi.fn()}
-        onDelete={vi.fn()}
-        onPressTest={vi.fn()}
-      />
+      <ConfigCard config={config} selected={false}
+        onToggleSelect={vi.fn()} onFork={vi.fn()} onEdit={vi.fn()}
+        onDelete={vi.fn()} onPressTest={vi.fn()} />
     );
     expect(screen.getByText("Gansu-v1")).toBeTruthy();
   });
 
-  it("T-CARD-2: shows battery sizing summary (MWh and MW)", () => {
+  it("T-CARD-2: shows battery sizing summary (300 MWh, 150 MW)", () => {
     render(
-      <ConfigCard
-        config={config}
-        selected={false}
-        onToggleSelect={vi.fn()}
-        onFork={vi.fn()}
-        onEdit={vi.fn()}
-        onDelete={vi.fn()}
-        onPressTest={vi.fn()}
-      />
+      <ConfigCard config={config} selected={false}
+        onToggleSelect={vi.fn()} onFork={vi.fn()} onEdit={vi.fn()}
+        onDelete={vi.fn()} onPressTest={vi.fn()} />
     );
-    // 300 MWh, 150 MW
     expect(screen.getByText(/300.*MWh|300 MWh/)).toBeTruthy();
     expect(screen.getByText(/150.*MW/)).toBeTruthy();
   });
 
   it("T-CARD-3: shows policy_count and eval_count", () => {
     render(
-      <ConfigCard
-        config={config}
-        selected={false}
-        onToggleSelect={vi.fn()}
-        onFork={vi.fn()}
-        onEdit={vi.fn()}
-        onDelete={vi.fn()}
-        onPressTest={vi.fn()}
-      />
+      <ConfigCard config={config} selected={false}
+        onToggleSelect={vi.fn()} onFork={vi.fn()} onEdit={vi.fn()}
+        onDelete={vi.fn()} onPressTest={vi.fn()} />
     );
     expect(screen.getByText(/2.*polic|polic.*2/i)).toBeTruthy();
     expect(screen.getByText(/3.*eval|eval.*3/i)).toBeTruthy();
   });
 
-  it("T-CARD-4: onToggleSelect called when clicking the select toggle", () => {
+  it("T-CARD-4: onToggleSelect called when clicking the select checkbox", () => {
     const onToggleSelect = vi.fn();
     render(
-      <ConfigCard
-        config={config}
-        selected={false}
-        onToggleSelect={onToggleSelect}
-        onFork={vi.fn()}
-        onEdit={vi.fn()}
-        onDelete={vi.fn()}
-        onPressTest={vi.fn()}
-      />
+      <ConfigCard config={config} selected={false}
+        onToggleSelect={onToggleSelect} onFork={vi.fn()} onEdit={vi.fn()}
+        onDelete={vi.fn()} onPressTest={vi.fn()} />
     );
-    const toggle = screen.getByRole("checkbox");
-    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole("checkbox"));
     expect(onToggleSelect).toHaveBeenCalledTimes(1);
   });
 
-  it("T-CARD-5: forked config shows parent reference", () => {
-    const forked = makeSavedConfig({ parent_id: "cfg-gansu-v0", label: "Gansu-v1-SST" });
+  it("T-CARD-5: forked config shows 'Forked from' / parent reference", () => {
+    const forked = makeSavedConfig({
+      parent_id: "cfg-gansu-v0",
+      label: "Gansu-v1-SST",
+      parent_param_delta: {
+        "site_summary.battery_energy_mwh": { from: 300, to: 400, label: "Battery energy", unit: "MWh" },
+      },
+    });
     render(
-      <ConfigCard
-        config={forked}
-        selected={false}
-        onToggleSelect={vi.fn()}
-        onFork={vi.fn()}
-        onEdit={vi.fn()}
-        onDelete={vi.fn()}
-        onPressTest={vi.fn()}
-      />
+      <ConfigCard config={forked} selected={false}
+        onToggleSelect={vi.fn()} onFork={vi.fn()} onEdit={vi.fn()}
+        onDelete={vi.fn()} onPressTest={vi.fn()} />
     );
     expect(screen.getByText(/forked from|parent/i)).toBeTruthy();
+  });
+
+  it("T-CARD-6: config with comment thread shows latest comment (D43)", () => {
+    const configWithComments = makeSavedConfig({
+      comment_thread: [
+        makeComment({ id: "cmt-001", author: "agent", text: "Auto-tuned C-rate looks optimal." }),
+        makeComment({ id: "cmt-002", author: "human", text: "Approved for bankable case.", timestamp: "2026-06-11T00:00:00Z" }),
+      ],
+    });
+    render(
+      <ConfigCard config={configWithComments} selected={false}
+        onToggleSelect={vi.fn()} onFork={vi.fn()} onEdit={vi.fn()}
+        onDelete={vi.fn()} onPressTest={vi.fn()} />
+    );
+    // Should show latest comment or "N comments" expander
+    expect(screen.getByText(/2 comments|Approved for bankable/i)).toBeTruthy();
   });
 });
 
 // ─── §12. PerConfigDetail ────────────────────────────────────────────────────
 
 describe("§12 PerConfigDetail — downside risk panel first", () => {
-  it("T-PCD-1: DownsideRiskPanel appears before headline upside metrics", () => {
+  it("T-PCD-1: DownsideRiskPanel appears before headline upside metrics in DOM order", () => {
     render(
       <PerConfigDetail
         variant={makeVariant()}
         regime="R2"
         onPressTest={vi.fn()}
-        onNext={vi.fn()}
-        onPrev={vi.fn()}
-        hasPrev={false}
-        hasNext={false}
+        onNext={vi.fn()} onPrev={vi.fn()}
+        hasPrev={false} hasNext={false}
       />
     );
-    const container = screen.getByRole("main") || document.body;
-    // Downside risk section must come before IRR P50 upside section
     const worstNpv = screen.getByText(/Worst NPV/i);
     const irrP50 = screen.getByText(/IRR.*P50|IRR.*8\.2/i);
-    // compareDocumentPosition: downside before upside in DOM order
+    // DOCUMENT_POSITION_FOLLOWING (4) set when worstNpv precedes irrP50
     expect(
       worstNpv.compareDocumentPosition(irrP50) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy();
@@ -1069,31 +1234,25 @@ describe("§12 PerConfigDetail — downside risk panel first", () => {
         variant={makeVariant()}
         regime="R2"
         onPressTest={vi.fn()}
-        onNext={vi.fn()}
-        onPrev={vi.fn()}
-        hasPrev={false}
-        hasNext={false}
+        onNext={vi.fn()} onPrev={vi.fn()}
+        hasPrev={false} hasNext={false}
       />
     );
     expect(screen.getByRole("button", { name: /press.test/i })).toBeTruthy();
   });
 
-  it("T-PCD-3: Prev/Next navigation buttons present and disabled when not available", () => {
+  it("T-PCD-3: Prev/Next navigation buttons disabled when not available", () => {
     render(
       <PerConfigDetail
         variant={makeVariant()}
         regime="R2"
         onPressTest={vi.fn()}
-        onNext={vi.fn()}
-        onPrev={vi.fn()}
-        hasPrev={false}
-        hasNext={false}
+        onNext={vi.fn()} onPrev={vi.fn()}
+        hasPrev={false} hasNext={false}
       />
     );
-    const prevBtn = screen.getByRole("button", { name: /prev|←/i });
-    const nextBtn = screen.getByRole("button", { name: /next|→/i });
-    expect(prevBtn).toBeDisabled();
-    expect(nextBtn).toBeDisabled();
+    expect(screen.getByRole("button", { name: /prev|←/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /next|→/i })).toBeDisabled();
   });
 
   it("T-PCD-4: at R1, DownsideRiskPanel cells are suppressed", () => {
@@ -1102,13 +1261,10 @@ describe("§12 PerConfigDetail — downside risk panel first", () => {
         variant={makeVariant({ finance_result: FINANCE_RESULT_R1 })}
         regime="R1"
         onPressTest={vi.fn()}
-        onNext={vi.fn()}
-        onPrev={vi.fn()}
-        hasPrev={false}
-        hasNext={false}
+        onNext={vi.fn()} onPrev={vi.fn()}
+        hasPrev={false} hasNext={false}
       />
     );
-    // Worst NPV cell should be suppressed
     expect(screen.queryByText(/−38M/)).toBeNull();
     expect(screen.getAllByText("— (M > 1 required)").length).toBeGreaterThanOrEqual(1);
   });
@@ -1116,57 +1272,450 @@ describe("§12 PerConfigDetail — downside risk panel first", () => {
 
 // ─── §13. Naming discipline guard ────────────────────────────────────────────
 
-describe("§13 Naming discipline — R1/R2/R3 must not appear as data-source labels", () => {
-  // reviewer: guard that no visible UI text uses "R1"/"R2"/"R3" to label a data SOURCE
-  // (like "R1 = synthetic"). Those labels are exclusively for M-regime display.
-
-  it("T-NAME-1: ScenarioLockBar does not render 'R1', 'R2', or 'R3' as text", () => {
+describe("§13 Naming discipline — R1/R2/R3 must not label data source", () => {
+  it("T-NAME-1: ScenarioLockBar does not render 'R1', 'R2', 'R3' as text", () => {
     render(<ScenarioLockBar scenario={SHARED_SCENARIO_R2} onUnlock={vi.fn()} />);
     const bar = screen.getByTestId("scenario-lock-bar");
-    // The bar may show M=50 or sample_kind but NOT the label "R2"
     expect(bar.textContent).not.toMatch(/\bR2\b|\bR1\b|\bR3\b/);
   });
 
-  it("T-NAME-2: RegimeBanner at R1 shows 'M=1' not 'R1' to describe data source", () => {
+  it("T-NAME-2: RegimeBanner at R1 describes M=1 not 'R1 mode'", () => {
     render(
       <ComparisonTable
         variants={[makeVariant({ finance_result: FINANCE_RESULT_R1 })]}
         baselineId="var-baseline"
         regime="R1"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
-    // Banner must NOT read "R1 mode" — it must describe M=1
     const banner = screen.getByText(/M=1|M > 1 required|single.*trajectory/i);
     expect(banner).toBeTruthy();
   });
 
-  it("T-NAME-3: R3 banner references 'empirical' or 'M≈10' not 'R3 mode'", () => {
+  it("T-NAME-3: R3 banner references 'empirical' or 'M≈10', not 'R3 mode'", () => {
     render(
       <ComparisonTable
         variants={[makeVariant({ finance_result: FINANCE_RESULT_R3 })]}
         baselineId="var-baseline"
         regime="R3"
         hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
       />
     );
     const banner = screen.getByText(/empirical|M.*10/i);
     expect(banner).toBeTruthy();
-    // Must not use "R3" as a visible user-facing label
     expect(banner.textContent).not.toMatch(/\bR3 mode\b|\bR3 ensemble\b/i);
   });
 });
 
-// ─── §14. Workbench — no WebSocket, no telemetry store ───────────────────────
+// ─── §14. Workbench isolation ─────────────────────────────────────────────────
 
 describe("§14 Workbench isolation — batch-only, no live telemetry", () => {
-  // reviewer: workbench must never access the live telemetry store (D42 architectural invariant)
-  it("T-ISO-1: useWorkbenchStore does not expose any telemetry fields", () => {
+  // reviewer: workbench must never access the live telemetry store (D42)
+  it("T-ISO-1: useWorkbenchStore does not expose telemetry fields", () => {
     const state = useWorkbenchStore.getState();
-    // Telemetry store fields that must NOT exist here
     expect((state as Record<string, unknown>).soc_pct).toBeUndefined();
     expect((state as Record<string, unknown>).power_flow_kw).toBeUndefined();
     expect((state as Record<string, unknown>).env_step).toBeUndefined();
     expect((state as Record<string, unknown>).websocket).toBeUndefined();
+  });
+});
+
+// ─── §15. Per-percentile confidence styling ───────────────────────────────────
+
+describe("§15 Per-percentile confidence styling — cross-cutting rule", () => {
+  /**
+   * Finance-expert cross-cutting rule: every PercentileResult carries confidence.
+   * "indicative_low_confidence" → MUTED + "(indicative)" caveat; NEVER bold headline.
+   */
+
+  it("T-CONF-1: R3 P50 IRR rendered with '(indicative)' caveat (confidence=indicative_low_confidence)", () => {
+    // FINANCE_RESULT_R3.irr_pct.p50.confidence = "indicative_low_confidence"
+    // UI must show a muted style + "(indicative)" text near the value
+    render(
+      <ComparisonTable
+        variants={[makeVariant({ finance_result: FINANCE_RESULT_R3 })]}
+        baselineId="var-baseline"
+        regime="R3"
+        hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
+      />
+    );
+    // Value "7.9%" should appear alongside "(indicative)" caveat
+    expect(screen.getByText(/7\.9%/)).toBeTruthy();
+    expect(screen.getByText(/indicative/i)).toBeTruthy();
+  });
+
+  it("T-CONF-2: R2 P50 IRR has no '(indicative)' tag (confidence=sound)", () => {
+    // FINANCE_RESULT_R2.irr_pct.p50.confidence = "sound"
+    render(
+      <ComparisonTable
+        variants={[makeVariant({ finance_result: FINANCE_RESULT_R2 })]}
+        baselineId="var-baseline"
+        regime="R2"
+        hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
+      />
+    );
+    expect(screen.getByText(/8\.2%/)).toBeTruthy();
+    // "indicative" should NOT appear for R2 sound metrics
+    expect(screen.queryByText(/indicative/i)).toBeNull();
+  });
+
+  it("T-CONF-3: P99 at R2 is always rendered indicative_low_confidence (even if p99.value present)", () => {
+    const withP99: FinanceResultSummary = {
+      ...FINANCE_RESULT_R2,
+      irr_pct: {
+        ...FINANCE_RESULT_R2.irr_pct,
+        p99: { value: 6.1, confidence: "indicative_low_confidence" },
+      },
+    };
+    render(
+      <ComparisonTable
+        variants={[makeVariant({ finance_result: withP99 })]}
+        baselineId="var-baseline"
+        regime="R2"
+        hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
+      />
+    );
+    // 6.1% appears with "(indicative)" caveat
+    expect(screen.getByText(/6\.1%/)).toBeTruthy();
+    const p99Cell = screen.getByText(/6\.1%/).closest("[data-confidence]");
+    expect(p99Cell?.getAttribute("data-confidence")).toBe("indicative_low_confidence");
+  });
+
+  // reviewer: indicative_low_confidence cells must not carry bold CSS or "headline" class
+  it("T-CONF-4: indicative_low_confidence cells do not have data-headline=true", () => {
+    render(
+      <ComparisonTable
+        variants={[makeVariant({ finance_result: FINANCE_RESULT_R3 })]}
+        baselineId="var-baseline"
+        regime="R3"
+        hurdle_rate_pct={7.0}
+        sortMetric={null}
+        sortDir="desc"
+        onSort={vi.fn()}
+      />
+    );
+    // Any element with data-confidence="indicative_low_confidence" must NOT have data-headline="true"
+    const indicativeCells = document.querySelectorAll('[data-confidence="indicative_low_confidence"]');
+    expect(indicativeCells.length).toBeGreaterThanOrEqual(1);
+    indicativeCells.forEach(cell => {
+      expect(cell.getAttribute("data-headline")).not.toBe("true");
+    });
+  });
+});
+
+// ─── §16. Input-diff highlighting ─────────────────────────────────────────────
+
+describe("§16 ConfigDiffPanel — input-diff highlighting", () => {
+  const makeParamDiff = (overrides: Partial<ConfigParamDiff> = {}): ConfigParamDiff => ({
+    param_path: "site_summary.battery_energy_mwh",
+    param_label: "Battery energy",
+    param_tier: "re_sim",
+    unit: "MWh",
+    values: { "cfg-v1": 300, "cfg-v2": 400 },
+    differs: true,
+    ...overrides,
+  });
+
+  const makeDiffSummary = (overrides: Partial<WorkbenchDiffSummary> = {}): WorkbenchDiffSummary => ({
+    differing_params: [
+      makeParamDiff({
+        param_path: "site_summary.battery_energy_mwh",
+        param_label: "Battery energy",
+        param_tier: "re_sim",
+        differs: true,
+      }),
+      makeParamDiff({
+        param_path: "finance_params.gearing_pct",
+        param_label: "Gearing",
+        param_tier: "instant",
+        unit: "%",
+        values: { "cfg-v1": 60, "cfg-v2": 70 },
+        differs: true,
+      }),
+    ],
+    common_params: [
+      makeParamDiff({
+        param_path: "site_summary.wind_count",
+        param_label: "Wind turbines",
+        param_tier: "re_sim",
+        values: { "cfg-v1": 100, "cfg-v2": 100 },
+        differs: false,
+      }),
+    ],
+    finance_param_diffs: [
+      makeParamDiff({
+        param_path: "finance_params.gearing_pct",
+        param_label: "Gearing",
+        param_tier: "instant",
+        differs: true,
+      }),
+    ],
+    physical_param_diffs: [
+      makeParamDiff({ param_path: "site_summary.battery_energy_mwh", differs: true }),
+    ],
+    ...overrides,
+  });
+
+  it("T-DIFF-1: renders data-testid=config-diff-panel", () => {
+    render(
+      <ConfigDiffPanel
+        diffSummary={makeDiffSummary()}
+        showAllParams={false}
+        onToggleShowAll={vi.fn()}
+      />
+    );
+    expect(screen.getByTestId("config-diff-panel")).toBeTruthy();
+  });
+
+  it("T-DIFF-2: differing params have data-testid=diff-param-{param_path}", () => {
+    render(
+      <ConfigDiffPanel
+        diffSummary={makeDiffSummary()}
+        showAllParams={false}
+        onToggleShowAll={vi.fn()}
+      />
+    );
+    expect(screen.getByTestId("diff-param-site_summary.battery_energy_mwh")).toBeTruthy();
+    expect(screen.getByTestId("diff-param-finance_params.gearing_pct")).toBeTruthy();
+  });
+
+  it("T-DIFF-3: common params collapsed by default; count shown with toggle", () => {
+    render(
+      <ConfigDiffPanel
+        diffSummary={makeDiffSummary()}
+        showAllParams={false}
+        onToggleShowAll={vi.fn()}
+      />
+    );
+    // "1 param identical" or "1 params identical"
+    expect(screen.getByTestId("common-param-count")).toBeTruthy();
+    expect(screen.getByText(/1.*param.*identical|1.*identical/i)).toBeTruthy();
+  });
+
+  it("T-DIFF-4: [show all] toggle calls onToggleShowAll", () => {
+    const onToggle = vi.fn();
+    render(
+      <ConfigDiffPanel
+        diffSummary={makeDiffSummary()}
+        showAllParams={false}
+        onToggleShowAll={onToggle}
+      />
+    );
+    const showAll = screen.getByRole("button", { name: /show all/i });
+    fireEvent.click(showAll);
+    expect(onToggle).toHaveBeenCalledTimes(1);
+  });
+
+  it("T-DIFF-5: instant-tier finance params labeled with ⚡", () => {
+    render(
+      <ConfigDiffPanel
+        diffSummary={makeDiffSummary()}
+        showAllParams={false}
+        onToggleShowAll={vi.fn()}
+      />
+    );
+    // The gearing param is tier="instant"; should show ⚡
+    const gearingRow = screen.getByTestId("diff-param-finance_params.gearing_pct");
+    expect(gearingRow.textContent).toMatch(/⚡/);
+  });
+});
+
+// ─── §17. Finance param instant tier ──────────────────────────────────────────
+
+describe("§17 FinanceParamPanel — instant tier ⚡", () => {
+  it("T-FINANCE-1: renders finance-param-panel with sliders", () => {
+    render(
+      <FinanceParamPanel
+        params={STUB_FINANCE_PARAMS}
+        mode="shared"
+        onParamChange={vi.fn()}
+        recomputeLoading={false}
+      />
+    );
+    expect(screen.getByTestId("finance-param-panel")).toBeTruthy();
+    // At least the WACC slider should appear
+    expect(screen.getByTestId("finance-param-wacc_pct")).toBeTruthy();
+  });
+
+  it("T-FINANCE-2: panel shows INSTANT tier label with ⚡", () => {
+    render(
+      <FinanceParamPanel
+        params={STUB_FINANCE_PARAMS}
+        mode="shared"
+        onParamChange={vi.fn()}
+        recomputeLoading={false}
+      />
+    );
+    expect(screen.getByText(/⚡.*INSTANT|INSTANT.*cached dispatch/i)).toBeTruthy();
+  });
+
+  it("T-FINANCE-3: slider onChange calls onParamChange with key and value", () => {
+    const onParamChange = vi.fn();
+    render(
+      <FinanceParamPanel
+        params={STUB_FINANCE_PARAMS}
+        mode="shared"
+        onParamChange={onParamChange}
+        recomputeLoading={false}
+      />
+    );
+    const waccSlider = screen.getByTestId("finance-param-slider-wacc_pct");
+    fireEvent.change(waccSlider, { target: { value: "8.0" } });
+    expect(onParamChange).toHaveBeenCalledWith("wacc_pct", 8.0, expect.any(String));
+  });
+
+  it("T-FINANCE-4: scope toggle exists for each param (data-testid=scope-toggle-{key})", () => {
+    render(
+      <FinanceParamPanel
+        params={STUB_FINANCE_PARAMS}
+        mode="shared"
+        onParamChange={vi.fn()}
+        recomputeLoading={false}
+      />
+    );
+    expect(screen.getByTestId("scope-toggle-wacc_pct")).toBeTruthy();
+    expect(screen.getByTestId("scope-toggle-gearing_pct")).toBeTruthy();
+  });
+
+  it("T-FINANCE-5: common-scope param shows data-scope=common", () => {
+    render(
+      <FinanceParamPanel
+        params={STUB_FINANCE_PARAMS}
+        mode="shared"
+        onParamChange={vi.fn()}
+        recomputeLoading={false}
+      />
+    );
+    // wacc_pct has scope="common" in STUB_FINANCE_PARAMS
+    expect(screen.getByTestId("finance-param-wacc_pct")).toHaveAttribute("data-scope", "common");
+  });
+
+  it("T-FINANCE-6: per_config-scope param shows data-scope=per_config", () => {
+    render(
+      <FinanceParamPanel
+        params={STUB_FINANCE_PARAMS}
+        mode="shared"
+        onParamChange={vi.fn()}
+        recomputeLoading={false}
+      />
+    );
+    // gearing_pct has scope="per_config" in STUB_FINANCE_PARAMS
+    expect(screen.getByTestId("finance-param-gearing_pct")).toHaveAttribute("data-scope", "per_config");
+  });
+});
+
+// ─── §18. D43 config comment thread ───────────────────────────────────────────
+
+describe("§18 ConfigCommentThread — D43 human+agent annotation", () => {
+  const agentComment = makeComment({
+    id: "cmt-a1",
+    author: "agent",
+    timestamp: "2026-06-10T10:00:00Z",
+    text: "Dispatch analysis suggests C-rate 0.5 is near-optimal for this price regime.",
+  });
+  const humanComment = makeComment({
+    id: "cmt-h1",
+    author: "human",
+    timestamp: "2026-06-10T11:00:00Z",
+    text: "Approved. Matches our site constraints.",
+  });
+
+  it("T-COMMENT-1: renders comment-thread container", () => {
+    render(
+      <ConfigCommentThread
+        config_id="cfg-gansu-v1"
+        comments={[agentComment, humanComment]}
+        onAddComment={vi.fn()}
+        loading={false}
+      />
+    );
+    expect(screen.getByTestId("comment-thread")).toBeTruthy();
+  });
+
+  it("T-COMMENT-2: agent comment shows 'AI' badge", () => {
+    render(
+      <ConfigCommentThread
+        config_id="cfg-gansu-v1"
+        comments={[agentComment]}
+        onAddComment={vi.fn()}
+        loading={false}
+      />
+    );
+    const comment = screen.getByTestId("comment-cmt-a1");
+    expect(comment.getAttribute("data-author")).toBe("agent");
+    expect(comment.textContent).toMatch(/AI/i);
+  });
+
+  it("T-COMMENT-3: human comment has a textarea for new comment + Post button", () => {
+    render(
+      <ConfigCommentThread
+        config_id="cfg-gansu-v1"
+        comments={[]}
+        onAddComment={vi.fn()}
+        loading={false}
+      />
+    );
+    expect(screen.getByRole("textbox")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /post/i })).toBeTruthy();
+  });
+
+  it("T-COMMENT-4: posting a comment calls onAddComment with the text", () => {
+    const onAddComment = vi.fn();
+    render(
+      <ConfigCommentThread
+        config_id="cfg-gansu-v1"
+        comments={[]}
+        onAddComment={onAddComment}
+        loading={false}
+      />
+    );
+    const textarea = screen.getByRole("textbox");
+    fireEvent.change(textarea, { target: { value: "Looks good to me." } });
+    fireEvent.click(screen.getByRole("button", { name: /post/i }));
+    expect(onAddComment).toHaveBeenCalledWith("Looks good to me.");
+  });
+
+  it("T-COMMENT-5: comments rendered in chronological order (oldest first)", () => {
+    render(
+      <ConfigCommentThread
+        config_id="cfg-gansu-v1"
+        comments={[agentComment, humanComment]}  // agentComment is older
+        onAddComment={vi.fn()}
+        loading={false}
+      />
+    );
+    const agentEl = screen.getByTestId("comment-cmt-a1");
+    const humanEl = screen.getByTestId("comment-cmt-h1");
+    // agentComment (2026-06-10T10:00) should appear before humanComment (2026-06-10T11:00)
+    expect(
+      agentEl.compareDocumentPosition(humanEl) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+  });
+
+  it("T-COMMENT-6: empty thread shows empty-state placeholder (no comments yet)", () => {
+    render(
+      <ConfigCommentThread
+        config_id="cfg-gansu-v1"
+        comments={[]}
+        onAddComment={vi.fn()}
+        loading={false}
+      />
+    );
+    expect(screen.getByText(/no comments|be the first|add a note/i)).toBeTruthy();
   });
 });
