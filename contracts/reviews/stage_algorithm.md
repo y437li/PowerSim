@@ -176,3 +176,60 @@ TQ14 is moot (T-INIT-5 was repurposed for the coming-soon notice).
 **Verdict: REQUEST_CHANGES.** CALL 1/CALL 2 well applied, but C1 (field-name/serving-contract — primary)
 and C2 (gamma editability mechanism) remain; C3 becomes a standing condition; TQ13 + the held TQ
 additions still required. Re-review on the next revision.
+
+## Round 3 — `3a1964b` (+ reviewer tests) — APPROVE (2026-06-14) — contract + tests gate
+
+Re-reviewed the amended contract + suite against the diff (`dee1b3f..3a1964b`), code-verified (not
+claim-verified). **All three blockers resolved:**
+
+- **C1 ✓** — §3.8 body now uses `RunConfig` canonical names exactly: `total_env_steps`,
+  `eval_every_steps`, `lr`, `buffer_size`, `n_envs` (editable) + `gamma`/`tau`/`ent_coef`/`train_freq`/
+  `gradient_steps`/`hidden_sizes` (constants). `T-CONFIRM-2` + `T-BODY-2` assert the new names present
+  **and** the 4 old names (`total_steps`/`eval_freq`/`learning_rate`/`hidden_layers`) absent. Serving
+  dependency documented (§3.8, §12 Q3, DV-8). → carried as **SC1** (standing condition).
+- **C2 ✓** — `gamma` removed from `SacHyperparams` entirely; now a LOCKED constant (=0.999) in §3.2 +
+  the §3.8 constants block; absent from `DEFAULT_HYPERPARAMS`. `T-HYPER-5` asserts absence from
+  `getHyperparamErrors`; `T-HYPER-19` asserts no `hyperparam-gamma` DOM input even in SAC mode;
+  `T-BODY-2` asserts the body carries `gamma === 0.999` as a constant. Exactly the lock-honoring fix.
+- **C3 ✓** — 256 cap removed; valid = power of 2 ≥ 1 (RunConfig). `T-HYPER-6` (512 valid),
+  `T-HYPER-10` (4096 valid). UI display cap → **SC2** (training-engineer, §12 Q2). Validation is
+  correct now.
+
+**Other amendments verified:** TQ12 (`isConfirmEnabled` gates hyperparam errors on
+`algorithmType==='sac'`; `T-HYPER-20`) ✓; `T-PERSIST-3` rewritten to call the real `onRehydrate`
+downgrade hook ✓; `T-LOCK-PROP-4` false→true→false flip (TQ15) ✓; `T-INIT-8` Option-B future-badge ✓;
+Q1 (SAC visual prominence) resolved → Option B (USER decision). evalFreq default 50_000→10_000 (matches
+RunConfig `eval_every_steps`) ✓.
+
+**Reviewer test additions (pushed this round, marked `// reviewer:`, §T15):** TQ1 `T-BODY-3`
+(exact 12-key set + no camelCase leakage); TQ2 `T-HYPER-21..24` (batchSize 16 invalid / 32 valid /
+4096 valid / 8192 invalid); TQ3 `T-HYPER-25` (evalFreq=1000 valid); TQ4 `T-HYPER-26`
+(totalSteps=100_000 valid); TQ6 `T-HYPER-27` (lr=1e-5 & 1e-2 valid); TQ7 `T-HYPER-28` (NaN flagged)
++ `T-HYPER-29` (non-numeric UI parse error blocks confirm); TQ8 `T-HYPER-30` (cross-field bufferSize
+vs **changed** batchSize=1024: 4095 invalid / 4096 valid); TQ9 `T-CONFIRM-6` (aria-disabled click is
+a no-op — no POST); TQ10 `T-CONFIRM-7` (no double-submit while saving); TQ11 `T-REASON-1/2`
+(disabled-reason: hyperparam message when baselines OK; baseline message wins when both fail).
+**TQ5 moot** (nEnvs cap removed — `T-HYPER-10` covers 4096). **TQ13/TQ15** delivered by the engineer
+(T-PERSIST-3 / T-LOCK-PROP-4). **TQ14 moot** (T-INIT-5 repurposed). esbuild parse-check clean; suite
+remains red-first (no `src/` yet), as expected at this gate.
+
+**Approved suite = developer cases (T-INIT/T-ALGO/T-HYPER-1..20/T-COLLAPSE/T-BASE/T-CONFIRM-1..5/
+T-API-ERR/T-BACK/T-STALE/T-PERSIST/T-A11Y/T-BODY-1..2/T-LOCK-PROP) + the 13 reviewer cases in §T15
+(T-BODY-3, T-HYPER-21..30, T-CONFIRM-6/7, T-REASON-1/2).**
+
+### Standing conditions (carried to the IMPLEMENTATION gate — NOT blocking this gate; mirrors stage-1 §5.1)
+- **SC1 — serving contract for `POST /api/training/config` is a prerequisite to implementation.**
+  No `contracts/serving/training_config.md` exists yet (serving-engineer; the stage-② analog of
+  `site_assemble.md`, per D37/D32(b)). §3.8's body **shape** (the `sac_hyperparams` nesting + exact
+  12-key set + the `train_freq`/`gradient_steps` constants, which are **not** `RunConfig` fields) is
+  **CONTINGENT** on that contract locking with the same shape. Field *names* are RunConfig-canonical
+  and settled; if the serving contract's structure diverges, §3.8 + T-CONFIRM-2/T-BODY-2/T-BODY-3
+  reopen through frontend-reviewer. Backend-reviewer gates the serving mapping.
+- **SC2 — nEnvs UI upper bound (§12 Q2)** — RunConfig has no max (canonical vmap 4096); training-engineer
+  to confirm the wizard's display cap before implementation. Validation logic (power-of-2 ≥ 1) is correct
+  regardless; if a cap is added, add the boundary test then.
+
+**Verdict: APPROVE** (contract + tests gate). C1/C2/C3 resolved and code-verified; all required test
+additions present (developer + reviewer); two standing conditions carried to the implementation gate.
+Implementation may proceed once SC1's serving contract is locked (and SC2 confirmed). I re-review the
+implementation against the locked serving contract + this suite.

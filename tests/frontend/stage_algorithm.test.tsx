@@ -1224,3 +1224,179 @@ describe('§T14 lockStage / unlockStage propagation', () => {
     expect(screen.queryByTestId('stage-two-locked')).toBeNull();
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════════════
+// §T15 — reviewer adversarial additions (frontend-reviewer, PR #115 gate Round 2)
+// reviewer: required test additions TQ1–TQ11 from contracts/reviews/stage_algorithm.md.
+// Added now that C1 (RunConfig field names), C2 (gamma constant), C3 (nEnvs range)
+// are settled. Boundaries assert hand-computed expected values; the POST-body cases
+// guard against field-name swaps/leakage; the UI cases pin §4.6/§5.2/§3.7/DV-2 behavior.
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('reviewer: §T15 adversarial additions (TQ1–TQ11)', () => {
+  // ── TQ1 — POST body has the EXACT key set; no camelCase leakage ──
+  it('reviewer: [T-BODY-3] SAC sac_hyperparams has exactly the 12 RunConfig keys; no camelCase leakage', async () => {
+    // reviewer: T-CONFIRM-2/T-BODY-2 assert RunConfig names present + 4 old snake_case names
+    // absent, but neither pins the EXACT key set nor rules out camelCase store keys leaking
+    // (e.g. the raw store object being JSON.stringify'd). A serialized store would carry
+    // totalSteps/learningRate/etc. and still pass those tests. Pin the exact contract §3.8 set.
+    makeFetchOk();
+    renderStage();
+    switchToSac();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('stage-two-confirm'));
+    });
+    const body = JSON.parse(
+      (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body,
+    );
+    const keys = Object.keys(body.sac_hyperparams).sort();
+    // Contract §3.8: 6 user-editable + 6 constants (all RunConfig canonical names).
+    const expected = [
+      'batch_size', 'buffer_size', 'ent_coef', 'eval_every_steps', 'gamma',
+      'gradient_steps', 'hidden_sizes', 'lr', 'n_envs', 'tau',
+      'total_env_steps', 'train_freq',
+    ].sort();
+    expect(keys).toEqual(expected);
+    // No camelCase store keys may leak into the wire body:
+    for (const leak of ['totalSteps', 'evalFreq', 'learningRate', 'bufferSize', 'nEnvs', 'hiddenSizes', 'hiddenLayers']) {
+      expect(Object.prototype.hasOwnProperty.call(body.sac_hyperparams, leak)).toBe(false);
+    }
+  });
+
+  // ── TQ2 — batchSize range boundaries (power of 2 AND 32–4096) ──
+  it('reviewer: [T-HYPER-21] batchSize=16 is INVALID (power-of-2 but < 32)', () => {
+    // reviewer: 16 = 2^4 is a power of 2 but below the 32 minimum (contract §3.2) → error.
+    // Catches an impl that checks power-of-2 but omits the lower bound.
+    const errors = getHyperparamErrors({ ...DEFAULT_HYPERPARAMS, batchSize: 16 });
+    expect(errors.filter(e => e.field === 'batchSize')).toHaveLength(1);
+  });
+  it('reviewer: [T-HYPER-22] batchSize=32 is VALID (exact min, 2^5)', () => {
+    // reviewer: 32 = 2^5, exact lower bound → valid (off-by-one guard: >= not >).
+    const errors = getHyperparamErrors({ ...DEFAULT_HYPERPARAMS, batchSize: 32 });
+    expect(errors.filter(e => e.field === 'batchSize')).toHaveLength(0);
+  });
+  it('reviewer: [T-HYPER-23] batchSize=4096 is VALID (exact max, 2^12)', () => {
+    // reviewer: 4096 = 2^12, exact upper bound → valid. bufferSize default 1e6 ≥ 4096×4=16384 ✓.
+    const errors = getHyperparamErrors({ ...DEFAULT_HYPERPARAMS, batchSize: 4096 });
+    expect(errors.filter(e => e.field === 'batchSize')).toHaveLength(0);
+  });
+  it('reviewer: [T-HYPER-24] batchSize=8192 is INVALID (power-of-2 but > 4096)', () => {
+    // reviewer: 8192 = 2^13 is a power of 2 but above the 4096 max → error.
+    // Catches an impl that checks power-of-2 but omits the upper bound.
+    const errors = getHyperparamErrors({ ...DEFAULT_HYPERPARAMS, batchSize: 8192 });
+    expect(errors.filter(e => e.field === 'batchSize')).toHaveLength(1);
+  });
+
+  // ── TQ3/TQ4/TQ6 — exact inclusive bounds (off-by-one guards) ──
+  it('reviewer: [T-HYPER-25] evalFreq=1000 is VALID (exact min ≥ 1_000)', () => {
+    // reviewer: only 999 (invalid) was tested; pin the inclusive boundary (>= not >).
+    const errors = getHyperparamErrors({ ...DEFAULT_HYPERPARAMS, evalFreq: 1000 });
+    expect(errors.filter(e => e.field === 'evalFreq')).toHaveLength(0);
+  });
+  it('reviewer: [T-HYPER-26] totalSteps=100_000 is VALID (exact min ≥ 100_000)', () => {
+    // reviewer: only 99_999 (invalid) was tested; pin the inclusive boundary.
+    const errors = getHyperparamErrors({ ...DEFAULT_HYPERPARAMS, totalSteps: 100_000 });
+    expect(errors.filter(e => e.field === 'totalSteps')).toHaveLength(0);
+  });
+  it('reviewer: [T-HYPER-27] learningRate=1e-5 and 1e-2 are VALID (inclusive bounds)', () => {
+    // reviewer: contract §3.2 is "1e-5 ≤ lr ≤ 1e-2" (inclusive); only 5e-6/0.02 (outside) were tested.
+    expect(getHyperparamErrors({ ...DEFAULT_HYPERPARAMS, learningRate: 1e-5 })
+      .filter(e => e.field === 'learningRate')).toHaveLength(0);
+    expect(getHyperparamErrors({ ...DEFAULT_HYPERPARAMS, learningRate: 1e-2 })
+      .filter(e => e.field === 'learningRate')).toHaveLength(0);
+  });
+
+  // ── TQ7 — NaN/parse must be caught (prevents NaN→null in the POST body) ──
+  it('reviewer: [T-HYPER-28] getHyperparamErrors flags NaN as an error (not silently valid)', () => {
+    // reviewer: §5.2 "Must be a number". If NaN reaches getHyperparamErrors it MUST produce an
+    // error, else NaN serializes to null in the POST body — a silent data-corruption path.
+    const errors = getHyperparamErrors({ ...DEFAULT_HYPERPARAMS, batchSize: NaN });
+    expect(errors.filter(e => e.field === 'batchSize').length).toBeGreaterThanOrEqual(1);
+  });
+  it('reviewer: [T-HYPER-29] non-numeric SAC input shows parse error and disables confirm', () => {
+    // reviewer: §5.2 — non-numeric/empty blur shows the field error and blocks confirm.
+    renderStage();
+    switchToSac();
+    const header = screen.queryByTestId('hyperparam-header');
+    if (header && header.getAttribute('aria-expanded') === 'false') fireEvent.click(header);
+    const batchInput = screen.getByTestId('hyperparam-batchSize');
+    fireEvent.change(batchInput, { target: { value: 'abc' } });
+    fireEvent.blur(batchInput);
+    expect(screen.getByTestId('hyperparam-error-batchSize')).toBeTruthy();
+    expect(screen.getByTestId('stage-two-confirm').getAttribute('aria-disabled')).toBe('true');
+  });
+
+  // ── TQ8 — cross-field bufferSize uses the CURRENT batchSize, not a hardcoded 1024/2048 ──
+  it('reviewer: [T-HYPER-30] bufferSize cross-field tracks a CHANGED batchSize', () => {
+    // reviewer: existing T-HYPER-7/8 only use the default batchSize=512 (boundary 2048), so an
+    // impl hardcoding "bufferSize ≥ 2048" would pass. With batchSize=1024 the minimum is
+    // 1024×4=4096: 4095 must fail, 4096 must pass. (1024=2^10 ∈ [32,4096] ✓.)
+    const invalid = getHyperparamErrors({ ...DEFAULT_HYPERPARAMS, batchSize: 1024, bufferSize: 4095 });
+    expect(invalid.filter(e => e.field === 'bufferSize')).toHaveLength(1);
+    const valid = getHyperparamErrors({ ...DEFAULT_HYPERPARAMS, batchSize: 1024, bufferSize: 4096 });
+    expect(valid.filter(e => e.field === 'bufferSize')).toHaveLength(0);
+  });
+
+  // ── TQ9 — aria-disabled is honored: a disabled confirm must NOT fire the POST (DV-2) ──
+  it('reviewer: [T-CONFIRM-6] clicking confirm while aria-disabled does NOT fire POST nor change state', () => {
+    // reviewer: DV-2 uses aria-disabled (not HTML disabled), so the handler MUST intercept the
+    // click itself. Deselect all baselines → aria-disabled=true → a click must be a no-op.
+    makeFetchOk();
+    renderStage();
+    fireEvent.click(screen.getByTestId('baseline-checkbox-do_nothing'));
+    fireEvent.click(screen.getByTestId('baseline-checkbox-peak_shave'));
+    const confirm = screen.getByTestId('stage-two-confirm');
+    expect(confirm.getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(confirm);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(useStageAlgorithmStore.getState().stageState).not.toBe('COMPLETE');
+  });
+
+  // ── TQ10 — double-submit guard: a second click while saving must not fire a second POST ──
+  it('reviewer: [T-CONFIRM-7] second confirm click while saveInProgress does not fire a 2nd POST', async () => {
+    // reviewer: a double-click must not create two training configs. While the first POST is in
+    // flight (saveInProgress), the button is aria-disabled (§4.6) and must swallow further clicks.
+    let resolvePost: (v: Response) => void;
+    globalThis.fetch = vi.fn(
+      () => new Promise<Response>(res => { resolvePost = res; }),
+    );
+    renderStage();  // baseline_only default → confirm enabled
+    act(() => { fireEvent.click(screen.getByTestId('stage-two-confirm')); });
+    await waitFor(() => {
+      expect(screen.getByTestId('stage-two-confirm').textContent).toMatch(/Saving/);
+    });
+    // Second click while the first POST is pending:
+    act(() => { fireEvent.click(screen.getByTestId('stage-two-confirm')); });
+    expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+    resolvePost!({ ok: true, status: 200, json: () => Promise.resolve(MOCK_CONFIG_RESPONSE) } as Response);
+  });
+
+  // ── TQ11 — confirm-disabled-reason priority (§4.6) ──
+  it('reviewer: [T-REASON-1] hyperparam error (SAC) + baselines OK → reason = "Fix hyperparameter errors"', () => {
+    // reviewer: §4.6 — when baselines are selected but a hyperparam is invalid, the reason text
+    // is the hyperparam message (only the baseline message was tested previously).
+    renderStage();
+    switchToSac();  // baselines do_nothing+peak_shave still selected
+    const header = screen.queryByTestId('hyperparam-header');
+    if (header && header.getAttribute('aria-expanded') === 'false') fireEvent.click(header);
+    const lrInput = screen.getByTestId('hyperparam-learningRate');
+    fireEvent.change(lrInput, { target: { value: '999' } });
+    fireEvent.blur(lrInput);
+    expect(screen.getByTestId('stage-two-confirm').getAttribute('aria-disabled')).toBe('true');
+    expect(screen.getByTestId('confirm-disabled-reason').textContent).toMatch(/hyperparam/i);
+  });
+  it('reviewer: [T-REASON-2] no baseline + hyperparam error → baseline message takes priority (§4.6)', () => {
+    // reviewer: §4.6 "(both conditions: baseline message takes priority)".
+    renderStage();
+    switchToSac();
+    const header = screen.queryByTestId('hyperparam-header');
+    if (header && header.getAttribute('aria-expanded') === 'false') fireEvent.click(header);
+    const lrInput = screen.getByTestId('hyperparam-learningRate');
+    fireEvent.change(lrInput, { target: { value: '999' } });
+    fireEvent.blur(lrInput);
+    // Now also deselect every baseline → both failure conditions hold:
+    fireEvent.click(screen.getByTestId('baseline-checkbox-do_nothing'));
+    fireEvent.click(screen.getByTestId('baseline-checkbox-peak_shave'));
+    expect(screen.getByTestId('confirm-disabled-reason').textContent).toMatch(/baseline/i);
+  });
+});
