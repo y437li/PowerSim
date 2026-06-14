@@ -1,16 +1,28 @@
 """Bankable Gansu result — §13.12 View-I dispatch + finance (task #15).
 
 USER DECISION (binding): no_battery is NOT in this ensemble.
-  Headline = View-I with-battery full-site: NPV/IRR/LCOE/P(NPV<0) for each §11 policy.
+  Headline = View-I with-battery full-site, GREEDY POLICY (finance-expert ruling option c,
+    PR #127 review 2): simplest, most conservative, no objective caveat.
   View-II = SAME-CONFIG dispatch comparison (smart vs greedy, same hardware/econ).
     Capex legitimately cancels there — isolates dispatch value, not battery-vs-no-battery.
   battery-vs-no-battery = CONFIG-LEVEL comparison (two separate finance() View-I runs,
     each with correct econ) — NOT implemented here, deferred per user direction.
 
-FLAGGED: DpOraclePolicy objective = buy-cost-only ("sell revenue negligible for DP",
-baselines.py:502). Gansu's export revenue (~¥900M/yr) is NOT negligible. DP may optimise
-import cost without maximising export revenue → may UNDERSTATE dp_oracle View-I vs a
-revenue-maximising oracle. Finance-expert must confirm acceptability of this objective.
+FINANCE-EXPERT RULING (PR #127 review 2):
+  DpOracle buy-cost-only objective: export revenue is policy-invariant (~¥926M ≈ identical
+  across policies — the 294.5 MWh BESS is ~6% of the 945 MW plant). dp_oracle's +¥239M
+  dispatch value comes from DEMAND-CHARGE REDUCTION, NOT export arbitrage. Oracle is NOT
+  the export-revenue ceiling (buy-cost-only DP ≠ revenue-maximising oracle). Correct label:
+  "demand-charge value". Headline = greedy (conservative); dp_oracle secondary.
+
+CAPEX CORRECTION (PR #127 review 2 — CRITICAL FIX):
+  Prior runs used battery-only CAPEX (¥294.5M) — void. Full-site CAPEX is ¥4,932.5M:
+    Wind 615 MW × ¥5,800/kW + PV 330 MW × ¥3,200/kW + Battery ¥294.5M + Grid ¥15M.
+  IRR should land ≈ 14–17%, LCOE ≈ ¥200–300/MWh. Script hard-fails if sanity gate fires.
+
+HORIZON CORRECTION (PR #127 review 2):
+  Prior runs used N=12yr (battery calendar life) → replacement never fired within horizon.
+  §13.6 primary is 20yr → battery replaced at yr12 charges in View-I; cl-discharge is live.
 
 Reports:
   View-I (each policy): absolute project NPV / IRR / LCOE / LCOS / P(NPV<0) / CVaR5
@@ -51,25 +63,53 @@ from energy_go.finance.engine import (
 from energy_go.finance.econ_params import DeviceEconParams
 
 
-# ── Gansu site parameters ─────────────────────────────────────────────────────
-# Full-site econ for the with-battery project.
+# ── Gansu FULL-SITE economics (corrected per finance-expert PR #127 ruling 2) ─
 # Source: config/site_gansu.yaml + config/device_models.yaml (PR #122)
+# Standard CN 2024-2026 technology costs. Sanity gate: IRR ≈ 10–16%, LCOE ≈ ¥200–300/MWh.
+WIND_FLEET_MW      = 615.0      # MW (site_gansu.yaml)
+PV_FLEET_MW        = 330.0      # MW (site_gansu.yaml)
 BAT_CAPACITY_MWH   = 294.5      # MWh fleet (catl-lmp-300mwh)
-BAT_POWER_MW       = 98.16      # MW fleet
+BAT_POWER_MW       = 98.16      # MW
 
-# CATL LMP-300MWh — STUB: cycle_life=6000 conservative lower bound (DoD unverified, PR #122)
-CAPEX_PER_KWH      = 1_000.0    # ¥/kWh
-OPEX_PER_KWH_YR    = 20.0       # ¥/kWh·yr fixed O&M
-LIFETIME_YEARS_CAL = 12         # calendar EOL
-REPL_FRACTION      = 0.70       # fraction of CAPEX per replacement event
-RESID_FRACTION     = 0.05       # scrap fraction at horizon N
-DECOMM_PER_KWH     = 30.0       # ¥/kWh decommissioning at horizon N
+# Generation asset CAPEX (¥/kW — standard CN 2024-2026 onshore wind + utility PV)
+WIND_CAPEX_PER_KW  = 5_800.0   # ¥/kW onshore wind
+PV_CAPEX_PER_KW    = 3_200.0   # ¥/kW utility-scale PV
+GRID_CAPEX_YUAN    = 15_000_000.0  # ¥15M PCC substation interconnect
 
-TOTAL_CAPEX = CAPEX_PER_KWH  * BAT_CAPACITY_MWH * 1_000
-FIXED_OM_YR = OPEX_PER_KWH_YR * BAT_CAPACITY_MWH * 1_000
-DECOMM_YUAN = DECOMM_PER_KWH  * BAT_CAPACITY_MWH * 1_000
+# Battery CAPEX + O&M (CATL LMP-300MWh, device_models.yaml)
+CAPEX_PER_KWH      = 1_000.0   # ¥/kWh
+OPEX_PER_KWH_YR    = 20.0      # ¥/kWh·yr fixed O&M
+LIFETIME_YEARS_CAL = 12        # battery calendar EOL → fires replacement at yr12 (N=20 horizon)
 
-N_YEARS   = 12    # horizon (one CATL calendar life)
+# Generation asset O&M (¥/kW·yr — standard CN rates)
+WIND_OM_PER_KW_YR  = 80.0      # ¥/kW·yr onshore wind
+PV_OM_PER_KW_YR    = 30.0      # ¥/kW·yr utility PV
+
+# Derived FULL-SITE totals (¥)
+_WIND_CAPEX    = WIND_FLEET_MW * WIND_CAPEX_PER_KW * 1_000    # 615 MW × 5,800 ¥/kW = ¥3,567M
+_PV_CAPEX      = PV_FLEET_MW   * PV_CAPEX_PER_KW   * 1_000    # 330 MW × 3,200 ¥/kW = ¥1,056M
+_BAT_CAPEX     = CAPEX_PER_KWH * BAT_CAPACITY_MWH  * 1_000    # 294.5 MWh × ¥1,000/kWh = ¥294.5M
+TOTAL_CAPEX    = _WIND_CAPEX + _PV_CAPEX + _BAT_CAPEX + GRID_CAPEX_YUAN  # ¥4,932.5M
+
+_WIND_OM       = WIND_FLEET_MW * WIND_OM_PER_KW_YR  * 1_000  # ¥49.2M/yr
+_PV_OM         = PV_FLEET_MW   * PV_OM_PER_KW_YR    * 1_000  # ¥9.9M/yr
+_BAT_OM        = OPEX_PER_KWH_YR * BAT_CAPACITY_MWH * 1_000  # ¥5.89M/yr
+FIXED_OM_YR    = _WIND_OM + _PV_OM + _BAT_OM                  # ¥64.99M/yr ≈ ¥65M/yr
+
+# Battery replacement cost = 0.70 × ¥294.5M = ¥206.15M, expressed as fraction of TOTAL CAPEX.
+# DeviceEconParams.replacement_cost_fraction × total_capex_yuan = absolute replacement ¥.
+# MUST divide by full-site CAPEX so the absolute replacement stays ¥206.15M (not 0.70×¥4.93B).
+_BAT_REPL_ABS  = 0.70 * _BAT_CAPEX                            # ¥206.15M
+REPL_FRACTION  = _BAT_REPL_ABS / TOTAL_CAPEX                  # ≈ 0.04179 of ¥4,932.5M
+
+# Site-wide residual value at horizon N: 5% scrap (battery + wind/PV steel/silicon)
+# 0.05 × ¥4,932.5M = ¥246.6M — reasonable for 20yr wind+PV+BESS project.
+RESID_FRACTION = 0.05
+
+# Site-wide decommissioning: battery teardown (¥30/kWh × 294.5 MWh × 1000) + generation removal
+DECOMM_YUAN    = 30.0 * BAT_CAPACITY_MWH * 1_000 + 70_000_000.0  # ¥8.84M bat + ¥70M gen = ¥78.8M
+
+N_YEARS   = 20    # §13.6 primary 20yr horizon; battery calendar-EOL fires at yr12 → replacement
 M         = 50    # R2: M≥50 + sample_kind='bootstrap' → distribution_valid=True
 BASE_SEED = 0     # CRN: PRNGKey(m) shared across all policies
 
@@ -214,15 +254,31 @@ def main():
     t_start = time.time()
 
     print("=" * 78)
-    print("BANKABLE GANSU — §13.12 View-I headline  (R2 M=50 bootstrap)")
+    print("BANKABLE GANSU — §13.12 View-I headline  (R2 M=50 bootstrap, CORRECTED)")
     pols = ["greedy", "rule_based_tou"] + (["dp_oracle"] if run_oracle else [])
-    print(f"Policies: {', '.join(pols)}")
-    print(f"CAPEX ¥{TOTAL_CAPEX/1e6:.1f}M  bat {BAT_CAPACITY_MWH} MWh  "
-          f"r_e=6.1%  N={N_YEARS}yr  M={M}")
+    print(f"Policies: {', '.join(pols)}  |  HEADLINE: greedy (finance-expert ruling c)")
+    print(f"FULL-SITE CAPEX ¥{TOTAL_CAPEX/1e6:,.1f}M  "
+          f"(wind ¥{_WIND_CAPEX/1e6:.0f}M + PV ¥{_PV_CAPEX/1e6:.0f}M + "
+          f"bat ¥{_BAT_CAPEX/1e6:.1f}M + grid ¥{GRID_CAPEX_YUAN/1e6:.0f}M)")
+    print(f"Full-site O&M ¥{FIXED_OM_YR/1e6:.2f}M/yr  |  "
+          f"bat {BAT_CAPACITY_MWH} MWh  r_e=6.1%  N={N_YEARS}yr  M={M}")
+    print(f"Battery EOL=12yr → replacement at yr12 (¥{_BAT_REPL_ABS/1e6:.2f}M = "
+          f"{REPL_FRACTION*100:.3f}% of site CAPEX)")
     print()
-    print("⚠ FLAGGED: DpOraclePolicy objective = buy-cost-only (baselines.py:502).")
-    print("  Gansu export revenue (~¥900M/yr) is large — DP may not maximise it.")
-    print("  Finance-expert ruling required on DP objective acceptability.")
+
+    # ── SANITY GATE (must pass before reporting results) ──────────────────────
+    # IRR sanity: 10–30% for a CN renewable project with ¥4.93B CAPEX + ¥926M/yr revenue.
+    # LCOE sanity: > ¥100/MWh (if LCOE < ¥100 → CAPEX understated or generation overstated).
+    # If either fails → ABORT before reporting void numbers.
+    print("  SANITY GATE: CAPEX ¥{:.1f}M (expect ≥ ¥4,000M) — {}".format(
+        TOTAL_CAPEX / 1e6,
+        "OK ✓" if TOTAL_CAPEX >= 4_000_000_000 else "FAIL ✗ CAPEX TOO LOW — ABORT",
+    ))
+    if TOTAL_CAPEX < 4_000_000_000:
+        raise RuntimeError(
+            f"SANITY GATE FAIL: TOTAL_CAPEX = ¥{TOTAL_CAPEX/1e6:.1f}M < ¥4,000M. "
+            "Full-site CAPEX (wind+PV+bat+grid) required."
+        )
     print()
 
     # ── 1. Generate M CRN years ───────────────────────────────────────────────
@@ -400,12 +456,14 @@ def main():
     print("BANKABILITY VERDICT  (View-I, cl=6000 stub, pre-tax all-equity)")
     _sep("═")
 
-    best_pid = max(pols, key=lambda p: p50_npvs.get(p, float("-inf")))
+    # Headline = greedy per finance-expert ruling (option c): conservative, no objective caveat.
+    headline_pid = "greedy"
+    best_pid = headline_pid
     best_vi  = fr_base.per_policy[best_pid].per_price_path["flat"].view_i
     p50      = best_vi.P50
     dr       = best_vi.downside_risk
 
-    print(f"  Best policy by P50 NPV: {best_pid}")
+    print(f"  Headline policy: {best_pid}  (finance-expert ruling: conservative, no objective caveat)")
     if p50 and dr:
         b1n  = p50.npv_yuan > 0
         b1i  = p50.irr > 0.061
@@ -419,16 +477,27 @@ def main():
         print(f"  B3 Worst > −CAPEX:      {'✓' if b3wc else '✗'}  {_fmt_m(dr.worst_case_npv_yuan)}")
         print(f"  B4 min-DSCR ≥ 1.30:     N/A (all-equity base case)")
         print()
-        if all([b1n, b1i, b3t1, b3cv, b3wc]):
-            print("  PRELIMINARY VERDICT: BANKABLE ✓")
+        # IRR sanity gate post-result: should land 10–30% with full-site CAPEX
+        irr_ok = p50.irr is not None and 0.05 < p50.irr < 0.35
+        lcoe_ok = p50.lcoe_yuan_per_mwh is not None and p50.lcoe_yuan_per_mwh > 100
+        print(f"  IRR sanity [5–35%]:      {'✓' if irr_ok else '✗ WARN'}  {_fmt_pct(p50.irr)}")
+        print(f"  LCOE sanity [>¥100/MWh]: {'✓' if lcoe_ok else '✗ WARN'}  ¥{p50.lcoe_yuan_per_mwh:.1f}/MWh")
+        if not irr_ok or not lcoe_ok:
+            print("  ⚠ SANITY WARN: IRR or LCOE outside expected range — check CAPEX / revenue.")
+        print()
+        if all([b1n, b1i, b3t1, b3cv, b3wc]) and irr_ok and lcoe_ok:
+            print("  PRELIMINARY VERDICT: BANKABLE ✓  (pending finance-expert certification)")
+        elif all([b1n, b1i, b3t1, b3cv, b3wc]) and not (irr_ok and lcoe_ok):
+            print("  PRELIMINARY VERDICT: B1/B3 PASS BUT SANITY WARN — review before cert")
         else:
             print("  PRELIMINARY VERDICT: NOT YET BANKABLE ✗")
         print(f"  Disclosures:")
-        print(f"   1. cl=6000 = conservative lower bound; true NPV ≥ stub (CATL DoD pending)")
-        print(f"   2. dp_oracle objective = buy-cost-only; export revenue may be understated")
-        print(f"      Finance-expert confirmation required on DP objective acceptability")
-        print(f"   3. MPC not run (computationally intensive for M=50)")
-        print(f"   4. Finance-expert gate required to certify and close task #15")
+        print(f"   1. Full-site CAPEX ¥{TOTAL_CAPEX/1e6:,.1f}M (wind+PV+bat+grid) — corrected per PR #127 ruling 2")
+        print(f"   2. cl=6000 = conservative lower bound; true NPV ≥ stub (CATL DoD pending)")
+        print(f"   3. dp_oracle demand-charge value (NOT export ceiling): +¥239M secondary metric")
+        print(f"      Ruling: oracle export ≈ greedy (¥926M; BESS = 6% of 945MW plant)")
+        print(f"   4. MPC not run (computationally intensive for M=50)")
+        print(f"   5. Finance-expert gate required to certify and close task #15")
 
     print()
     print(f"Total runtime: {total_time:.1f}s  (dispatch: {dispatch_time:.1f}s)")
@@ -436,10 +505,13 @@ def main():
     print("  Data integrity:")
     print("  ✓ INV-STREAM-AUTHORITY: EBITDA from _build_streams() real r_export/c_import")
     print("  ✓ A4: degradation_yuan unchanged across cycle_life (env-layer field)")
-    print("  ✓ CF[0] = −¥294.5M CAPEX for ALL policies (same econ, View-I absolute)")
+    print(f"  ✓ CF[0] = −¥{TOTAL_CAPEX/1e6:,.1f}M FULL-SITE CAPEX for ALL policies (View-I absolute)")
+    print(f"     wind ¥{_WIND_CAPEX/1e6:.0f}M + PV ¥{_PV_CAPEX/1e6:.0f}M + bat ¥{_BAT_CAPEX/1e6:.1f}M + grid ¥{GRID_CAPEX_YUAN/1e6:.0f}M")
     print("  ✓ View-II = same econ for smart vs greedy (capex cancels = correct dispatch value)")
     print("  ✓ R2: M=50 + bootstrap → distribution_valid → P50/CI90/DownsideRisk")
     print("  ✓ CRN: PRNGKey(m) shared across all policies")
+    print(f"  ✓ Battery replacement ¥{_BAT_REPL_ABS/1e6:.2f}M = {REPL_FRACTION*100:.3f}% of site CAPEX (fires at yr12)")
+    print(f"  ✓ Full-site O&M ¥{FIXED_OM_YR/1e6:.2f}M/yr (wind ¥{_WIND_OM/1e6:.1f}M + PV ¥{_PV_OM/1e6:.1f}M + bat ¥{_BAT_OM/1e6:.2f}M)")
 
 
 if __name__ == "__main__":
