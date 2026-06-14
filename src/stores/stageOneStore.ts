@@ -97,8 +97,11 @@ function _scheduleAssemble() {
     } catch (err) {
       if ((err as Error).name === 'AbortError') return;
       _activeController = null;
-      useStageOneStore.setState({ validationPending: false });
-      // Keep stageState as IN_PROGRESS; ValidationPanel shows apiError
+      // B5: surface the error so ValidationPanel can show it via apiError
+      useStageOneStore.setState({
+        validationPending: false,
+        assembleError: (err as Error).message || 'Assemble failed',
+      });
     }
   }, 300);
 }
@@ -123,6 +126,7 @@ export interface StageOneStoreState {
   coverageError:            string | null;
   saveInProgress:           boolean;
   saveError:                string | null;
+  assembleError:            string | null;
   provenanceHash:           string | null;
 }
 
@@ -149,6 +153,9 @@ export interface StageOneStoreActions {
   setSaveInProgress(v: boolean): void;
   setSaveError(msg: string | null): void;
   onSaveSuccess(configHash: string): void;
+
+  /** Clear assembleError and re-fire the 300ms assemble debounce (B6 fix). */
+  retryAssemble(): void;
 
   reset(): void;
 }
@@ -196,6 +203,7 @@ export const useStageOneStore = create<StageOneStoreState & StageOneStoreActions
       coverageError:            null,
       saveInProgress:           false,
       saveError:                null,
+      assembleError:            null,
       provenanceHash:           null,
 
       // ── Actions ────────────────────────────────────────────────────────
@@ -312,6 +320,7 @@ export const useStageOneStore = create<StageOneStoreState & StageOneStoreActions
           return {
             lastValidation: result,
             validationPending: false,
+            assembleError: null,           // clear any prior assemble error on success
             stageState: nowComplete ? 'COMPLETE' : 'IN_PROGRESS',
           };
         });
@@ -348,6 +357,12 @@ export const useStageOneStore = create<StageOneStoreState & StageOneStoreActions
         set({ stageState: 'COMPLETE', provenanceHash: configHash, saveInProgress: false, saveError: null });
       },
 
+      retryAssemble() {
+        // B6: clear the error and re-schedule the debounced assemble call
+        set({ assembleError: null });
+        _scheduleAssemble();
+      },
+
       reset() {
         _clearDebounce();
         if (_activeController) { _activeController.abort(); _activeController = null; }
@@ -368,6 +383,7 @@ export const useStageOneStore = create<StageOneStoreState & StageOneStoreActions
           coverageError:            null,
           saveInProgress:           false,
           saveError:                null,
+          assembleError:            null,
           provenanceHash:           null,
         });
       },

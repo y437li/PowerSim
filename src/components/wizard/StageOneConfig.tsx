@@ -98,9 +98,8 @@ export function StageOneConfig() {
   }
 
   function handleRetry() {
-    // Re-trigger assemble by refreshing pending state
-    store.setValidationPending(true);
-    setTimeout(() => store.setValidationPending(false), 0);
+    // B6: clear assemble error and re-fire the debounced assemble call
+    store.retryAssemble();
   }
 
   return (
@@ -266,7 +265,7 @@ export function StageOneConfig() {
               pending={store.validationPending}
               acknowledgedWarnings={store.acknowledgedWarnings}
               onAcknowledge={store.acknowledgeWarning}
-              apiError={store.saveError}
+              apiError={store.assembleError ?? null}
               onRetry={handleRetry}
               tariffRequired={tariffRequired}
             />
