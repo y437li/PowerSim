@@ -645,9 +645,15 @@ def finance(
 
                 # Debt metrics
                 if finance_config.debt_toggle and annuity > 0:
-                    # Re-derive pre-tax EBITDA (CFADS) directly from streams.
-                    # Use year index for price-path multiplier (not identity check).
-                    ebitda_series = []
+                    # CFADS = EBITDA − Tax  (§13.8; same tax model as _build_annual_cf).
+                    # dep_lev: straight-line depreciation (0 when tax_toggle=False).
+                    # Tax = tax_rate × max(0, EBITDA − dep_lev); no interest tax shield
+                    # (consistent with _build_annual_cf — simplified project-finance model).
+                    # DSCR  = CFADS / DebtService  (after-tax numerator, §13.8).
+                    # Equity IRR on [-equity_invested] + [CFADS − annuity] for each year.
+                    dep_lev = (econ.total_capex_yuan / max(1, finance_config.depreciation_years)
+                               if finance_config.tax_toggle else 0.0)
+                    cfads_series = []   # after-tax CFADS per year
                     for y_idx, yr in enumerate(traj):
                         rev = (
                             yr.streams["grid_export"].value_yuan
@@ -664,13 +670,17 @@ def finance(
                                     - econ.fixed_om_yuan_per_yr
                                     - econ.var_om_yuan_per_mwh * yr.generation_mwh
                                     - econ.asset_mgmt_yuan_per_yr)
-                        ebitda_series.append(ebitda_y)
-                    n_svc = min(finance_config.loan_term_years, len(ebitda_series))
-                    dscr_res = dscr(ebitda_series[:n_svc], [annuity] * n_svc)
+                        if finance_config.tax_toggle:
+                            tax_y = finance_config.tax_rate * max(0.0, ebitda_y - dep_lev)
+                        else:
+                            tax_y = 0.0
+                        cfads_series.append(ebitda_y - tax_y)
+                    n_svc = min(finance_config.loan_term_years, len(cfads_series))
+                    # DSCR: after-tax CFADS / annuity  (§13.8)
+                    dscr_res = dscr(cfads_series[:n_svc], [annuity] * n_svc)
                     dscr_min_arr[m] = dscr_res["min_dscr"]
-
-                    # Equity IRR: CF_eq[0]=-equity; CF_eq[y]=EBITDA−annuity
-                    cf_eq = [-equity_invested] + [e - annuity for e in ebitda_series]
+                    # Equity IRR: after-tax equity CF (§13.8)
+                    cf_eq = [-equity_invested] + [c - annuity for c in cfads_series]
                     eq_irr_arr[m] = irr(cf_eq)
 
             # ── View I ────────────────────────────────────────────────────────

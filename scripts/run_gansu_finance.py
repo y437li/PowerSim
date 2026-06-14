@@ -649,8 +649,7 @@ def main():
     _sep("═")
     print("§13.12  LEVERED + AFTER-TAX  (70% debt / 30% equity, 4.75% r_d, 25% tax)")
     print("        cl=6000 conservative | D/E=2.3333 | β_L=1.65 | equity hurdle≈12.4%")
-    print("        DSCR = pre-tax EBITDA / annuity  |  equity IRR = pre-tax EBITDA − debt-svc")
-    print("        NOTE: engine uses pre-tax EBITDA for equity IRR → overstates after-tax IRR")
+    print("        CFADS = EBITDA − Tax (§13.8) | DSCR = CFADS/annuity | equity IRR on CFADS−debt-svc")
     _sep("═")
 
     # Annuity for reference
@@ -674,19 +673,19 @@ def main():
               f"  CI90:[{ci_lo/1e6:+.0f}M,{ci_hi/1e6:+.0f}M]")
         print(f"  Levered unlevered-equiv IRR P50: {_fmt_pct(lev_p50.irr)}")
         print(f"  LCOE (levered, P50):             ¥{lev_p50.lcoe_yuan_per_mwh:.1f}/MWh")
-    print(f"  Equity IRR (pre-tax EBITDA):     {_fmt_pct(lev_vi.equity_irr)}")
-    print(f"  Min DSCR (avg over M draws):     {lev_vi.min_dscr:.3f}" if lev_vi.min_dscr else "  Min DSCR: N/A")
+    print(f"  Equity IRR (after-tax CFADS):    {_fmt_pct(lev_vi.equity_irr)}")
+    print(f"  Min DSCR (after-tax, avg M):     {lev_vi.min_dscr:.3f}" if lev_vi.min_dscr else "  Min DSCR: N/A")
 
     # B4 checks
     equity_hurdle_lev = 0.025 + 1.65 * 0.060   # β_L=1.65, r_f=0.025, ERP=0.06 → 12.4%
     b4_dscr = lev_vi.min_dscr is not None and lev_vi.min_dscr >= 1.30
     b4_eirr = lev_vi.equity_irr is not None and lev_vi.equity_irr > equity_hurdle_lev
     print()
-    print(f"  B4 min-DSCR ≥ 1.30:   {'✓ PASS' if b4_dscr else '✗ FAIL (finding: over-geared at 70%, not a tripwire)'}  "
+    print(f"  B4 min-DSCR ≥ 1.30 (after-tax): "
+          f"{'✓ PASS' if b4_dscr else '✗ FAIL (finding: over-geared at 70%, not a tripwire)'}  "
           f"{lev_vi.min_dscr:.3f}" if lev_vi.min_dscr else f"  B4 min-DSCR ≥ 1.30: N/A")
-    print(f"  B4 equity-IRR > {equity_hurdle_lev*100:.1f}%: "
-          f"{'✓ PASS' if b4_eirr else '✗ FAIL'}  "
-          f"{_fmt_pct(lev_vi.equity_irr)}  (pre-tax; after-tax would be ~{lev_vi.equity_irr*0.75*100:.1f}% if uniform tax)")
+    print(f"  B4 equity-IRR > {equity_hurdle_lev*100:.1f}% (after-tax): "
+          f"{'✓ PASS' if b4_eirr else '✗ FAIL'}  {_fmt_pct(lev_vi.equity_irr)}")
 
     if not b4_dscr and lev_vi.min_dscr is not None:
         print(f"\n  DSCR FINDING: min-DSCR = {lev_vi.min_dscr:.3f} < 1.30 at 70% gearing.")
@@ -729,7 +728,7 @@ def main():
     print(f"   1. Export cap 567MW (public estimate, USER-directed, pending connection data)")
     print(f"   2. Full-site CAPEX ¥{TOTAL_CAPEX/1e6:,.1f}M from config — wind+PV+bat+grid")
     print(f"   3. cl=6000 = conservative lower bound; true NPV ≥ stub (CATL DoD pending)")
-    print(f"   4. Equity IRR = pre-tax EBITDA − debt-service (overstates after-tax)")
+    print(f"   4. Equity IRR = after-tax CFADS − debt-service (CFADS = EBITDA − tax, §13.8)")
     print(f"   5. Finance-expert gate required to certify and close task #15")
 
 
