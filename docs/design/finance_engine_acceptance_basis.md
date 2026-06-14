@@ -78,8 +78,8 @@ NPV(0.10) = −1,000,000 + 600,000/1.10 + 600,000/1.10²
 
 IRR: let u = 1/(1+IRR).  600,000u + 600,000u² = 1,000,000
      u² + u − 1.6666667 = 0 ;  disc = 1 + 4·1.6666667 = 7.6666667 ;  √ = 2.7688746
-     u = (−1 + 2.7688746)/2 = 0.8844373 ;  1+IRR = 1/0.8844373 = 1.1306630
-IRR = 0.130663  = 13.0663 %                                # assert ±0.01 pp
+     u = (−1 + 2.7688746)/2 = 0.8844373 ;  1+IRR = 1/0.8844373 = 1.1306624
+IRR = 0.1306624 = 13.0662 %                                # assert ±0.01 pp
 
 MIRR (reinvest = finance = r = 0.10):
      FV_pos@yr2 = 600,000·1.10 + 600,000 = 1,260,000 ;  PV_neg = 1,000,000
@@ -124,8 +124,8 @@ NPV(0.10) = −1,000,000 + 575,000/1.10 + 575,000/1.10²
      cross-check: 41,322.31 + (−43,388.43) = −2,066.12  ✓                # tax is a pure delta
 
 IRR_after_tax:  575,000(u + u²) = 1,000,000 ;  u² + u − 1.7391304 = 0
-     disc = 7.9565217 ; √ = 2.8207307 ; u = 0.9103654 ; 1+IRR = 1.0984402
-IRR = 0.098440 = 9.8440 %                                                 # assert ±0.01 pp
+     disc = 7.9565217 ; √ = 2.8207307 ; u = 0.9103654 ; 1+IRR = 1/0.9103654 = 1.0984601
+IRR = 0.0984601 = 9.8460 %                                                # assert ±0.01 pp
      ⇒ below the 10% hurdle ⇒ after-tax NPV<0 ; the 15%-renewable-qualifying flag (tax_rate=0.15) is the same computation with 0.15.
 ```
 **Asserts:** tax block reported as `delta_to_base`; base case unchanged (Vector 1 numbers reproduced with `tax=off`); VAT **not** modeled (§13.14-11).
@@ -149,17 +149,17 @@ EBITDA(y) = 600,000 (pre-tax base)
 **Expected (hand-computed)**
 ```
 CFADS(y) = EBITDA (pre-tax base, §13.8 CFADS ≈ EBITDA − Tax; tax off here) = 600,000
-DSCR(y)  = CFADS / DebtService = 600,000 / 322,682.93 = 1.8593   (level, y=1,2)
-min_DSCR = 1.859                                                  # assert ±0.001
+DSCR(y)  = CFADS / DebtService = 600,000 / 322,682.93 = 1.8594   (level, y=1,2)
+min_DSCR = 1.859                                                  # assert ±0.001 (1.85941)
 
 Equity CF:  CF_eq(0) = −(CAPEX − Debt) = −400,000
             CF_eq(y) = EBITDA − A = 600,000 − 322,682.93 = 277,317.07   (y=1,2)
-Equity IRR: 277,317.07(u+u²) = 400,000 ;  u² + u − 1.4423974 = 0
-     disc = 6.7695896 ; √ = 2.6018435 ; u = 0.8009217 ; 1+IRR_eq = 1.2485621
-IRR_eq = 0.248562 = 24.8562 %                                    # assert ±0.01 pp
+Equity IRR: 277,317.07(u+u²) = 400,000 ;  u² + u − 1.4423923 = 0
+     disc = 6.7695692 ; √ = 2.6018396 ; u = 0.8009198 ; 1+IRR_eq = 1/0.8009198 = 1.2485645
+IRR_eq = 0.2485645 = 24.8565 %                                   # assert ±0.01 pp
 
 Levered delta (the reported quantity):
-     ΔIRR = IRR_eq − IRR_project = 24.8562 % − 13.0663 % = +11.79 pp   (positive leverage: project return > r_d)
+     ΔIRR = IRR_eq − IRR_project = 24.8565 % − 13.0662 % = +11.79 pp   (positive leverage: project return > r_d)
      min_DSCR = 1.86
 ```
 **Asserts:** with `debt=off`, `equity_IRR` and `min_DSCR` are **absent** (not 0/null) — debt-gating (§13.12 inv 3 / §13.9); with `debt=on` they appear and are reported as deltas to the unlevered base.
@@ -189,7 +189,8 @@ P_q  =  np.quantile(sorted_ascending(metric), 1 − q, method='lower')
 | **Max cumulative drawdown + year** | `min(0, min_y cumCF_excl_CAPEX(y))`; year = argmin | see trajectory ↓ |
 | **Worst single-year CF** | `min` over y=1…N and all M of annual net CF (year-0 CAPEX excluded — certain) | see trajectory ↓ |
 
-Percentile rank checks (method='lower'): P50→rank 25→x[25]=140,000; P75→rank 13→x[13]=20,000; P90→rank 5→x[5]=−60,000; P95→rank 3→x[3]=−80,000.
+Percentile rank checks — **0-based numpy indices** (the index a test encoder asserts on `np.sort(x)`; `method='lower'` virtual index `i = floor((1−q)·(M−1))` on the ascending array, M=50):
+`P50 → i=floor(0.50·49)=24 → x[24]=140,000`; `P75 → i=floor(0.25·49)=12 → x[12]=20,000`; `P90 → i=floor(0.10·49)=4 → x[4]=−60,000`; `P95 → i=floor(0.05·49)=2 → x[2]=−80,000`. *(0-based: `x[0]` is the worst draw −100,000; `x[49]` the best +390,000. Encode against `numpy` 0-based indexing — do **not** use 1-based labels.)*
 
 **IRR ensemble for P(IRR<hurdle):** `IRR_m = 0.04 + (m−1)·0.005`, m=1…50; hurdle = 0.10 ⇒ `IRR_m<0.10` for m=1…12 ⇒ **12/50 = 0.24**.
 
