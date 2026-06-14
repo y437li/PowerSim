@@ -209,6 +209,43 @@ MIRR(0.10) = 17.85 %                                                  # assert �
 
 ---
 
+## Vector 5 — VIEW II: same-config dispatch value (USER decision: NOT "does the battery pay")
+
+**Binding scope (USER decision 2026-06-14, team-lead → LINEAGE).** `finance()` View II (`baseline_policy_id`) is **reserved for SAME-CONFIG dispatch comparison** — the policy and its baseline share **identical hardware/econ**, differing only in *dispatch* (e.g. smart vs naive). There the year-0 `total_capex` (and all lifecycle CAPEX) **correctly cancels** in `NPV(π) − NPV(baseline)`, isolating the **value of smart dispatch**. *The capex cancellation is CORRECT here* — both policies own the same hardware. This supersedes §13.1's original "View II = battery-CAPEX-only / does the battery pay" framing **for the finance() engine**: the **battery-sizing** question (how much battery — no_battery is retired) moves to the **config-compare layer** (below).
+
+**NAMING GUARD (binding — the one real risk).** `finance()` View II MUST be labeled **"value of smart dispatch (same hardware)"** / "incremental dispatch value" — **NEVER "does the battery pay" / "incremental battery value."** The capex cancellation is valid *only* because the two policies share hardware; labeling a capex-free dispatch delta as battery value would imply a **free battery** (the defect this vector originally chased). *Reviewer-grade: any UI/report surfacing View II as battery economics is a REQUEST_CHANGES.*
+
+**Cross-config = BATTERY SIZING (USER directive 2026-06-14: no_battery is dropped — "都需要配电池，只是配多少").** Every config carries a battery; the only question is **how much**. So the config-compare is **two with-battery configs of different capacity** (e.g. 300 MWh vs 600 MWh) — each a full-site config with its **own econ** (different battery CAPEX ⇒ different total CAPEX), run on the **shared CRN draws** — diffed to answer *"is the larger battery worth its marginal CAPEX."* (There is **no no-battery counterfactual** — it has no computational meaning per the user. The earlier "does the battery pay" framing is retired.) Config-compare layer; not this engine. Recorded D41.
+
+**Worked — battery sizing (marginal value of +300 MWh):** config-S = 300 MWh battery, site CAPEX ¥1,000,000, operating EBITDA ¥600,000/yr; config-L = 600 MWh battery, site CAPEX ¥1,300,000 (extra ¥300k battery), EBITDA ¥700,000/yr (extra ¥100k/yr arbitrage); N=2, r=0.10.
+```
+NPV(config-L, ¥1,300,000) = −1,300,000 + 700,000/1.10 + 700,000/1.21 = −¥ 85,123.97
+NPV(config-S, ¥1,000,000) = −1,000,000 + 600,000/1.10 + 600,000/1.21 = +¥ 41,322.31
+incremental (L − S) = −85,123.97 − 41,322.31 = −¥126,446.28                          # assert ±¥1
+  = −Δbattery_CAPEX + PV(Δ EBITDA) = −300,000 + (100,000/1.10+100,000/1.21) = −300,000 + 173,553.72 ✓
+```
+**Reading:** the larger battery does **not** pay its marginal CAPEX here (extra ¥300k > ¥173,553.72 PV of extra arbitrage). Each config carries its **own** full econ, so the marginal battery CAPEX is correctly charged.
+
+**Config-compare incremental — PER-DRAW CRN-PAIRED DIFF, never diff-of-percentiles (binding; rl-architect D41).** The incremental distribution is the **element-wise diff over the shared CRN draws**: `incremental_m = NPV(config-L)_m − NPV(config-S)_m` (both runs on the **same** weather seed, index `m` aligned), then aggregate. **`P50(L) − P50(S) ≠ P50(L − S)`** — percentiles do not subtract. So:
+- `P(incremental NPV < 0)` = fraction of **CRN-paired draws** with `incremental_m < 0` (NOT a function of the two marginal `P(NPV<0)` values).
+- every incremental percentile / CVaR / worst-case is computed over the **per-draw diff array**, using the engine's own `metrics.npv` per draw (single-source, not reimplemented). The point vector above (−¥126,446.28) is the mean/representative; the *distribution* is the per-draw diff.
+*Why it's load-bearing — worked counter-example (M=4, both configs identical marginals `{100,200,300,400}` but anti-correlated per draw):* `with_m=[400,300,200,100]`, `without_m=[100,200,300,400]` → per-draw diff `[+300,+100,−100,−300]` → **P(incremental<0) = 50%**, incremental ranges ±300. But **diff-of-percentiles = 0 at every percentile** (identical marginals) → would falsely report "battery adds nothing, no risk." The CRN-paired per-draw diff is the truth; diff-of-marginals is blind to it. *Vector-5 acceptance test must assert the per-draw-diff form.*
+
+> **Cross-layer (D45):** this per-draw-diff rule is the *engine-oracle* statement of the same invariant locked at the *wire* layer in [`contracts/shared/finance_result_summary.md`](../../contracts/shared/finance_result_summary.md) v1.1.0 **rule 7** (any `*_delta` = percentile of per-draw CRN differences, never diff-of-percentiles) with its **test 9**. The two counter-examples are complementary, not redundant: the M=4 anti-correlated example *here* exposes the **risk-distribution** blindness (`P(incremental<0)=50%` vs diff-of-marginals=0); #135's case-9 (`S=[0,10,20,30,40]`, per-draw `d=[+100,−5,−5,−5,−5]` → diff-of-P50 `+5` vs per-draw-P50 `−5`) exposes **sign inversion at the P50 point** specifically. Engine oracle ⊕ wire contract — same principle, two layers.
+
+**Worked — value of smart dispatch (capex correctly cancels):** N=2, r=0.10; **single shared econ** CAPEX ¥1,000,000 (same hardware for both); smart-dispatch EBITDA ¥700,000/yr, naive-dispatch ¥600,000/yr (Δ dispatch = ¥100,000/yr).
+```
+NPV(smart, ¥1,000,000) = −1,000,000 + 700,000/1.10 + 700,000/1.21 = ¥214,876.03   [= smart View I]
+NPV(naive, ¥1,000,000) = −1,000,000 + 600,000/1.10 + 600,000/1.21 = ¥ 41,322.31   [= naive View I]
+View II = 214,876.03 − 41,322.31 = +¥173,553.72                                    # assert ±¥1
+  = PV(Δ dispatch) = 100,000/1.10 + 100,000/1.21 = 173,553.72   ✓  (capex cancels — CORRECT, same hardware)
+```
+This is the **value of smart dispatch over naive**, isolated — the legitimate, intended `finance()` View II. (It is NOT the battery's net value; that requires the config-level comparison above.)
+
+**Asserts:** (1) same-config View II = `PV(Δ dispatch)` with shared econ → capex cancels (correct by design); (2) View II carries the **dispatch-value label**, never a battery-economics label (naming guard); (3) View II omitted when `baseline_policy_id` absent (existing FIN-42); (4) **battery sizing** is exercised as two with-battery View-I config runs (different capacity, each its own econ) diffed per-draw — **not** a `finance()` View II baseline, and **not** a no-battery counterfactual (retired). *No `finance()` signature change (the earlier `baseline_econ` proposal is withdrawn — superseded by the USER config-level decision; task #17 closed).*
+
+---
+
 ## §A — Downside-stat definitions as testable formulas (§13.10b), with a worked M=50 ensemble
 
 All downside metrics are computed on the **M weather draws at a fixed price path** (M is the *only* stochastic axis — INV-FINLAYER; price paths are a separate deterministic family, never cross-producted). Worked numbers use a clean linear ensemble so every stat is hand-checkable.
@@ -338,7 +375,7 @@ The implementation is accepted (finance-expert verdict toward QA) only if **all*
 6. **CRN structural** (§13.12 inv 1): every policy's `runs` list has length M with index-aligned draws from `ensemble.seed`; the seed travels into `provenance`. Per-policy deltas are pure dispatch under a synthetic two-policy fixture with identical draws.
 7. **Determinism & provenance.** Fixed inputs → identical `FinanceResult` (incl. seeded bootstrap CI). `provenance` carries seed, M, `valuation_date`, `r_f(curve_date, tenor, yield)`, `r_e`/WACC, discount params, escalation/price_path, scenario_id, code_version; mismatched-assumption results are refused for comparison.
 8. **Econ defaults sourced from #103** (`config/device_models.yaml` 2.1.0) with per-value provenance; CAPM values from §13.5b (`USER-confirmed/2026-06-13`); none hardcoded in engine code — all UI-editable.
-9. **View II gating + definition** (§13.12 inv 3; D39 §2 `engine.py` facade): View II = **NPV(π) − NPV(`baseline_policy_id`) over the CRN-shared draws** (index-aligned m ⇒ pure-dispatch delta, P2), computed in the facade. `baseline_policy_id ∈ runs.keys()` ⇒ incremental-storage view produced; absent ⇒ View II **omitted** (never fabricated), View I still produced.
+9. **View II — same-config dispatch value (USER decision; Vector 5), gating + definition** (§13.12 inv 3; D39 §2 `engine.py` facade): `finance()` View II = **NPV(π) − NPV(`baseline_policy_id`)** over CRN-shared draws with the **single shared `econ`** — reserved for **same-hardware dispatch comparison** (smart vs naive), where capex **correctly cancels** → View II = `PV(Δ dispatch)` = the **value of smart dispatch**. ⚠️ **NAMING GUARD (binding):** View II MUST be labeled "value of smart dispatch (same hardware)," **never "does the battery pay" / battery value** — a battery-economics label on a capex-free dispatch delta is a hard **REQUEST_CHANGES** (implies a free battery). **Battery SIZING is a CONFIG-LEVEL comparison** — two with-battery View-I config runs of different capacity (each its own econ), diffed **per-draw CRN-paired**, **not** a `finance()` View II baseline (USER decision 2026-06-14, team-lead → LINEAGE; no_battery retired — "都需要配电池，只是配多少"; supersedes §13.1's battery-capex-only framing for the engine; the earlier `baseline_econ` fix is withdrawn). `baseline_policy_id ∈ runs.keys()` ⇒ View II produced; absent ⇒ View II **omitted** (never fabricated), View I still produced.
 10. **Client/server parity** (§13.4): the stage-⑤ client library reproduces the engine within ≤0.01 pp (IRR/MIRR) and ≤¥1k (NPV) per draw on a shared ≥(M=5 × N=20 × ≥2 multiplier vectors) test vector.
 
 **finance-expert is the acceptance gate.** QA (qa-engineer) issues the closing verdict; finance-expert's APPROVE on the finance semantics is required for the contract test-gate and again at implementation audit.
