@@ -146,14 +146,20 @@ class PercentileResult:
 
 @dataclass
 class DownsideRisk:
-    """§13.10b — six downside metrics; present only when distribution_valid=True."""
+    """§13.10b — downside metrics; present only when distribution_valid=True.
+
+    R3 additive fields (backward-compatible; None in R1/R2):
+      cvar5_yuan:         float | None  — None in R3 (k=1 = worst-of-N relabel, §A.0)
+      best_of_n_npv_yuan: float | None  — max(NPV_m) in R3; None in R1/R2
+    """
     worst_case_npv_yuan:    float
     p_npv_neg:              float
     p_irr_below_hurdle:     float
-    cvar5_yuan:             float
+    cvar5_yuan:             "float | None"       # None in R3 (CVaR-5% suppressed)
     max_drawdown_yuan:      float
     max_drawdown_year:      int
     worst_year_cf_yuan:     float
+    best_of_n_npv_yuan:     "float | None" = None  # R3: max(NPV_m); None in R1/R2
 
 
 @dataclass
@@ -415,8 +421,14 @@ def _make_view(
     wacc_info: dict,
     equity_irr_val: "float | None",
     min_dscr_val: "float | None",
+    sample_kind: str = "bootstrap",
 ) -> ViewResult:
-    """Build one ViewResult (View I or delta-View II) from per-draw metric arrays."""
+    """Build one ViewResult (View I or delta-View II) from per-draw metric arrays.
+
+    sample_kind selects the percentile regime (§A.0 / D39 §4):
+      "bootstrap" M≥50 → R2: P50/P75/P90/P95/P99 + CVaR-5% + bootstrap CI
+      "empirical"  M>1 → R3: P50 only; P75/P90/P95/P99=None; CVaR-5%=None; best_of_n set
+    """
     M = len(npv_arr)
 
     # ── Single trajectory (always present, use draw m=0) ─────────────────────
@@ -437,8 +449,54 @@ def _make_view(
             min_dscr          = min_dscr_val,
         )
 
-    # ── Distributional percentiles (R2: M≥50, bootstrap) ─────────────────────
-    seed = config.bootstrap_seed
+    hurdle = wacc_info["hurdle_rate"]
+
+    # ── Shared downside aggregates (both R2 and R3) ───────────────────────────
+    all_annual_draws = [cfs[1:] for cfs in all_annual_cfs]  # strip year-0 CAPEX
+    dd_vals  = [max_drawdown(a)["drawdown_yuan"] for a in all_annual_draws]
+    dd_years = [max_drawdown(a)["drawdown_year"] for a in all_annual_draws]
+    worst_dd_idx  = int(np.argmin(dd_vals))
+    worst_yr_vals = [worst_year_cf(a)["worst_cf_yuan"] for a in all_annual_draws]
+
+    # ── R3: empirical small-sample (§A.0/§A.1, D39 §4) ──────────────────────
+    if sample_kind == "empirical":
+        # ONE locked estimator (same np.quantile,'lower' as R2 — §A.0 "one estimator" rule)
+        seed  = config.bootstrap_seed
+        n_res = config.bootstrap_n_resamples
+        ci_lvl = config.bootstrap_ci_level
+
+        def _prow_r3(q):
+            # R3 empirical P50: "meaningful median at M≈10" (§A.0) but CI is wide
+            # → tag is ALWAYS indicative_low_confidence by regime rule (§A.1 PR #121).
+            # Never "sound" for empirical M≈10: bootstrap-CI width >> 20%·|P50| threshold.
+            return _compute_percentile_row(
+                q, npv_arr, irr_arr, mirr_arr, lcoe_arr, lcos_arr,
+                pb_simple_arr, pb_disc_arr, seed, n_res, ci_lvl,
+                "indicative_low_confidence",
+            )
+
+        dr_r3 = DownsideRisk(
+            worst_case_npv_yuan = float(np.min(npv_arr)),      # "worst of N observed years"
+            p_npv_neg           = p_below(npv_arr, 0.0),
+            p_irr_below_hurdle  = p_below(irr_arr, hurdle),
+            cvar5_yuan          = None,                         # suppressed: k=1 = worst-of-N relabel
+            max_drawdown_yuan   = dd_vals[worst_dd_idx],
+            max_drawdown_year   = dd_years[worst_dd_idx],
+            worst_year_cf_yuan  = float(np.min(worst_yr_vals)),
+            best_of_n_npv_yuan  = float(np.max(npv_arr)),      # "best of N observed years"
+        )
+        # P50 kept (meaningful at M≈10); P75/P90/P95/P99 suppressed (collapse risk, §A.0)
+        return ViewResult(
+            single_trajectory = st,
+            P50          = _prow_r3(0.50),
+            # P75/P90/P95/P99 default to None — absent, not fabricated (§13.10c)
+            downside_risk = dr_r3,
+            equity_irr    = equity_irr_val,
+            min_dscr      = min_dscr_val,
+        )
+
+    # ── R2: bootstrap M≥50 (§A.0, D34) ──────────────────────────────────────
+    seed  = config.bootstrap_seed
     n_res = config.bootstrap_n_resamples
     ci_lvl = config.bootstrap_ci_level
 
@@ -448,27 +506,15 @@ def _make_view(
             pb_simple_arr, pb_disc_arr, seed, n_res, ci_lvl, confidence,
         )
 
-    hurdle = wacc_info["hurdle_rate"]
-
-    # ── Downside risk ─────────────────────────────────────────────────────────
-    # worst-case draw for max_drawdown across all M draws
-    # (contract says "min_y cumCF_excl_CAPEX per §13.10b" — use worst draw's single-draw value)
-    # For the downside panel we aggregate over all draws
-    all_annual_worst_draws = [cfs[1:] for cfs in all_annual_cfs]  # strip CAPEX
-    # max_drawdown of each draw individually
-    dd_vals = [max_drawdown(a)["drawdown_yuan"] for a in all_annual_worst_draws]
-    dd_years = [max_drawdown(a)["drawdown_year"] for a in all_annual_worst_draws]
-    worst_dd_idx = int(np.argmin(dd_vals))
-    worst_yr_vals = [worst_year_cf(a)["worst_cf_yuan"] for a in all_annual_worst_draws]
-
     dr = DownsideRisk(
         worst_case_npv_yuan  = float(np.min(npv_arr)),
         p_npv_neg            = p_below(npv_arr, 0.0),
         p_irr_below_hurdle   = p_below(irr_arr, hurdle),
-        cvar5_yuan           = cvar5(npv_arr, M),
+        cvar5_yuan           = cvar5(npv_arr, M),   # float in R2 (k=3 at M=50, meaningful)
         max_drawdown_yuan    = dd_vals[worst_dd_idx],
         max_drawdown_year    = dd_years[worst_dd_idx],
         worst_year_cf_yuan   = float(np.min(worst_yr_vals)),
+        # best_of_n_npv_yuan stays None (default) — absent in R2
     )
 
     return ViewResult(
@@ -517,7 +563,11 @@ def finance(
 
     # 3. Regime flags
     M = ensemble.M
-    distribution_valid = (M >= 50 and ensemble.sample_kind == "bootstrap")
+    # R2: bootstrap M≥50 → distribution_valid; R3: empirical M>1 → distribution_valid (§A.0)
+    distribution_valid = (
+        (M >= 50 and ensemble.sample_kind == "bootstrap")
+        or (ensemble.sample_kind == "empirical" and M > 1)
+    )
     requires_retrain = any_nonuniform(price_paths)
 
     # 4. Debt parameters (computed once, same for all policies)
@@ -637,6 +687,7 @@ def finance(
                 pb_simple_arr, pb_disc_arr, all_cfs,
                 distribution_valid, finance_config, wacc_info,
                 equity_irr_val, min_dscr_val,
+                sample_kind=ensemble.sample_kind,
             )
 
             # ── View II ───────────────────────────────────────────────────────
