@@ -354,3 +354,13 @@ weakened to pass). **Full suite 66/66 green** against the impl (incl. my §T12 +
 **Verdict: APPROVE** (implementation). Data-display correctness verified, all 66 approved tests pass,
 no approved test weakened, no POST/rogue I/O, behavior matches the contract. The only gap is an
 untested cosmetic Option-B token-styling polish (should-fix follow-up). Ready for QA on `ed418c7`.
+
+### Round 5 addendum — `1c0ef6d` — APPROVE holds (Option-B should-fix resolved)
+frontend-engineer applied the §5.2/§7 token-styling should-fix (`1c0ef6d`, on top of the Round-5
+record commit). Diff `56e9e45..1c0ef6d` touches **only** `StageTwoAlgorithm.tsx` (+44; no tests, no
+store): Baseline-only card border = `TOKEN.accentBlue` when selected / `TOKEN.borderDefault` otherwise;
+SAC card border always `TOKEN.borderDefault` (greyed) + opacity 0.8; Future badge `TOKEN.textFaint` +
+`TOKEN.accentGrey`; cards on `TOKEN.bgSurface`. All seven TOKEN keys verified present in
+`tokenValues.ts`; **zero hex literals (§7 ✓)**; pure-presentational (no data/behavior change). Suite
+**66/66 green** on `1c0ef6d`. The should-fix is resolved — Option-B visual treatment now matches §5.2.
+**Implementation APPROVE stands, now covering `1c0ef6d`** (the final head for QA).
