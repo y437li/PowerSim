@@ -165,12 +165,22 @@ Units: `_pct` fields = percent (e.g. 12.3 means 12.3%); `_yuan` fields = ¥;
     "worst_case_npv_yuan":    300000.0,  // unit: ¥ — min(NPV_m); labelled "worst of N years" in R3
     "best_of_n_npv_yuan":     null,      // unit: ¥ — max(NPV_m) in R3 only; null in R1/R2
     "p_npv_neg":              0.04,      // probability ∈ [0,1]; #{NPV_m < 0} / M (strict <)
-    "p_irr_below_hurdle":     0.10,      // probability ∈ [0,1]; null in R3 (tail-suppressed)
+    "p_irr_below_hurdle":     0.10,      // probability ∈ [0,1]; POPULATED AT R3 — this is an
+                                         //   empirical frequency (#{IRR_m < hurdle}/M), not a tail
+                                         //   percentile; it does not collapse at M≈10. null only at
+                                         //   R1 (distribution_valid=False). PR #120/#121 confirmed.
     "cvar5_yuan":             null,      // unit: ¥ — null in R3 (k=ceil(0.05·M) relabels to worst-of-N)
     "max_drawdown_yuan":      -150000.0, // unit: ¥ ≤ 0; min(0, min_y cumCF_excl_CAPEX)
     "max_drawdown_year":      3,         // unit: years (1-indexed)
     "worst_year_cf_yuan":     -50000.0   // unit: ¥ — min annual net CF over all y and draws
   },                                     //   null when regime=R1
+
+  // Debt-toggle-gated metrics (absent = null when debt_toggle=False in finance_config)
+  // equity_irr_pct: percent (×100 of Python decimal), same ×100 rule as irr_p50_pct (INV-CE-04)
+  // min_dscr: bare RATIO (e.g. 1.86) — NOT ×100. A value of 1.86 means DSCR 1.86× (INV-CE-16).
+  //   An implementation that ×100-s "all finance numbers" would produce 186 and corrupt the display.
+  "equity_irr_pct":  11.2,             // unit: % — null when debt_toggle=False; decimal×100
+  "min_dscr":        1.86,             // unit: bare ratio — null when debt_toggle=False; NOT ×100
 
   // View II delta (present only when baseline_policy_id was set and baseline in ensemble)
   "view_ii_delta": {
@@ -194,10 +204,12 @@ Units: `_pct` fields = percent (e.g. 12.3 means 12.3%); `_yuan` fields = ¥;
 **Serving-layer mapping rules (IRR/MIRR to percent):**
 - Python `PercentileResult.irr` (decimal, e.g. `0.123`) → JSON `irr_p50_pct` (percent, `12.3`)
 - Python `PercentileResult.mirr` (decimal) → JSON `mirr_p50_pct` (percent)
-- Python `ViewResult.equity_irr` (decimal) → JSON `equity_irr_pct` (percent) when present
+- Python `ViewResult.equity_irr` (decimal) → JSON `equity_irr_pct` (percent, ×100) — null when debt off
+- Python `ViewResult.min_dscr` (bare ratio, e.g. `1.86`) → JSON `min_dscr` (bare ratio, `1.86`, **NOT ×100**)
 - Python `FinanceProvenance.wacc` (decimal) → JSON `provenance.wacc` (decimal, unchanged;
   not multiplied — the provenance block retains decimal form for precision)
 - NPV and ¥ fields: pass through unchanged (no unit conversion)
+- `p_irr_below_hurdle` (float ∈ [0,1]) → JSON `p_irr_below_hurdle` (float, unchanged; NOT ×100)
 
 ### 2.5 `ExecutionPlanVariant` (response)
 
@@ -562,7 +574,7 @@ Total configs = `energy_steps × power_steps` ≤ 400.
 
 | Field pattern | Unit | Notes |
 |---|---|---|
-| `*_pct` | % (percent) | e.g. `irr_p50_pct=12.3` means 12.3% |
+| `*_pct` | % (percent) | e.g. `irr_p50_pct=12.3` means 12.3%; applies to IRR, MIRR, equity_irr |
 | `*_yuan` | ¥ (yuan) | no conversion from engine (already in ¥) |
 | `*_yuan_per_mwh` | ¥/MWh | LCOE, LCOS |
 | `*_yr` | years | payback, horizon |
@@ -573,6 +585,8 @@ Total configs = `energy_steps × power_steps` ≤ 400.
 | `r_f`, `r_e`, `wacc` in provenance | decimal (0.026 = 2.6%) | NOT converted to % |
 | `equity_risk_premium`, `credit_spread` in FinanceConfigRequest | decimal | match Python dataclass |
 | `tier_duration_estimate_s` | seconds | |
+| `min_dscr` | bare ratio (e.g. 1.86) | **NOT ×100** — DSCR is a coverage multiple, not a percent |
+| `p_npv_neg`, `p_irr_below_hurdle` | probability ∈ [0,1] | NOT ×100 — frequencies, not percentiles |
 
 ---
 
@@ -594,7 +608,8 @@ Total configs = `energy_steps × power_steps` ≤ 400.
 | INV-CE-12 | `GET /api/compare/run/{run_id}/status` partial results include only variants that have finished; variants still running MUST NOT appear in `results_by_variant_id`. |
 | INV-CE-13 | `surface` in sizing-sweep status is `null` while `status="running"` (no partial surface). |
 | INV-CE-14 | `finance_config` fields `r_f_override` and `r_d_override` are test-only bypasses; the implementation MAY log a warning when they are set in non-test mode (but MUST NOT reject them). |
-| INV-CE-15 | The serving layer MUST NOT accept a `wacc` override field in `FinanceConfigRequest`; WACC is computed from CAPM inputs server-side. A request with `"wacc"` as a key MUST return 400 `VALIDATION_ERROR`. |
+| INV-CE-15 | `FinanceConfigRequest` uses a **closed allow-set**: the serving layer MUST reject any request body key that is not in the explicit allow-list of §2.3 field names with 400 `VALIDATION_ERROR`. `"wacc"` is the archetypal forbidden key (must be caught); any other unknown key (e.g. `"gamma"`, `"discount_rate"`, a typo) must also be rejected. |
+| INV-CE-16 | `min_dscr` in `FinanceResultSummary` is a **bare ratio** (e.g. `1.86`), NOT percent. A serving test MUST assert `min_dscr < 10.0` for realistic projects (DSCR > 10 is economically implausible; any value > 100 reveals an erroneous ×100 conversion). |
 
 ---
 

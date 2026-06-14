@@ -321,6 +321,161 @@ class TestCompareFinance:
                 "INV-CE-08: cvar5_yuan must be null at R3 (k=ceil(0.05·10)=1 relabels to worst-of-N)"
             )
 
+    def test_finance_p_irr_below_hurdle_populated_at_r3(self, client, monkeypatch):
+        """MUST-FIX 1 (backend-reviewer): p_irr_below_hurdle is POPULATED at R3.
+
+        p_irr_below_hurdle is an empirical frequency (#{IRR_m < hurdle}/M), NOT a tail
+        percentile. It does not collapse at M≈10. PRs #120/#121 confirmed this is populated
+        in the engine's R3 output. Therefore it must NOT be null at R3 (unlike cvar5_yuan).
+        """
+        stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=10,
+                                            sample_kind="empirical")
+        monkeypatch.setattr("energy_go.serving.compare.cache",
+                            {self.EVAL_ID: stub_ensemble})
+        resp = client.post("/api/compare/finance", json=self._finance_request())
+        assert resp.status_code == 200
+        fr = resp.json()["finance_result"]
+        if fr.get("regime") == "R3" and fr.get("downside_risk") is not None:
+            p_irr = fr["downside_risk"].get("p_irr_below_hurdle")
+            assert p_irr is not None, (
+                "p_irr_below_hurdle must be populated at R3 — it is a frequency, not a tail. "
+                "PRs #120/#121 confirmed the engine populates this at M=10 (empirical)."
+            )
+            assert 0.0 <= p_irr <= 1.0, (
+                f"p_irr_below_hurdle={p_irr} must be a probability in [0,1]"
+            )
+
+    def test_finance_p_irr_below_hurdle_null_at_r1(self, client, monkeypatch):
+        """p_irr_below_hurdle is null at R1 (distribution_valid=False, no draws to count)."""
+        stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=1)
+        monkeypatch.setattr("energy_go.serving.compare.cache",
+                            {self.EVAL_ID: stub_ensemble})
+        resp = client.post("/api/compare/finance", json=self._finance_request())
+        assert resp.status_code == 200
+        fr = resp.json()["finance_result"]
+        if fr.get("regime") == "R1":
+            # At R1, downside_risk is null entirely (INV-CE-06)
+            assert fr.get("downside_risk") is None
+
+    def test_finance_equity_irr_pct_is_percent_when_debt_on(self, client, monkeypatch):
+        """MUST-FIX 2: equity_irr_pct must be present and in percent when debt_toggle=True.
+
+        Arithmetic: engine returns equity_irr=0.142 (decimal) → serving must ×100 → 14.2%.
+        If serving omits ×100, equity_irr_pct would be 0.142 < 1.0 → assert fails.
+        """
+        stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=50,
+                                            equity_irr_decimal=0.142)
+        monkeypatch.setattr("energy_go.serving.compare.cache",
+                            {self.EVAL_ID: stub_ensemble})
+        resp = client.post("/api/compare/finance", json=self._finance_request(
+            finance_config={"debt_toggle": True}
+        ))
+        assert resp.status_code == 200
+        fr = resp.json()["finance_result"]
+        eqirr = fr.get("equity_irr_pct")
+        assert eqirr is not None, (
+            "equity_irr_pct must be present when debt_toggle=True"
+        )
+        # Must be in percent form (14.2, not 0.142)
+        # Arithmetic: 0.142 × 100 = 14.2; < 1.0 reveals decimal-unit bug
+        assert eqirr > 1.0, (
+            f"equity_irr_pct={eqirr} looks like decimal (< 1.0); must be percent (14.2). "
+            f"Serving layer must multiply engine decimal by 100."
+        )
+
+    def test_finance_equity_irr_pct_null_when_debt_off(self, client, monkeypatch):
+        """equity_irr_pct is null when debt_toggle=False (default)."""
+        stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=50)
+        monkeypatch.setattr("energy_go.serving.compare.cache",
+                            {self.EVAL_ID: stub_ensemble})
+        resp = client.post("/api/compare/finance", json=self._finance_request(
+            finance_config={}  # debt_toggle defaults to False
+        ))
+        assert resp.status_code == 200
+        fr = resp.json()["finance_result"]
+        assert fr.get("equity_irr_pct") is None, (
+            "equity_irr_pct must be null when debt_toggle=False"
+        )
+
+    def test_finance_min_dscr_is_ratio_not_percent(self, client, monkeypatch):
+        """MUST-FIX 2 + INV-CE-16: min_dscr must be a bare ratio (e.g. 1.86), NOT ×100.
+
+        Arithmetic: engine returns min_dscr=1.86 (ratio). Serving must NOT multiply by 100.
+        A wrong ×100 conversion would produce 186.0 — caught by asserting value < 10.0.
+        Realistic DSCR for a bankable project is 1.20–2.50; > 10 is economically implausible.
+        """
+        stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=50,
+                                            min_dscr_ratio=1.86)
+        monkeypatch.setattr("energy_go.serving.compare.cache",
+                            {self.EVAL_ID: stub_ensemble})
+        resp = client.post("/api/compare/finance", json=self._finance_request(
+            finance_config={"debt_toggle": True}
+        ))
+        assert resp.status_code == 200
+        fr = resp.json()["finance_result"]
+        dscr = fr.get("min_dscr")
+        assert dscr is not None, "min_dscr must be present when debt_toggle=True"
+        # INV-CE-16: bare ratio, not percent
+        # Arithmetic: 1.86 is correct; 186.0 reveals erroneous ×100
+        assert dscr < 10.0, (
+            f"min_dscr={dscr} > 10.0 — looks like percent (×100 applied). "
+            f"min_dscr is a DSCR coverage ratio (1.86), NOT a percent (INV-CE-16)."
+        )
+        assert dscr > 0.0, "min_dscr must be positive (dimensionless ratio)"
+
+    def test_finance_min_dscr_null_when_debt_off(self, client, monkeypatch):
+        """min_dscr is null when debt_toggle=False."""
+        stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=50)
+        monkeypatch.setattr("energy_go.serving.compare.cache",
+                            {self.EVAL_ID: stub_ensemble})
+        resp = client.post("/api/compare/finance", json=self._finance_request(
+            finance_config={}  # debt off by default
+        ))
+        assert resp.status_code == 200
+        fr = resp.json()["finance_result"]
+        assert fr.get("min_dscr") is None, (
+            "min_dscr must be null when debt_toggle=False"
+        )
+
+    def test_finance_engine_exception_returns_500(self, client, monkeypatch):
+        """reviewer: if finance() raises, the endpoint must return 500 INTERNAL_ERROR."""
+        stub_ensemble = _make_stub_ensemble(self.EVAL_ID, self.POLICY_ID, M=50)
+        monkeypatch.setattr("energy_go.serving.compare.cache",
+                            {self.EVAL_ID: stub_ensemble})
+
+        def _raising_finance(*args, **kwargs):
+            raise RuntimeError("Simulated finance() internal error")
+
+        monkeypatch.setattr("energy_go.finance.engine.finance", _raising_finance)
+        resp = client.post("/api/compare/finance", json=self._finance_request())
+        assert resp.status_code == 500
+        assert resp.json()["code"] == "INTERNAL_ERROR"
+
+    def test_finance_unknown_field_in_finance_config_is_400(self, client):
+        """reviewer: closed allow-set (INV-CE-15) — any unknown key → 400 VALIDATION_ERROR.
+
+        Only wacc is specified in the contract; an arbitrary unknown field must also fail.
+        """
+        resp = client.post("/api/compare/finance", json={
+            "eval_result_id":  self.EVAL_ID,
+            "policy_id":       self.POLICY_ID,
+            "price_path_name": "flat_2026",
+            "finance_config":  {"gamma": 0.999},   # unknown finance_config field
+        })
+        assert resp.status_code == 400
+        assert resp.json()["code"] == "VALIDATION_ERROR"
+
+    def test_finance_typo_field_in_finance_config_is_400(self, client):
+        # reviewer: typo fields (e.g. 'horizon_year' vs 'horizon_years') must also be rejected
+        resp = client.post("/api/compare/finance", json={
+            "eval_result_id":  self.EVAL_ID,
+            "policy_id":       self.POLICY_ID,
+            "price_path_name": "flat_2026",
+            "finance_config":  {"horizon_year": 25},   # missing 's' — unknown key
+        })
+        assert resp.status_code == 400
+        assert resp.json()["code"] == "VALIDATION_ERROR"
+
     def test_finance_unknown_policy_id_is_404(self, client, monkeypatch):
         """policy_id not in ensemble.runs → 404 POLICY_NOT_IN_ENSEMBLE."""
         stub_ensemble = _make_stub_ensemble(self.EVAL_ID, "real-policy-id")
@@ -523,6 +678,38 @@ class TestPolicyEnsembleCache:
         import energy_go.serving.compare as mod
         with pytest.raises((ValueError, SystemExit)):
             reload(mod)
+
+    def test_cache_concurrent_reads_do_not_corrupt(self):
+        """reviewer (§5.5): concurrent reads on the same key must not corrupt cache state.
+
+        Uses threading to fire 10 concurrent gets on the same key. The cache must not
+        raise, lose entries, or silently return wrong values under concurrent access.
+        """
+        import threading
+        from energy_go.serving.compare import EnsembleCache
+        cache = EnsembleCache(max_size=5)
+        sentinel = object()
+        cache["shared-key"] = sentinel
+
+        errors = []
+        results = []
+
+        def _read():
+            try:
+                results.append(cache.get("shared-key"))
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_read) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Concurrent cache reads raised: {errors}"
+        assert all(r is sentinel for r in results), (
+            "Concurrent reads returned wrong value — cache corrupted under concurrent access"
+        )
 
 
 # ===========================================================================
@@ -936,11 +1123,18 @@ class TestUnitContracts:
 # ===========================================================================
 
 def _make_stub_ensemble(eval_id, policy_id, M=50, sample_kind="bootstrap",
-                        irr_decimal=0.123, wacc_decimal=0.088, extra_policy_id=None):
+                        irr_decimal=0.123, wacc_decimal=0.088, extra_policy_id=None,
+                        equity_irr_decimal=None, min_dscr_ratio=None):
     """Create a minimal stub PolicyEnsemble-like object for monkeypatching.
 
-    Until the real PolicyEnsemble type exists, this is a dict stub.
-    Tests reference it by importing from energy_go.serving.compare.cache.
+    Until the real PolicyEnsemble type exists, this is a SimpleNamespace stub.
+    Tests reference it by injecting into energy_go.serving.compare.cache.
+
+    Stub hint fields (prefixed _) are read by the serving-layer mock of finance():
+      _irr_decimal:        engine's PercentileResult.irr → serving must ×100 → irr_p50_pct
+      _wacc_decimal:       engine's FinanceProvenance.wacc → must stay decimal in JSON
+      _equity_irr_decimal: engine's ViewResult.equity_irr → serving must ×100 → equity_irr_pct
+      _min_dscr_ratio:     engine's ViewResult.min_dscr → must NOT be ×100 in JSON
     """
     from types import SimpleNamespace
     run_ids = {policy_id: [[None] * 5] * M}
@@ -951,7 +1145,9 @@ def _make_stub_ensemble(eval_id, policy_id, M=50, sample_kind="bootstrap",
         M=M,
         sample_kind=sample_kind,
         runs=run_ids,
-        _irr_decimal=irr_decimal,     # stub hint for finance() mock
-        _wacc_decimal=wacc_decimal,   # stub hint for discount mock
+        _irr_decimal=irr_decimal,
+        _wacc_decimal=wacc_decimal,
+        _equity_irr_decimal=equity_irr_decimal,
+        _min_dscr_ratio=min_dscr_ratio,
     )
     return ensemble
