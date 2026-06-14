@@ -32,6 +32,22 @@ No store contains network transport logic. No store should be written to from re
 | `inferenceSessionStore` | `const` | — |
 | `useInferenceSessionStore` | `const` | React hook for subscribing to inferenceSessionStore state. |
 
+### `stageAlgorithmStore.ts`
+
+> src/stores/stageAlgorithmStore.ts
+
+| Symbol | Kind | Purpose |
+|--------|------|---------|
+| `StageTwoState` | `type` | — |
+| `AlgorithmType` | `type` | — |
+| `BaselineId` | `type` | — |
+| `BaselineItem` | `interface` | — |
+| `STATIC_BASELINES` | `const` | — |
+| `StageTwoStoreState` | `interface` | — |
+| `StageTwoStoreActions` | `interface` | — |
+| `isConfirmEnabled` | `function` | — |
+| `useStageAlgorithmStore` | `const` | — |
+
 ### `stageOneStore.ts`
 
 > src/stores/stageOneStore.ts

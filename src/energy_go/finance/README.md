@@ -87,7 +87,7 @@ _No public symbols exported._
 | `CgbCurve` | `class` | Static CGB yield-curve snapshot (§13.5a). |
 | `FinanceConfig` | `class` | Discount / tax / debt / horizon configuration (§13.5–§13.9). |
 | `PercentileResult` | `class` | One exceedance-percentile row. |
-| `DownsideRisk` | `class` | §13.10b — six downside metrics; present only when distribution_valid=True. |
+| `DownsideRisk` | `class` | §13.10b — downside metrics; present only when distribution_valid=True. |
 | `SingleTrajectoryResult` | `class` | §13.10c — metrics present at ALL M (including M=1). |
 | `ViewResult` | `class` | Per-policy, per-price-path result for one View (I or II). |
 | `PricePathResult` | `class` | — |
