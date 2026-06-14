@@ -63,71 +63,119 @@ from energy_go.finance.engine import (
 from energy_go.finance.econ_params import DeviceEconParams
 
 
-# ── Gansu FULL-SITE economics (corrected per finance-expert PR #127 ruling 2) ─
-# Source: config/site_gansu.yaml + config/device_models.yaml (PR #122)
-# Standard CN 2024-2026 technology costs. Sanity gate: IRR ≈ 10–16%, LCOE ≈ ¥200–300/MWh.
-WIND_FLEET_MW      = 615.0      # MW (site_gansu.yaml)
-PV_FLEET_MW        = 330.0      # MW (site_gansu.yaml)
-BAT_CAPACITY_MWH   = 294.5      # MWh fleet (catl-lmp-300mwh)
-BAT_POWER_MW       = 98.16      # MW
+# ── Config paths — single source of truth for ALL econ inputs ─────────────────
+_ROOT               = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_DEVICE_MODELS_YAML = os.path.join(_ROOT, "config", "device_models.yaml")
+_SITE_YAML          = os.path.join(_ROOT, "config", "site_gansu.yaml")
 
-# Generation asset CAPEX (¥/kW — from device_models.yaml per-model economics blocks)
-WIND_CAPEX_PER_KW  = 5_800.0   # ¥/kW  vestas-v150-4.2.economics.capex_per_kw_yuan
-PV_CAPEX_PER_KW    = 3_200.0   # ¥/kW  trina-vertex-n-670w.economics.capex_per_kw_yuan
-GRID_CAPEX_YUAN    = 0.0        # ¥     pcc-substation-945mw.economics.capex_lump_sum_yuan = 0 (sunk at Gansu)
 
-# Battery CAPEX + O&M (CATL LMP-300MWh, device_models.yaml)
-CAPEX_PER_KWH      = 1_000.0   # ¥/kWh catl-lmp-300mwh.economics.capex_energy_per_kwh_yuan
-OPEX_PER_KWH_YR    = 20.0      # ¥/kWh·yr catl-lmp-300mwh.economics.opex_fixed_per_kwh_year_yuan
-LIFETIME_YEARS_CAL = 12        # battery calendar EOL → fires replacement at yr12 (N=20 horizon)
+def econ_from_site_config(cycle_life: float = 0.0):
+    """Build DeviceEconParams from config/device_models.yaml × config/site_gansu.yaml.
 
-# Generation + Grid O&M (¥/kW·yr or ¥/MW·yr — from device_models.yaml)
-WIND_OM_PER_KW_YR  = 180.0     # ¥/kW·yr  vestas-v150-4.2.economics.opex_fixed_per_kw_year_yuan
-PV_OM_PER_KW_YR    =  80.0     # ¥/kW·yr  trina-vertex-n-670w.economics.opex_fixed_per_kw_year_yuan
-GRID_OM_PER_MW_YR  = 5_000.0   # ¥/MW·yr  pcc-substation-945mw.economics.opex_fixed_per_mw_year_yuan
-GRID_EXPORT_MW     = 945.0      # MW       pcc-substation-945mw.physics.max_export_mw
+    ALL econ inputs come from config — no hardcoded literals. Returns
+    (DeviceEconParams, meta_dict) where meta_dict holds the raw per-device
+    breakdown for audit-trail printing.
 
-# Derived FULL-SITE totals (¥)
-_WIND_CAPEX    = WIND_FLEET_MW * WIND_CAPEX_PER_KW * 1_000    # 615 MW × ¥5,800/kW = ¥3,567M
-_PV_CAPEX      = PV_FLEET_MW   * PV_CAPEX_PER_KW   * 1_000    # 330 MW × ¥3,200/kW = ¥1,056M
-_BAT_CAPEX     = CAPEX_PER_KWH * BAT_CAPACITY_MWH  * 1_000    # 294.5 MWh × ¥1,000/kWh = ¥294.5M
-TOTAL_CAPEX    = _WIND_CAPEX + _PV_CAPEX + _BAT_CAPEX + GRID_CAPEX_YUAN  # ¥4,917.5M
+    cycle_life: passed to DeviceEconParams.cycle_life_full_equiv (0.0 = no limit).
 
-_WIND_OM       = WIND_FLEET_MW   * WIND_OM_PER_KW_YR  * 1_000  # 615 MW × ¥180/kW·yr = ¥110.7M/yr
-_PV_OM         = PV_FLEET_MW     * PV_OM_PER_KW_YR    * 1_000  # 330 MW × ¥80/kW·yr  = ¥26.4M/yr
-_BAT_OM        = OPEX_PER_KWH_YR * BAT_CAPACITY_MWH   * 1_000  # 294.5 MWh × ¥20/kWh·yr = ¥5.89M/yr
-_GRID_OM       = GRID_EXPORT_MW  * GRID_OM_PER_MW_YR           # 945 MW × ¥5,000/MW·yr = ¥4.73M/yr
-FIXED_OM_YR    = _WIND_OM + _PV_OM + _BAT_OM + _GRID_OM        # ≈ ¥147.7M/yr
+    DeviceEconParams.replacement_cost_fraction is a FRACTION of total_capex_yuan so
+    the engine fires the correct absolute ¥ replacement amount at lifetime_years:
+        repl_fraction × total_capex = bat_repl_fraction × bat_capex
 
-# Battery replacement cost = 0.70 × ¥294.5M = ¥206.15M, expressed as fraction of TOTAL CAPEX.
-# DeviceEconParams.replacement_cost_fraction × total_capex_yuan = absolute replacement ¥.
-# MUST divide by full-site CAPEX so the absolute replacement stays ¥206.15M (not 0.70×¥4.92B).
-_BAT_REPL_ABS  = 0.70 * _BAT_CAPEX                              # ¥206.15M (catl: replacement_cost_fraction=0.70)
-REPL_FRACTION  = _BAT_REPL_ABS / TOTAL_CAPEX                    # ≈ 0.04191 of ¥4,917.5M
+    Reusable: task #18 (2D battery-sizing sweep) calls this with different site_yaml
+    or fleet-size overrides — no baked-in Gansu literals outside this function.
+    """
+    import yaml
+    with open(_DEVICE_MODELS_YAML) as f:
+        _dm = yaml.safe_load(f)
+    # device_models.yaml has top-level schema_version + models:{...}
+    models = _dm["models"] if "models" in _dm else _dm
+    with open(_SITE_YAML) as f:
+        site   = yaml.safe_load(f)
 
-# Site-wide residual value at horizon N=20yr (per-device fractions from device_models.yaml):
-# Wind (lifetime 25yr; residual_value_fraction=0.05): 0.05 × ¥3,567M = ¥178.4M
-# PV   (lifetime 25yr; residual_value_fraction=0.02): 0.02 × ¥1,056M = ¥21.1M
-# Battery (residual_value_fraction=0.05): 0.05 × ¥294.5M = ¥14.7M
-# Grid   (residual_value_fraction=0.10): 0.10 × ¥0 = ¥0
-# Total residual: ≈ ¥214.2M → fraction of TOTAL: 0.0436 ≈ 4.36%
-_RESID_SITE = (0.05 * _WIND_CAPEX + 0.02 * _PV_CAPEX + 0.05 * _BAT_CAPEX)  # ¥214.2M
-RESID_FRACTION = _RESID_SITE / TOTAL_CAPEX                      # ≈ 0.0436
+    # Fleet sizes from site_gansu.yaml
+    wind_mw        = float(site["assets"]["wind"]["fleet_rated_mw"])
+    pv_mw          = float(site["assets"]["solar"]["fleet_capacity_mw"])
+    bat_mwh        = float(site["assets"]["battery"]["fleet_capacity_mwh"])
+    bat_mw         = float(site["assets"]["battery"]["fleet_power_mw"])
 
-# Site-wide decommissioning (per-device rates from device_models.yaml):
-# Wind (decommissioning_cost_per_kw_yuan=100): 615,000 kW × ¥100 = ¥61.5M
-# PV   (decommissioning_cost_per_kw_yuan=60):  330,000 kW × ¥60  = ¥19.8M
-# Battery (decommissioning_cost_per_kwh_yuan=30): 294,500 kWh × ¥30 = ¥8.84M
-# Grid: 0
-_DECOMM_WIND = WIND_FLEET_MW * 1_000 * 100.0                    # ¥61.5M
-_DECOMM_PV   = PV_FLEET_MW   * 1_000 *  60.0                    # ¥19.8M
-_DECOMM_BAT  = BAT_CAPACITY_MWH * 1_000 * 30.0                  # ¥8.84M
-DECOMM_YUAN  = _DECOMM_WIND + _DECOMM_PV + _DECOMM_BAT          # ¥90.1M
+    # Per-model economics blocks
+    wm = models["vestas-v150-4.2"]["economics"]
+    pm = models["trina-vertex-n-670w"]["economics"]
+    bm = models["catl-lmp-300mwh"]["economics"]
+    gm_phys = models["pcc-substation-945mw"]["physics"]
+    gm = models["pcc-substation-945mw"]["economics"]
+    grid_export_mw = float(gm_phys["max_export_mw"])
 
-N_YEARS   = 20    # §13.6 primary 20yr horizon; battery calendar-EOL fires at yr12 → replacement
+    # ── CAPEX (¥) ──────────────────────────────────────────────────────────────
+    wind_capex = wind_mw * float(wm["capex_per_kw_yuan"])            * 1_000.0
+    pv_capex   = pv_mw   * float(pm["capex_per_kw_yuan"])            * 1_000.0
+    bat_capex  = bat_mwh * float(bm["capex_energy_per_kwh_yuan"])    * 1_000.0
+    grid_capex = float(gm["capex_lump_sum_yuan"])              # 0 at Gansu (sunk)
+    total_capex = wind_capex + pv_capex + bat_capex + grid_capex
+
+    # ── Fixed O&M (¥/yr) ───────────────────────────────────────────────────────
+    wind_om = wind_mw      * float(wm["opex_fixed_per_kw_year_yuan"])   * 1_000.0
+    pv_om   = pv_mw        * float(pm["opex_fixed_per_kw_year_yuan"])   * 1_000.0
+    bat_om  = bat_mwh      * float(bm["opex_fixed_per_kwh_year_yuan"])  * 1_000.0
+    grid_om = grid_export_mw * float(gm["opex_fixed_per_mw_year_yuan"])
+    fixed_om = wind_om + pv_om + bat_om + grid_om
+
+    # ── Battery lifecycle ───────────────────────────────────────────────────────
+    bat_lifetime_yr   = int(bm["lifetime_years"])
+    bat_repl_frac_bat = float(bm["replacement_cost_fraction"])   # frac of bat_capex
+    bat_repl_abs      = bat_repl_frac_bat * bat_capex            # absolute ¥
+    repl_fraction     = bat_repl_abs / total_capex               # frac of FULL-SITE capex
+
+    # ── Residual at horizon N (per-device, summed, fraction of total_capex) ────
+    resid_abs = (float(wm["residual_value_fraction"])         * wind_capex +
+                 float(pm["residual_value_fraction"])         * pv_capex   +
+                 float(bm["residual_value_fraction"])         * bat_capex  +
+                 float(gm.get("residual_value_fraction", 0.0)) * grid_capex)
+    resid_fraction = resid_abs / total_capex if total_capex > 0 else 0.0
+
+    # ── Decommissioning (per-device, absolute ¥) ───────────────────────────────
+    decomm_wind = wind_mw * 1_000.0 * float(wm["decommissioning_cost_per_kw_yuan"])
+    decomm_pv   = pv_mw   * 1_000.0 * float(pm["decommissioning_cost_per_kw_yuan"])
+    decomm_bat  = bat_mwh * 1_000.0 * float(bm["decommissioning_cost_per_kwh_yuan"])
+    decomm_grid = float(gm.get("decommissioning_cost_yuan", 0.0))
+    decomm      = decomm_wind + decomm_pv + decomm_bat + decomm_grid
+
+    econ = DeviceEconParams(
+        total_capex_yuan          = total_capex,
+        fixed_om_yuan_per_yr      = fixed_om,
+        bat_capacity_mwh          = bat_mwh,
+        lifetime_years            = bat_lifetime_yr,
+        cycle_life_full_equiv     = cycle_life,
+        replacement_cost_fraction = repl_fraction,
+        residual_value_fraction   = resid_fraction,
+        decommissioning_yuan      = decomm,
+    )
+
+    meta = dict(
+        wind_mw=wind_mw, pv_mw=pv_mw, bat_mwh=bat_mwh, bat_mw=bat_mw,
+        grid_export_mw=grid_export_mw,
+        wind_capex=wind_capex, pv_capex=pv_capex, bat_capex=bat_capex,
+        grid_capex=grid_capex, total_capex=total_capex,
+        wind_om=wind_om, pv_om=pv_om, bat_om=bat_om, grid_om=grid_om,
+        fixed_om=fixed_om,
+        bat_lifetime_yr=bat_lifetime_yr,
+        bat_repl_abs=bat_repl_abs, repl_fraction=repl_fraction,
+        resid_abs=resid_abs, resid_fraction=resid_fraction,
+        decomm=decomm, decomm_wind=decomm_wind, decomm_pv=decomm_pv,
+        decomm_bat=decomm_bat,
+        wind_om_per_kw_yr=float(wm["opex_fixed_per_kw_year_yuan"]),
+        pv_om_per_kw_yr=float(pm["opex_fixed_per_kw_year_yuan"]),
+        bat_om_per_kwh_yr=float(bm["opex_fixed_per_kwh_year_yuan"]),
+        grid_om_per_mw_yr=float(gm["opex_fixed_per_mw_year_yuan"]),
+    )
+    return econ, meta
+
+
+# ── Run-level constants (no econ literals — all econ flows through econ_from_site_config) ──
+N_YEARS   = 20    # §13.6 primary 20yr horizon; battery calendar-EOL fires at yr12
 M         = 50    # R2: M≥50 + sample_kind='bootstrap' → distribution_valid=True
 BASE_SEED = 0     # CRN: PRNGKey(m) shared across all policies
-
 CYCLE_LIFE_VALS = [6_000.0, 9_600.0, 12_000.0]   # §13.11 sweep
 
 
@@ -225,16 +273,9 @@ def _run_policy_with_streams(
 
 
 def _make_econ(cycle_life: float) -> DeviceEconParams:
-    return DeviceEconParams(
-        total_capex_yuan          = TOTAL_CAPEX,
-        fixed_om_yuan_per_yr      = FIXED_OM_YR,
-        bat_capacity_mwh          = BAT_CAPACITY_MWH,
-        lifetime_years            = LIFETIME_YEARS_CAL,
-        cycle_life_full_equiv     = cycle_life,
-        replacement_cost_fraction = REPL_FRACTION,
-        residual_value_fraction   = RESID_FRACTION,
-        decommissioning_yuan      = DECOMM_YUAN,
-    )
+    """Build DeviceEconParams for the cl sweep — all values from config via econ_from_site_config."""
+    econ, _ = econ_from_site_config(cycle_life=cycle_life)
+    return econ
 
 
 def _make_config(horizon: int, baseline_id: str | None = "greedy") -> FinanceConfig:
@@ -268,34 +309,35 @@ def main():
     run_oracle = "--no-oracle" not in sys.argv
     t_start = time.time()
 
+    # ── Load econ from config — single source of truth, no hardcoded literals ──
+    _, meta = econ_from_site_config()
+    TOTAL_CAPEX      = meta["total_capex"]
+    BAT_CAPACITY_MWH = meta["bat_mwh"]
+
     print("=" * 78)
-    print("BANKABLE GANSU — §13.12 View-I headline  (R2 M=50 bootstrap, CORRECTED)")
+    print("BANKABLE GANSU — §13.12 View-I headline  (R2 M=50 bootstrap, config-econ)")
     pols = ["greedy", "rule_based_tou"] + (["dp_oracle"] if run_oracle else [])
     print(f"Policies: {', '.join(pols)}  |  HEADLINE: greedy (finance-expert ruling c)")
     print(f"FULL-SITE CAPEX ¥{TOTAL_CAPEX/1e6:,.1f}M  "
-          f"(wind ¥{_WIND_CAPEX/1e6:.0f}M + PV ¥{_PV_CAPEX/1e6:.0f}M + "
-          f"bat ¥{_BAT_CAPEX/1e6:.1f}M + grid ¥{GRID_CAPEX_YUAN/1e6:.0f}M sunk)")
-    print(f"Full-site O&M ¥{FIXED_OM_YR/1e6:.2f}M/yr  "
-          f"(wind ¥{_WIND_OM/1e6:.1f}M + PV ¥{_PV_OM/1e6:.1f}M + "
-          f"bat ¥{_BAT_OM/1e6:.2f}M + grid ¥{_GRID_OM/1e6:.2f}M)")
+          f"(wind ¥{meta['wind_capex']/1e6:.0f}M + PV ¥{meta['pv_capex']/1e6:.0f}M + "
+          f"bat ¥{meta['bat_capex']/1e6:.1f}M + grid ¥{meta['grid_capex']/1e6:.0f}M sunk)")
+    print(f"Full-site O&M ¥{meta['fixed_om']/1e6:.2f}M/yr  "
+          f"(wind ¥{meta['wind_om']/1e6:.1f}M @¥{meta['wind_om_per_kw_yr']:.0f}/kW·yr"
+          f" + PV ¥{meta['pv_om']/1e6:.1f}M @¥{meta['pv_om_per_kw_yr']:.0f}/kW·yr"
+          f" + bat ¥{meta['bat_om']/1e6:.2f}M + grid ¥{meta['grid_om']/1e6:.2f}M)")
     print(f"bat {BAT_CAPACITY_MWH} MWh  r_e=6.1%  N={N_YEARS}yr  M={M}")
-    print(f"Battery EOL=12yr → replacement at yr12 (¥{_BAT_REPL_ABS/1e6:.2f}M = "
-          f"{REPL_FRACTION*100:.3f}% of site CAPEX)")
+    print(f"Battery EOL={meta['bat_lifetime_yr']}yr → replacement at yr{meta['bat_lifetime_yr']} "
+          f"(¥{meta['bat_repl_abs']/1e6:.2f}M = {meta['repl_fraction']*100:.3f}% of site CAPEX)")
     print()
 
-    # ── SANITY GATE (must pass before reporting results) ──────────────────────
-    # IRR sanity: 10–30% for a CN renewable project with ¥4.93B CAPEX + ¥926M/yr revenue.
-    # LCOE sanity: > ¥100/MWh (if LCOE < ¥100 → CAPEX understated or generation overstated).
-    # If either fails → ABORT before reporting void numbers.
-    print("  SANITY GATE: CAPEX ¥{:.1f}M (expect ≥ ¥4,000M) — {}".format(
-        TOTAL_CAPEX / 1e6,
-        "OK ✓" if TOTAL_CAPEX >= 4_000_000_000 else "FAIL ✗ CAPEX TOO LOW — ABORT",
-    ))
-    if TOTAL_CAPEX < 4_000_000_000:
+    # ── CAPEX SANITY GATE — hard abort before any dispatch or verdict ──────────
+    # If CAPEX < ¥4B → device-only (not full-site) → all downstream numbers void.
+    if TOTAL_CAPEX < 4_000_000_000.0:
         raise RuntimeError(
-            f"SANITY GATE FAIL: TOTAL_CAPEX = ¥{TOTAL_CAPEX/1e6:.1f}M < ¥4,000M. "
-            "Full-site CAPEX (wind+PV+bat+grid) required."
+            f"SANITY TRIPWIRE: TOTAL_CAPEX = ¥{TOTAL_CAPEX/1e6:.1f}M < ¥4,000M. "
+            "Full-site CAPEX (wind+PV+bat+grid) required. Check config/device_models.yaml."
         )
+    print(f"  CAPEX SANITY: ¥{TOTAL_CAPEX/1e6:,.1f}M ≥ ¥4,000M — OK ✓")
     print()
 
     # ── 1. Generate M CRN years ───────────────────────────────────────────────
@@ -393,7 +435,7 @@ def main():
     cyc_years_g = 6000 * BAT_CAPACITY_MWH / max(all_results["greedy"][0].bat_throughput_mwh, 0.1)
     cyc_years_t = 6000 * BAT_CAPACITY_MWH / max(all_results["rule_based_tou"][0].bat_throughput_mwh, 0.1)
     print(f"  greedy would hit cl=6000 limit in {cyc_years_g:.0f} yr "
-          f"(calendar EOL fires at yr {LIFETIME_YEARS_CAL})")
+          f"(calendar EOL fires at yr {meta['bat_lifetime_yr']})")
     print(f"  tou    would hit cl=6000 limit in {cyc_years_t:.0f} yr")
 
     # ════════════════════════════════════════════════════════════════════════════
@@ -497,10 +539,20 @@ def main():
         # IRR sanity gate post-result: should land 10–30% with full-site CAPEX
         irr_ok = p50.irr is not None and 0.05 < p50.irr < 0.35
         lcoe_ok = p50.lcoe_yuan_per_mwh is not None and p50.lcoe_yuan_per_mwh > 100
-        print(f"  IRR sanity [5–35%]:      {'✓' if irr_ok else '✗ WARN'}  {_fmt_pct(p50.irr)}")
-        print(f"  LCOE sanity [>¥100/MWh]: {'✓' if lcoe_ok else '✗ WARN'}  ¥{p50.lcoe_yuan_per_mwh:.1f}/MWh")
-        if not irr_ok or not lcoe_ok:
-            print("  ⚠ SANITY WARN: IRR or LCOE outside expected range — check CAPEX / revenue.")
+        print(f"  IRR sanity [5–35%]:      {'✓' if irr_ok else '✗ TRIPWIRE'}  {_fmt_pct(p50.irr)}")
+        print(f"  LCOE sanity [>¥100/MWh]: {'✓' if lcoe_ok else '✗ TRIPWIRE'}  ¥{p50.lcoe_yuan_per_mwh:.1f}/MWh")
+        # HARD ABORT — a tripped tripwire means the numbers are void.
+        # No verdict may be emitted while CAPEX is wrong or revenue is fabricated.
+        if not irr_ok:
+            raise RuntimeError(
+                f"SANITY TRIPWIRE: IRR = {p50.irr*100:.1f}% outside [5%, 35%]. "
+                "Full-site CAPEX or revenue likely wrong. Aborting before verdict."
+            )
+        if not lcoe_ok:
+            raise RuntimeError(
+                f"SANITY TRIPWIRE: LCOE = ¥{p50.lcoe_yuan_per_mwh:.1f}/MWh < ¥100/MWh. "
+                "CAPEX understated or generation overstated. Aborting before verdict."
+            )
         print()
         if all([b1n, b1i, b3t1, b3cv, b3wc]) and irr_ok and lcoe_ok:
             print("  PRELIMINARY VERDICT: BANKABLE ✓  (pending finance-expert certification)")
@@ -523,15 +575,20 @@ def main():
     print("  ✓ INV-STREAM-AUTHORITY: EBITDA from _build_streams() real r_export/c_import")
     print("  ✓ A4: degradation_yuan unchanged across cycle_life (env-layer field)")
     print(f"  ✓ CF[0] = −¥{TOTAL_CAPEX/1e6:,.1f}M FULL-SITE CAPEX (wind+PV+bat; grid=¥0 sunk)")
-    print(f"     wind ¥{_WIND_CAPEX/1e6:.0f}M + PV ¥{_PV_CAPEX/1e6:.0f}M + bat ¥{_BAT_CAPEX/1e6:.1f}M")
+    print(f"     wind ¥{meta['wind_capex']/1e6:.0f}M + PV ¥{meta['pv_capex']/1e6:.0f}M + bat ¥{meta['bat_capex']/1e6:.1f}M")
     print("  ✓ View-II = same econ for smart vs greedy (capex cancels = correct dispatch value)")
     print("  ✓ R2: M=50 + bootstrap → distribution_valid → P50/CI90/DownsideRisk")
     print("  ✓ CRN: PRNGKey(m) shared across all policies")
-    print(f"  ✓ Battery replacement ¥{_BAT_REPL_ABS/1e6:.2f}M = {REPL_FRACTION*100:.3f}% of site CAPEX (fires at yr12)")
-    print(f"  ✓ Full-site O&M ¥{FIXED_OM_YR/1e6:.2f}M/yr")
-    print(f"     wind ¥{_WIND_OM/1e6:.1f}M (@¥{WIND_OM_PER_KW_YR:.0f}/kW·yr) + PV ¥{_PV_OM/1e6:.1f}M (@¥{PV_OM_PER_KW_YR:.0f}/kW·yr)")
-    print(f"     bat ¥{_BAT_OM/1e6:.2f}M (@¥{OPEX_PER_KWH_YR:.0f}/kWh·yr) + grid ¥{_GRID_OM/1e6:.2f}M (@¥{GRID_OM_PER_MW_YR:.0f}/MW·yr)")
-    print(f"  ✓ Decommissioning ¥{DECOMM_YUAN/1e6:.1f}M (wind ¥{_DECOMM_WIND/1e6:.1f}M + PV ¥{_DECOMM_PV/1e6:.1f}M + bat ¥{_DECOMM_BAT/1e6:.2f}M)")
+    print(f"  ✓ Battery replacement ¥{meta['bat_repl_abs']/1e6:.2f}M = {meta['repl_fraction']*100:.3f}% of site CAPEX "
+          f"(fires at yr{meta['bat_lifetime_yr']})")
+    print(f"  ✓ Full-site O&M ¥{meta['fixed_om']/1e6:.2f}M/yr")
+    print(f"     wind ¥{meta['wind_om']/1e6:.1f}M (@¥{meta['wind_om_per_kw_yr']:.0f}/kW·yr)"
+          f" + PV ¥{meta['pv_om']/1e6:.1f}M (@¥{meta['pv_om_per_kw_yr']:.0f}/kW·yr)")
+    print(f"     bat ¥{meta['bat_om']/1e6:.2f}M (@¥{meta['bat_om_per_kwh_yr']:.0f}/kWh·yr)"
+          f" + grid ¥{meta['grid_om']/1e6:.2f}M (@¥{meta['grid_om_per_mw_yr']:.0f}/MW·yr)")
+    print(f"  ✓ Decommissioning ¥{meta['decomm']/1e6:.1f}M "
+          f"(wind ¥{meta['decomm_wind']/1e6:.1f}M + PV ¥{meta['decomm_pv']/1e6:.1f}M"
+          f" + bat ¥{meta['decomm_bat']/1e6:.2f}M)")
 
 
 if __name__ == "__main__":
