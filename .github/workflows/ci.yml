@@ -5,103 +5,218 @@ on:
   push:
     branches: [main]
 
+# Cancel in-progress PR runs when a new push supersedes them (§3.6).
+# Never cancels push to main (cancel-in-progress evaluates to false).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  checks:
+  # -----------------------------------------------------------------------
+  # 1. CHANGES — in-house git-diff; emits backend / frontend / docs_only
+  #    (no third-party action; generalises #116/D40 docs-only logic — §3.1)
+  # -----------------------------------------------------------------------
+  changes:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 3
+    outputs:
+      backend:  ${{ steps.diff.outputs.backend }}
+      frontend: ${{ steps.diff.outputs.frontend }}
+      docs_only: ${{ steps.diff.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect changed areas
+        id: diff
+        shell: bash
+        run: |
+          # Push to main → always run everything (same as pre-split behaviour)
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "backend=true"    >> "$GITHUB_OUTPUT"
+            echo "frontend=true"   >> "$GITHUB_OUTPUT"
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "→ Push to main: full suite always runs"
+            exit 0
+          fi
+
+          git fetch origin ${{ github.base_ref }} --depth=1 2>/dev/null || {
+            # Could not fetch base ref — safe default: run everything
+            echo "backend=true"    >> "$GITHUB_OUTPUT"
+            echo "frontend=true"   >> "$GITHUB_OUTPUT"
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "→ Could not fetch base ref — safe default: full suite runs"
+            exit 0
+          }
+
+          changed=$(git diff --name-only FETCH_HEAD HEAD 2>/dev/null || true)
+          if [ -z "$changed" ]; then
+            echo "backend=true"    >> "$GITHUB_OUTPUT"
+            echo "frontend=true"   >> "$GITHUB_OUTPUT"
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "→ No file diff detected — safe default: full suite runs"
+            exit 0
+          fi
+
+          printf "Changed files:\n%s\n" "$changed"
+
+          # ---------------------------------------------------------------
+          # docs_only: all changed paths match the conservative allowlist
+          # (unchanged from #116/D40 — docs/**, contracts/**, root *.md only)
+          # ---------------------------------------------------------------
+          non_docs=$(printf '%s\n' "$changed" | \
+            grep -vE '^(docs/|contracts/|[^/]+\.md$)' | head -1 || true)
+          if [ -z "$non_docs" ]; then
+            echo "docs_only=true"  >> "$GITHUB_OUTPUT"
+            echo "backend=false"   >> "$GITHUB_OUTPUT"
+            echo "frontend=false"  >> "$GITHUB_OUTPUT"
+            echo "→ Docs-only PR: backend-tests and frontend-tests will be skipped"
+            exit 0
+          fi
+          echo "docs_only=false" >> "$GITHUB_OUTPUT"
+
+          # ---------------------------------------------------------------
+          # Classify each non-docs changed path.
+          # Anything unclassified → backend=true (default-to-run, §3.1):
+          #   "anything I can't classify → run it"
+          # A path may set BOTH backend AND frontend (e.g. assets/3d/registry.json).
+          # ---------------------------------------------------------------
+          backend=false
+          frontend=false
+
+          while IFS= read -r f; do
+            # Skip doc paths that coexist with non-doc changes in a mixed PR
+            if printf '%s' "$f" | grep -qE '^(docs/|contracts/|[^/]+\.md$)'; then
+              continue
+            fi
+
+            classified=false
+
+            # Frontend patterns (§3.1)
+            if printf '%s' "$f" | grep -qE \
+              '^src/.*\.(ts|tsx|css)$|^index\.html$|^vite\.|^tests/frontend|^package\.json$|^package-lock\.json$|^assets/3d/'; then
+              frontend=true
+              classified=true
+            fi
+
+            # Backend patterns (§3.1)
+            if printf '%s' "$f" | grep -qE \
+              '^src/energy_go/(env|training|harness|serving|finance|telemetry|config)/|^tests/(env|training|harness|serving|finance|shared)/|^pyproject\.toml$|^config/|^scripts/|^assets/3d/registry\.json$'; then
+              backend=true
+              classified=true
+            fi
+
+            # Default-to-run: unclassified non-docs path → backend (§3.1 safety net)
+            if [ "$classified" = "false" ]; then
+              echo "→ Unclassified path '$f' — default backend=true (§3.1 safety net)"
+              backend=true
+            fi
+          done <<< "$changed"
+
+          echo "backend=$backend"   >> "$GITHUB_OUTPUT"
+          echo "frontend=$frontend" >> "$GITHUB_OUTPUT"
+          echo "→ backend=$backend  frontend=$frontend"
+
+  # -----------------------------------------------------------------------
+  # 2. STATIC-CHECKS — ALWAYS runs (cheap; no heavy deps); part of the gate.
+  #    Waits for `changes` so the DAG is explicit, but does not use its outputs.
+  #    if: always() ensures it runs even if `changes` fails.
+  # -----------------------------------------------------------------------
+  static-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [changes]
+    if: always()
     steps:
       - uses: actions/checkout@v4
 
       - name: Convention checks
         run: bash scripts/check_conventions.sh
 
-      # -----------------------------------------------------------------------
-      # Detect docs-only changes — in-job path-skip gate (task #10 / D40)
-      #
-      # IMPORTANT: this uses an in-job conditional, NOT workflow-level
-      # paths-ignore.  paths-ignore would skip the whole job, causing the
-      # required `checks` context to never report → branch protection blocks
-      # every docs-only PR forever.  Instead:
-      #   • The `checks` job ALWAYS runs and ALWAYS reports a status.
-      #   • Only the heavy steps (Python tests / Frontend tests / etc.) are
-      #     gated with  if: steps.path_check.outputs.docs_only != 'true'.
-      #   • Convention checks always run — docs/contract PRs must still pass.
-      #
-      # Allowlist (conservative): docs/**, contracts/**, root-level *.md only.
-      # ANY other changed path → full suite.  Push to main → always full suite.
-      # -----------------------------------------------------------------------
-      - name: Detect docs-only changes
-        id: path_check
+      - name: Nav-index staleness check
+        # Pure Python (stdlib only; no JAX or pip installs needed).
+        # Fails if any per-folder generated index is stale relative to its source.
+        # Fix locally: python3 scripts/gen_nav_index.py  then commit updated READMEs.
+        run: python3 scripts/gen_nav_index.py --check
+
+      - name: Registry committed-copy drift check
+        # Catches stale committed copies: regenerates src/config/registryData.json from
+        # the canonical assets/3d/registry.json and fails if they differ.
+        # Contract: contracts/frontend/registry_build_copy.md §3
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
-            echo "→ Push to main: full suite always runs"
-            exit 0
-          fi
-          git fetch origin ${{ github.base_ref }} --depth=1 2>/dev/null || {
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
-            echo "→ Could not fetch base ref — safe default: full suite runs"
-            exit 0
-          }
-          changed=$(git diff --name-only FETCH_HEAD HEAD 2>/dev/null || true)
-          if [ -z "$changed" ]; then
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
-            echo "→ No file diff detected — safe default: full suite runs"
-            exit 0
-          fi
-          printf "Changed files:\n%s\n" "$changed"
-          # Conservative allowlist:
-          #   docs/**              — spec, design docs
-          #   contracts/**         — contract .md files
-          #   <root>/*.md          — LINEAGE.md, REBUILD_SPEC.md, STACK.md, etc.
-          # Anything else (src/, tests/, config/, .github/, assets/, scripts/) →
-          # non_docs non-empty → full suite.
-          non_docs=$(printf '%s\n' "$changed" | \
-            grep -vE '^(docs/|contracts/|[^/]+\.md$)' | head -1 || true)
-          if [ -z "$non_docs" ]; then
-            echo "docs_only=true" >> "$GITHUB_OUTPUT"
-            echo "→ Docs-only PR: heavy test steps will be skipped"
+          if [ -f assets/3d/registry.json ] && [ -f src/config/registryData.json ]; then
+            node scripts/copy_registry.js
+            git diff --exit-code src/config/registryData.json || \
+              (echo "ERROR: src/config/registryData.json is stale — re-run 'node scripts/copy_registry.js' and commit the result" && exit 1)
           else
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
-            echo "→ Non-docs files changed: full suite runs"
+            echo "Registry drift check skipped (partial checkout or file absent)"
           fi
 
-      # -----------------------------------------------------------------------
-      # Setup — always run (fast; cache restore happens here)
-      # -----------------------------------------------------------------------
+      - name: Telemetry schema validation (golden examples)
+        # Validates all golden fixtures against the LOCKED telemetry schema.
+        # energy_go.telemetry.validate lives under src/; PYTHONPATH makes it importable.
+        shell: bash
+        run: |
+          pip install "jsonschema>=4.21" --quiet
+          PYTHONPATH=src python scripts/validate_telemetry.py --examples
+
+      - name: Finance summary schema conformance
+        # Producer-output fixture validates against contracts/shared/finance_result_summary.md
+        # v1.1.0 (#135 D45).  Absent validator → ::warning:: (skip-with-notice §3.2);
+        # never a silent green.  Wire once task #24 lands.
+        shell: bash
+        run: |
+          if [ -f scripts/validate_finance_summary.py ]; then
+            pip install "jsonschema>=4.21" --quiet
+            PYTHONPATH=src python scripts/validate_finance_summary.py --examples
+          else
+            echo "::warning::Finance summary schema validator absent (scripts/validate_finance_summary.py) — skip-with-notice per §3.2. Wire once task #24 lands."
+          fi
+
+      - name: Config artifact schema conformance
+        # Validates against contracts/shared/config_artifact_schema.md v1.0.0 (#133).
+        # Absent validator → ::warning:: (skip-with-notice §3.2); never a silent green.
+        # Wire once task #24 lands.
+        shell: bash
+        run: |
+          if [ -f scripts/validate_config_artifact.py ]; then
+            pip install "jsonschema>=4.21" --quiet
+            PYTHONPATH=src python scripts/validate_config_artifact.py --examples
+          else
+            echo "::warning::Config artifact schema validator absent (scripts/validate_config_artifact.py) — skip-with-notice per §3.2. Wire once task #24 lands."
+          fi
+
+  # -----------------------------------------------------------------------
+  # 3. BACKEND-TESTS — runs only when the backend area changed (§3.3)
+  # -----------------------------------------------------------------------
+  backend-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [changes]
+    if: needs.changes.outputs.backend == 'true'
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Pre-create pip cache dir
         # setup-python@v5 cache:'pip' post-step saves ~/.cache/pip back to the
-        # Actions cache.  On docs-only PRs the Python-tests step is skipped →
-        # pip never runs → the directory is never created → the post-step fails
-        # with "Cache folder path is retrieved for pip but doesn't exist on disk"
-        # → checks: failure (PR #116 QA fix — qa scratch-PR #124 empirical catch).
-        # mkdir -p is idempotent: no-op when the dir already exists (code PRs).
+        # Actions cache.  If the dir doesn't exist (no pip run) the post-step fails.
+        # mkdir -p is idempotent — no-op when the dir already exists (PR #116 fix).
         run: mkdir -p ~/.cache/pip
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          # Cache pip's HTTP wheel cache keyed on pyproject.toml.
-          # Saves ~3-5 min/run re-downloading jax[cpu]/jaxlib/flax/optax/flashbax.
-          # Cache is invalidated when pyproject.toml changes (new dep version).
           cache: 'pip'
           cache-dependency-path: pyproject.toml
 
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-          # Cache npm's global package cache (~/.npm) keyed on package-lock.json.
-          # npm install still runs but reads wheels from local cache → ~2 min saved.
-          cache: 'npm'
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
-          # Cache uv's download cache (~/.cache/uv) keyed on pyproject.toml.
-          # Makes `uv python install 3.11` and uv-based venv creation near-instant
-          # on warm runs (install_app.sh acceptance-test toolchain).
+          # Cache uv's download cache keyed on pyproject.toml.
           enable-cache: true
           cache-dependency-glob: "pyproject.toml"
 
@@ -112,102 +227,133 @@ jobs:
         # exit 3 instead of exit 5.
         run: uv python install 3.11
 
-      - name: Nav-index staleness check
-        # Always run — pure Python (stdlib only; no JAX or pip installs needed).
-        # Fails if any per-folder generated index is stale relative to its source.
-        # Fix locally: python3 scripts/gen_nav_index.py  then commit updated READMEs.
-        # Not gated on docs_only: any src/ edit can stale a folder's generated index.
-        shell: bash
-        run: python3 scripts/gen_nav_index.py --check
-
-      # -----------------------------------------------------------------------
-      # Heavy steps — skipped for docs-only PRs (see path_check above)
-      # -----------------------------------------------------------------------
-
       - name: Regenerate package-lock.json for Linux
         # package-lock.json is committed from macOS and omits @rollup/rollup-linux-x64-gnu.
-        # npm ci inside install_app.sh (acceptance test) fails with exit 3 on Linux unless
-        # the lock is regenerated here.  The Frontend-tests step already does this; this
-        # pre-step makes the lock Linux-compatible before the Python acceptance tests copy
-        # it from REPO_ROOT into their tmp dirs.
-        if: steps.path_check.outputs.docs_only != 'true'
+        # install_app.sh (Python acceptance tests) copies this lock from REPO_ROOT into
+        # its tmp dirs; the lock must be Linux-compatible before Python tests run.
         run: |
           if [ -f package.json ]; then
             rm -f package-lock.json
             npm install --package-lock-only --ignore-scripts
           fi
 
-      - name: Telemetry schema validation (golden examples)
-        if: steps.path_check.outputs.docs_only != 'true'
+      - name: Install Python deps
         shell: bash
         run: |
-          pip install "jsonschema>=4.21"
-          # energy_go.telemetry.validate lives under src/ in this repo;
-          # PYTHONPATH makes it importable without a heavy jax install.
-          PYTHONPATH=src python scripts/validate_telemetry.py --examples
+          if [ -f pyproject.toml ]; then
+            # --no-deps on the package itself skips sbx-rl (heavy optional training lib);
+            # jax[cpu]+jaxlib, serving, and training framework deps are installed explicitly.
+            pip install --no-deps -e .
+            pip install \
+              "pytest>=8.0" "pytest-asyncio>=0.23" "anyio>=4.0" "pytest-xdist>=3.5" \
+              "fastapi>=0.110" "httpx>=0.27" "starlette>=0.36" \
+              "pyyaml>=6.0" "numpy>=1.26" "websockets>=12" "uvicorn[standard]>=0.29" \
+              "jsonschema>=4.21" \
+              "jax[cpu]>=0.4.25" "flax>=0.8.0" "optax>=0.2.0" "flashbax>=0.1.0"
+          else
+            pip install pytest jax numpy
+          fi
 
-      - name: Python tests
-        if: steps.path_check.outputs.docs_only != 'true'
+      - name: Python tests (fast lane)
+        # Selector: not slow and not local
+        #   'slow'  = tests too slow for every PR (full install/venv, etc.)
+        #   'local' = tests that OOM the 2 GB ubuntu-latest runner (full-year JAX
+        #             jit/vmap 8760-step trajectories) — D30, D46, step-2 migration.
+        #   Until the step-2 slow→local migration: OOM tests are still tagged 'slow',
+        #   so 'not slow and not local' already excludes them — no migration needed here.
+        # -n 2: conservative xdist parallelism for the 2 GB runner (§4 memory rule).
+        # /usr/bin/time -v: captures peak RSS for criterion (F) evidence on the PR.
         shell: bash
         run: |
           if [ -d tests ] && find tests -name 'test_*.py' | grep -q .; then
-            if [ -f pyproject.toml ]; then
-              # --no-deps on the package itself skips sbx-rl (heavy optional training lib);
-              # jax[cpu]+jaxlib, serving, and training framework deps are installed explicitly
-              # so the training suite (78 tests) and serving suite execute in CI.
-              pip install --no-deps -e .
-              pip install \
-                "pytest>=8.0" "pytest-asyncio>=0.23" "anyio>=4.0" "pytest-xdist>=3.5" \
-                "fastapi>=0.110" "httpx>=0.27" "starlette>=0.36" \
-                "pyyaml>=6.0" "numpy>=1.26" "websockets>=12" "uvicorn[standard]>=0.29" \
-                "jsonschema>=4.21" \
-                "jax[cpu]>=0.4.25" "flax>=0.8.0" "optax>=0.2.0" "flashbax>=0.1.0"
-            else
-              pip install pytest jax numpy
-            fi
-            # D30: JAX tests that jit/vmap full-year trajectories are marked @pytest.mark.slow
-            # and excluded from CI (-m "not slow") to avoid OOM on ubuntu-latest (2 GB RAM
-            # runners hit SIGTERM at ~40-60 min when xdist workers each JIT-compile the
-            # full 8760-step synthetic year).  The full suite (including slow) runs locally.
-            pytest tests/ -q -m "not slow"
+            set -o pipefail
+            /usr/bin/time -v pytest tests/ -q -m "not slow and not local" -n 2 \
+              2>&1 | tee /tmp/pytest-backend.log
+            echo "=== Peak RSS report (criterion F) ==="
+            grep -E "Maximum resident set size|Elapsed|wall clock" /tmp/pytest-backend.log \
+              || echo "(time output not found — check log above)"
           else
             echo "No Python tests yet — skipping"
           fi
 
-      - name: Frontend tests
-        if: steps.path_check.outputs.docs_only != 'true'
+  # -----------------------------------------------------------------------
+  # 4. FRONTEND-TESTS — runs only when the frontend area changed (§3.4)
+  # -----------------------------------------------------------------------
+  frontend-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [changes]
+    if: needs.changes.outputs.frontend == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          # Cache npm's global package cache keyed on package-lock.json.
+          cache: 'npm'
+
+      - name: Frontend tests and build
         shell: bash
         run: |
           if [ -f package.json ] && find tests -name '*.test.ts*' 2>/dev/null | grep -q .; then
             # Delete the macOS-generated lock before install: avoids the known npm/rollup
             # cross-platform optional-dep bug (github.com/npm/cli/issues/4828) where a
             # macOS lock omits @rollup/rollup-linux-x64-gnu even under `npm install`.
-            # Rollup's own error message recommends removing both lock + node_modules.
             rm -f package-lock.json
             npm install
             npm test
             # Task #40: production TypeScript typecheck + bundle (tsc + vite build).
-            # Catches type errors that Vitest/RTL unit tests don't exercise and confirms
-            # the production bundle compiles cleanly on each PR.  Uses the node_modules
-            # already installed above — no second install needed.
+            # Catches type errors that Vitest/RTL unit tests don't exercise.
             npm run build
           else
             echo "No frontend tests yet — skipping"
           fi
 
-      - name: Registry committed-copy drift check
-        # Catches stale committed copies: regenerates src/config/registryData.json from
-        # the canonical assets/3d/registry.json and fails if they differ.  Guards the
-        # partial-checkout fallback path — if the committed copy is out of sync it will
-        # be used verbatim by sandboxed builds (serving fixture, etc.) that lack assets/3d/.
-        # Contract: contracts/frontend/registry_build_copy.md §3
-        if: steps.path_check.outputs.docs_only != 'true'
+  # -----------------------------------------------------------------------
+  # 5. CHECKS — aggregator; THE merge gate.
+  #
+  #    IMPORTANT: the check-run name MUST remain exactly 'checks' so the
+  #    required branch-protection status context is unchanged (no branch-
+  #    protection edit needed — §3.5 / §7.3).
+  #
+  #    Fail-set = {changes, static-checks, backend-tests, frontend-tests}.
+  #    'changes' MUST be in the fail-set (§3.5 BLOCKER / criterion B5):
+  #      if changes FAILS, both test jobs go skipped (their if: conditions
+  #      can't evaluate to true) and static-checks passes → three-job
+  #      aggregator sees success+skipped+skipped = FALSE-GREEN with zero
+  #      area tests having run.  Including changes closes that hole.
+  # -----------------------------------------------------------------------
+  checks:
+    runs-on: ubuntu-latest
+    needs: [changes, static-checks, backend-tests, frontend-tests]
+    if: always()
+    steps:
+      - name: Gate check
+        # Fails iff any needed job has result ∈ {failure, cancelled}.
+        # 'skipped' and 'success' → pass (test jobs legitimately skip on docs-only
+        # PRs or when their area is unaffected — that is correct gate behaviour).
         shell: bash
         run: |
-          if [ -f assets/3d/registry.json ] && [ -f src/config/registryData.json ]; then
-            node scripts/copy_registry.js
-            git diff --exit-code src/config/registryData.json || \
-              (echo "ERROR: src/config/registryData.json is stale — re-run 'node scripts/copy_registry.js' and commit the result" && exit 1)
-          else
-            echo "Registry drift check skipped (partial checkout or file absent)"
+          declare -A results
+          results["changes"]="${{ needs.changes.result }}"
+          results["static-checks"]="${{ needs.static-checks.result }}"
+          results["backend-tests"]="${{ needs.backend-tests.result }}"
+          results["frontend-tests"]="${{ needs.frontend-tests.result }}"
+
+          gate_fail=false
+          for job in changes static-checks backend-tests frontend-tests; do
+            r="${results[$job]}"
+            printf "  %-20s %s\n" "$job:" "$r"
+            if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then
+              echo "  ✗  GATE FAIL on '$job' (result=$r)"
+              gate_fail=true
+            fi
+          done
+
+          echo ""
+          if [ "$gate_fail" = "true" ]; then
+            echo "GATE: FAIL — one or more jobs failed or were cancelled."
+            exit 1
           fi
+          echo "GATE: PASS — all jobs passed or were legitimately skipped."

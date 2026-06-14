@@ -100,6 +100,7 @@ python_functions = ["test_*"]
 addopts = "-q"
 asyncio_mode = "auto"
 markers = [
-    "slow: marks tests as slow (full install + venv creation); deselect with -m 'not slow'",
+    "slow: marks tests as slow (full install + venv creation, etc.); deselect with -m 'not slow'",
+    "local: marks tests that OOM the 2 GB CI runner (full-year JAX jit/vmap 8760-step trajectories); run locally only; deselect with -m 'not local'",
     "network: marks tests that require live network access; deselect with -m 'not network'",
 ]
