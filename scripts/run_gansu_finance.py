@@ -105,7 +105,14 @@ def econ_from_site_config(cycle_life: float = 0.0):
     bm = models["catl-lmp-300mwh"]["economics"]
     gm_phys = models["pcc-substation-945mw"]["physics"]
     gm = models["pcc-substation-945mw"]["economics"]
-    grid_export_mw = float(gm_phys["max_export_mw"])
+    # Device-level physical capacity (used for O&M — the substation is that size)
+    grid_phys_mw = float(gm_phys["max_export_mw"])   # 945 MW
+    # Site-level override: binding dispatch cap (may be < physical cap)
+    grid_site = site["assets"].get("grid", {})
+    if "max_export_mw" in grid_site:
+        grid_export_mw = float(grid_site["max_export_mw"])  # 567 MW (USER-directed)
+    else:
+        grid_export_mw = grid_phys_mw                        # fallback: device default
 
     # ── CAPEX (¥) ──────────────────────────────────────────────────────────────
     wind_capex = wind_mw * float(wm["capex_per_kw_yuan"])            * 1_000.0
@@ -118,7 +125,8 @@ def econ_from_site_config(cycle_life: float = 0.0):
     wind_om = wind_mw      * float(wm["opex_fixed_per_kw_year_yuan"])   * 1_000.0
     pv_om   = pv_mw        * float(pm["opex_fixed_per_kw_year_yuan"])   * 1_000.0
     bat_om  = bat_mwh      * float(bm["opex_fixed_per_kwh_year_yuan"])  * 1_000.0
-    grid_om = grid_export_mw * float(gm["opex_fixed_per_mw_year_yuan"])
+    # O&M basis = physical substation capacity (asset size), not binding dispatch cap
+    grid_om = grid_phys_mw * float(gm["opex_fixed_per_mw_year_yuan"])
     fixed_om = wind_om + pv_om + bat_om + grid_om
 
     # ── Battery lifecycle ───────────────────────────────────────────────────────
@@ -154,7 +162,8 @@ def econ_from_site_config(cycle_life: float = 0.0):
 
     meta = dict(
         wind_mw=wind_mw, pv_mw=pv_mw, bat_mwh=bat_mwh, bat_mw=bat_mw,
-        grid_export_mw=grid_export_mw,
+        grid_export_mw=grid_export_mw,    # effective dispatch cap (site override if set)
+        grid_phys_mw=grid_phys_mw,        # physical substation capacity (O&M basis)
         wind_capex=wind_capex, pv_capex=pv_capex, bat_capex=bat_capex,
         grid_capex=grid_capex, total_capex=total_capex,
         wind_om=wind_om, pv_om=pv_om, bat_om=bat_om, grid_om=grid_om,
@@ -291,6 +300,41 @@ def _make_config(horizon: int, baseline_id: str | None = "greedy") -> FinanceCon
     )
 
 
+def _make_config_levered(horizon: int, baseline_id: str | None = "greedy") -> FinanceConfig:
+    """Levered + after-tax view (team-lead/finance-expert consolidated directive).
+
+    Capital structure: 70% debt / 30% equity (D/E = 2.3333).
+    r_d = 5yr-LPR + 125bps = 3.5% + 1.25% = 4.75% (r_d_override).
+    Tax: 25% rate, straight-line depreciation over 20yr.
+    Hamada β_L = β_U × (1 + (1−t) × D/E) = 0.60 × (1 + 0.75 × 2.3333) = 1.65
+    Levered r_e = r_f + β_L × ERP = 2.5% + 1.65 × 6.0% = 12.4% (equity hurdle).
+    WACC = (E/V)·r_e + (D/V)·r_d·(1−t) = 0.30×12.4% + 0.70×4.75%×0.75 ≈ 6.21%.
+
+    NOTE: engine computes equity IRR on pre-tax EBITDA (not after-tax) — overstated
+    relative to true after-tax equity IRR. DSCR on pre-tax EBITDA = standard bank metric.
+    """
+    return FinanceConfig(
+        horizon_years         = horizon,
+        r_f_override          = 0.025,
+        beta_unlevered        = 0.60,
+        equity_risk_premium   = 0.060,
+        country_risk_premium  = 0.0,
+        # Tax (25%, straight-line dep over 20yr)
+        tax_toggle            = True,
+        tax_rate              = 0.25,
+        depreciation_years    = 20,
+        # Debt (70% LTV, 5yr-LPR + 125bps = 4.75%, 20yr amortizing annuity)
+        debt_toggle           = True,
+        target_de_ratio       = 2.3333,
+        r_d_override          = 0.0475,
+        loan_term_years       = 20,
+        # View II baseline + bootstrap
+        baseline_policy_id    = baseline_id,
+        bootstrap_n_resamples = 2_000,
+        bootstrap_seed        = 42,
+    )
+
+
 def _fmt_m(v):
     if v is None or (isinstance(v, float) and v != v):
         return "       NaN  "
@@ -314,18 +358,25 @@ def main():
     TOTAL_CAPEX      = meta["total_capex"]
     BAT_CAPACITY_MWH = meta["bat_mwh"]
 
+    GRID_EXPORT_CAP_MW = meta["grid_export_mw"]   # 567 MW site override (USER-directed)
+    GRID_PHYS_MW       = meta["grid_phys_mw"]      # 945 MW physical substation (O&M basis)
+
     print("=" * 78)
-    print("BANKABLE GANSU — §13.12 View-I headline  (R2 M=50 bootstrap, config-econ)")
+    print("BANKABLE GANSU — §13.12 consolidated run  (R2 M=50 bootstrap, config-econ)")
+    print("  BASE: unlevered pre-tax (D31) | LEVERED: 70% debt, 4.75% r_d, 25% tax")
+    print(f"  Export cap: {GRID_EXPORT_CAP_MW:.0f} MW (binding constraint, USER-directed)"
+          f" vs {GRID_PHYS_MW:.0f} MW physical PCC")
     pols = ["greedy", "rule_based_tou"] + (["dp_oracle"] if run_oracle else [])
-    print(f"Policies: {', '.join(pols)}  |  HEADLINE: greedy (finance-expert ruling c)")
+    print(f"  Policies: {', '.join(pols)}  |  HEADLINE: greedy")
     print(f"FULL-SITE CAPEX ¥{TOTAL_CAPEX/1e6:,.1f}M  "
           f"(wind ¥{meta['wind_capex']/1e6:.0f}M + PV ¥{meta['pv_capex']/1e6:.0f}M + "
           f"bat ¥{meta['bat_capex']/1e6:.1f}M + grid ¥{meta['grid_capex']/1e6:.0f}M sunk)")
     print(f"Full-site O&M ¥{meta['fixed_om']/1e6:.2f}M/yr  "
           f"(wind ¥{meta['wind_om']/1e6:.1f}M @¥{meta['wind_om_per_kw_yr']:.0f}/kW·yr"
           f" + PV ¥{meta['pv_om']/1e6:.1f}M @¥{meta['pv_om_per_kw_yr']:.0f}/kW·yr"
-          f" + bat ¥{meta['bat_om']/1e6:.2f}M + grid ¥{meta['grid_om']/1e6:.2f}M)")
-    print(f"bat {BAT_CAPACITY_MWH} MWh  r_e=6.1%  N={N_YEARS}yr  M={M}")
+          f" + bat ¥{meta['bat_om']/1e6:.2f}M"
+          f" + grid ¥{meta['grid_om']/1e6:.2f}M @¥{meta['grid_om_per_mw_yr']:.0f}/MW·yr on {GRID_PHYS_MW:.0f}MW)")
+    print(f"bat {BAT_CAPACITY_MWH} MWh | r_e_base=6.1% | r_e_lev≈12.4% | N={N_YEARS}yr | M={M}")
     print(f"Battery EOL={meta['bat_lifetime_yr']}yr → replacement at yr{meta['bat_lifetime_yr']} "
           f"(¥{meta['bat_repl_abs']/1e6:.2f}M = {meta['repl_fraction']*100:.3f}% of site CAPEX)")
     print()
@@ -353,7 +404,8 @@ def main():
 
     all_results: dict[str, list[PolicyEvalResult]] = {p: [] for p in pols}
     from energy_go.env.jax_env import EnvParams
-    env_params = EnvParams(episode_len=8760)
+    # KEY: use 567 MW binding export cap (site_gansu.yaml grid.max_export_mw override)
+    env_params = EnvParams(episode_len=8760, grid_max_export_mw=GRID_EXPORT_CAP_MW)
 
     for m, data in enumerate(data_list):
         show = (m == 0 or (m + 1) % 10 == 0)
@@ -373,13 +425,16 @@ def main():
         if show:
             parts = [
                 f"greedy  rev=¥{r_g.streams['grid_export'].value_yuan/1e6:.1f}M "
+                f"curt={r_g.curtailed_mwh:.0f}MWh "
                 f"tp={r_g.bat_throughput_mwh:.0f}MWh degrad=¥{r_g.degradation_yuan:.0f}",
                 f"tou  rev=¥{r_t.streams['grid_export'].value_yuan/1e6:.1f}M "
+                f"curt={r_t.curtailed_mwh:.0f}MWh "
                 f"tp={r_t.bat_throughput_mwh:.0f}MWh degrad=¥{r_t.degradation_yuan:.0f}",
             ]
             if run_oracle:
                 parts.append(
                     f"oracle rev=¥{r_o.streams['grid_export'].value_yuan/1e6:.1f}M "
+                    f"curt={r_o.curtailed_mwh:.0f}MWh "
                     f"tp={r_o.bat_throughput_mwh:.0f}MWh "
                     f"[dp={oracle.metadata['dp_wall_time_s']:.1f}s]"
                 )
@@ -389,6 +444,25 @@ def main():
 
     dispatch_time = time.time() - t_start
     print(f"\n  Dispatch done: {dispatch_time:.1f}s")
+
+    # ── INV-CURT check: verify 567 MW cap produces real curtailment ───────────
+    g0 = all_results["greedy"][0]
+    t0_r = all_results["rule_based_tou"][0]
+    g_curt_mean = sum(r.curtailed_mwh for r in all_results["greedy"]) / M
+    t_curt_mean = sum(r.curtailed_mwh for r in all_results["rule_based_tou"]) / M
+    g_rev_mean  = sum(r.streams["grid_export"].value_yuan for r in all_results["greedy"]) / M
+    t_rev_mean  = sum(r.streams["grid_export"].value_yuan for r in all_results["rule_based_tou"]) / M
+    print(f"\n  INV-CURT (567MW cap vs 945MW physical):")
+    print(f"    greedy draw-0: curtailed={g0.curtailed_mwh:.0f} MWh  "
+          f"grid_export rev=¥{g0.streams['grid_export'].value_yuan/1e6:.1f}M")
+    print(f"    tou    draw-0: curtailed={t0_r.curtailed_mwh:.0f} MWh  "
+          f"grid_export rev=¥{t0_r.streams['grid_export'].value_yuan/1e6:.1f}M")
+    print(f"    greedy M-avg:  curtailed={g_curt_mean:.0f} MWh/yr  "
+          f"rev=¥{g_rev_mean/1e6:.1f}M/yr")
+    print(f"    tou    M-avg:  curtailed={t_curt_mean:.0f} MWh/yr  "
+          f"rev=¥{t_rev_mean/1e6:.1f}M/yr")
+    curt_ok = g0.curtailed_mwh > 0 or t0_r.curtailed_mwh > 0
+    print(f"    INV-CURT: {'PASS ✓ — curtailment present' if curt_ok else 'WARN — zero curtailment at 567MW cap (unexpected)'}")
 
     # ── 3. Build ensemble ─────────────────────────────────────────────────────
     print(f"\n[3/4] PolicyEnsemble M={M}, N={N_YEARS}yr, sample_kind='bootstrap'...")
@@ -402,8 +476,8 @@ def main():
     dv = M >= 50 and ensemble.sample_kind == "bootstrap"
     print(f"  distribution_valid = {dv}  (R2 regime → P50/CI90/downside populated)")
 
-    # ── 4. Finance sweep ──────────────────────────────────────────────────────
-    print(f"\n[4/4] finance() × 3 cycle_life values...")
+    # ── 4. Finance: base (D31) + levered × 3 cycle_life values ──────────────
+    print(f"\n[4/5] finance() BASE (D31 unlevered pre-tax) × 3 cycle_life values...")
     price_path = PricePath(id="flat", label="Flat 2026", multipliers=[1.0] * N_YEARS)
     results_per_cl: dict[float, object] = {}
     for cl in CYCLE_LIFE_VALS:
@@ -412,6 +486,12 @@ def main():
                      _make_config(N_YEARS, baseline_id="greedy"))
         results_per_cl[cl] = fr
         print(f"  cl={cl:.0f}: {time.time()-t0:.1f}s")
+
+    print(f"\n[5/5] finance() LEVERED (70% debt, r_d=4.75%, tax=25%) at cl=6000 (conservative)...")
+    t0 = time.time()
+    fr_lev = finance(ensemble, [price_path], _make_econ(6_000.0),
+                     _make_config_levered(N_YEARS, baseline_id="greedy"))
+    print(f"  levered: {time.time()-t0:.1f}s")
 
     total_time = time.time() - t_start
 
@@ -554,26 +634,81 @@ def main():
                 "CAPEX understated or generation overstated. Aborting before verdict."
             )
         print()
-        if all([b1n, b1i, b3t1, b3cv, b3wc]) and irr_ok and lcoe_ok:
-            print("  PRELIMINARY VERDICT: BANKABLE ✓  (pending finance-expert certification)")
+        base_pass = all([b1n, b1i, b3t1, b3cv, b3wc]) and irr_ok and lcoe_ok
+        if base_pass:
+            print("  BASE VERDICT: BANKABLE ✓  (B1+B3 all pass)")
         elif all([b1n, b1i, b3t1, b3cv, b3wc]) and not (irr_ok and lcoe_ok):
-            print("  PRELIMINARY VERDICT: B1/B3 PASS BUT SANITY WARN — review before cert")
+            print("  BASE VERDICT: B1/B3 PASS BUT SANITY WARN — review before cert")
         else:
-            print("  PRELIMINARY VERDICT: NOT YET BANKABLE ✗")
-        print(f"  Disclosures:")
-        print(f"   1. Full-site CAPEX ¥{TOTAL_CAPEX/1e6:,.1f}M (wind+PV+bat+grid) — corrected per PR #127 ruling 2")
-        print(f"   2. cl=6000 = conservative lower bound; true NPV ≥ stub (CATL DoD pending)")
-        print(f"   3. dp_oracle demand-charge value (NOT export ceiling): +¥239M secondary metric")
-        print(f"      Ruling: oracle export ≈ greedy (¥926M; BESS = 6% of 945MW plant)")
-        print(f"   4. MPC not run (computationally intensive for M=50)")
-        print(f"   5. Finance-expert gate required to certify and close task #15")
+            print("  BASE VERDICT: NOT YET BANKABLE ✗")
 
+    # ════════════════════════════════════════════════════════════════════════════
+    # LEVERED + AFTER-TAX  (70% debt, r_d=4.75%, tax=25%)
+    # ════════════════════════════════════════════════════════════════════════════
     print()
-    print(f"Total runtime: {total_time:.1f}s  (dispatch: {dispatch_time:.1f}s)")
+    _sep("═")
+    print("§13.12  LEVERED + AFTER-TAX  (70% debt / 30% equity, 4.75% r_d, 25% tax)")
+    print("        cl=6000 conservative | D/E=2.3333 | β_L=1.65 | equity hurdle≈12.4%")
+    print("        DSCR = pre-tax EBITDA / annuity  |  equity IRR = pre-tax EBITDA − debt-svc")
+    print("        NOTE: engine uses pre-tax EBITDA for equity IRR → overstates after-tax IRR")
+    _sep("═")
+
+    # Annuity for reference
+    r_d_lev  = 0.0475
+    de_lev   = 2.3333
+    debt_frac_lev  = de_lev / (1.0 + de_lev)        # 0.70
+    equity_frac_lev = 1.0 / (1.0 + de_lev)          # 0.30
+    total_debt_lev  = TOTAL_CAPEX * debt_frac_lev
+    equity_inv_lev  = TOTAL_CAPEX * equity_frac_lev
+    pow_rd_20 = (1.0 + r_d_lev) ** 20
+    annuity_lev = total_debt_lev * (r_d_lev * pow_rd_20) / (pow_rd_20 - 1.0)
+    print(f"  Debt  ¥{total_debt_lev/1e6:,.1f}M  |  Equity ¥{equity_inv_lev/1e6:,.1f}M  "
+          f"|  Annuity ¥{annuity_lev/1e6:.1f}M/yr")
+    print()
+
+    lev_vi = fr_lev.per_policy["greedy"].per_price_path["flat"].view_i
+    lev_p50 = lev_vi.P50
+    if lev_p50:
+        ci_lo, ci_hi = lev_p50.bootstrap_ci
+        print(f"  Levered NPV P50 (r=WACC≈6.21%): {_fmt_m(lev_p50.npv_yuan)}"
+              f"  CI90:[{ci_lo/1e6:+.0f}M,{ci_hi/1e6:+.0f}M]")
+        print(f"  Levered unlevered-equiv IRR P50: {_fmt_pct(lev_p50.irr)}")
+        print(f"  LCOE (levered, P50):             ¥{lev_p50.lcoe_yuan_per_mwh:.1f}/MWh")
+    print(f"  Equity IRR (pre-tax EBITDA):     {_fmt_pct(lev_vi.equity_irr)}")
+    print(f"  Min DSCR (avg over M draws):     {lev_vi.min_dscr:.3f}" if lev_vi.min_dscr else "  Min DSCR: N/A")
+
+    # B4 checks
+    equity_hurdle_lev = 0.025 + 1.65 * 0.060   # β_L=1.65, r_f=0.025, ERP=0.06 → 12.4%
+    b4_dscr = lev_vi.min_dscr is not None and lev_vi.min_dscr >= 1.30
+    b4_eirr = lev_vi.equity_irr is not None and lev_vi.equity_irr > equity_hurdle_lev
+    print()
+    print(f"  B4 min-DSCR ≥ 1.30:   {'✓ PASS' if b4_dscr else '✗ FAIL (finding: over-geared at 70%, not a tripwire)'}  "
+          f"{lev_vi.min_dscr:.3f}" if lev_vi.min_dscr else f"  B4 min-DSCR ≥ 1.30: N/A")
+    print(f"  B4 equity-IRR > {equity_hurdle_lev*100:.1f}%: "
+          f"{'✓ PASS' if b4_eirr else '✗ FAIL'}  "
+          f"{_fmt_pct(lev_vi.equity_irr)}  (pre-tax; after-tax would be ~{lev_vi.equity_irr*0.75*100:.1f}% if uniform tax)")
+
+    if not b4_dscr and lev_vi.min_dscr is not None:
+        print(f"\n  DSCR FINDING: min-DSCR = {lev_vi.min_dscr:.3f} < 1.30 at 70% gearing.")
+        print(f"  Project is bankable UNLEVERED; 70% gearing MAY be over-leveraged.")
+        print(f"  Lenders would typically require: (a) lower LTV, or (b) reserve account,")
+        print(f"  or (c) wait for connection-agreement data confirming 567MW cap floor.")
+        print(f"  This is a FINDING — not a tripwire. Reported honestly per team-lead directive.")
+
+    # ════════════════════════════════════════════════════════════════════════════
+    # SUMMARY + DISCLOSURES
+    # ════════════════════════════════════════════════════════════════════════════
+    print()
+    _sep("═")
+    print("SUMMARY")
+    _sep("═")
+    print(f"  Total runtime: {total_time:.1f}s  (dispatch: {dispatch_time:.1f}s)")
+    print(f"  Scenario:  export cap = {GRID_EXPORT_CAP_MW:.0f} MW (USER binding-constraint, not {GRID_PHYS_MW:.0f} MW)")
     print()
     print("  Data integrity:")
     print("  ✓ INV-STREAM-AUTHORITY: EBITDA from _build_streams() real r_export/c_import")
     print("  ✓ A4: degradation_yuan unchanged across cycle_life (env-layer field)")
+    print(f"  ✓ INV-CURT: {'curtailment present at 567MW cap' if curt_ok else 'WARN: zero curtailment'}")
     print(f"  ✓ CF[0] = −¥{TOTAL_CAPEX/1e6:,.1f}M FULL-SITE CAPEX (wind+PV+bat; grid=¥0 sunk)")
     print(f"     wind ¥{meta['wind_capex']/1e6:.0f}M + PV ¥{meta['pv_capex']/1e6:.0f}M + bat ¥{meta['bat_capex']/1e6:.1f}M")
     print("  ✓ View-II = same econ for smart vs greedy (capex cancels = correct dispatch value)")
@@ -585,10 +720,17 @@ def main():
     print(f"     wind ¥{meta['wind_om']/1e6:.1f}M (@¥{meta['wind_om_per_kw_yr']:.0f}/kW·yr)"
           f" + PV ¥{meta['pv_om']/1e6:.1f}M (@¥{meta['pv_om_per_kw_yr']:.0f}/kW·yr)")
     print(f"     bat ¥{meta['bat_om']/1e6:.2f}M (@¥{meta['bat_om_per_kwh_yr']:.0f}/kWh·yr)"
-          f" + grid ¥{meta['grid_om']/1e6:.2f}M (@¥{meta['grid_om_per_mw_yr']:.0f}/MW·yr)")
+          f" + grid ¥{meta['grid_om']/1e6:.2f}M (O&M basis: {GRID_PHYS_MW:.0f}MW substation)")
     print(f"  ✓ Decommissioning ¥{meta['decomm']/1e6:.1f}M "
           f"(wind ¥{meta['decomm_wind']/1e6:.1f}M + PV ¥{meta['decomm_pv']/1e6:.1f}M"
           f" + bat ¥{meta['decomm_bat']/1e6:.2f}M)")
+    print()
+    print("  Disclosures:")
+    print(f"   1. Export cap 567MW (public estimate, USER-directed, pending connection data)")
+    print(f"   2. Full-site CAPEX ¥{TOTAL_CAPEX/1e6:,.1f}M from config — wind+PV+bat+grid")
+    print(f"   3. cl=6000 = conservative lower bound; true NPV ≥ stub (CATL DoD pending)")
+    print(f"   4. Equity IRR = pre-tax EBITDA − debt-service (overstates after-tax)")
+    print(f"   5. Finance-expert gate required to certify and close task #15")
 
 
 if __name__ == "__main__":
